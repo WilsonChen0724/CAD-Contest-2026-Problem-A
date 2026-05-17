@@ -18,7 +18,7 @@ By the end of Day1, the project should have:
 
 ```bash
 chmod +x cada1070_alpha
-./cada0001_alpha -config config.example.yaml < tests/smoke_input.txt
+./cada1070_alpha -config config.example.yaml < tests/smoke_input.txt
 ```
 
 Expected behavior:
