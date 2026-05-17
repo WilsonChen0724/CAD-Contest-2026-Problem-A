@@ -1,0 +1,6 @@
+This is the beginning of a new testcase. The case name is test8
+Now please load file 'tests/design/netlist/test8.v'
+Find all the buffers which name include '_gc__'
+Replace the found buffers with an AND gate. And connect the other input to _gc_ctrl
+What is the maximum logic depth from input in0 to output out3?
+Write out the modified netlist into 'output/test8_out.v', please.
