@@ -1,4 +1,4 @@
-# CADA0001 Alpha - Day1 Skeleton
+# CADA1070 Alpha - Day1 Skeleton
 
 This repository is the Day1 baseline for the ICCAD Contest Problem A style project:
 LLM-assisted netlist exploration and transformation.
@@ -17,8 +17,8 @@ By the end of Day1, the project should have:
 ## Run Smoke Test
 
 ```bash
-chmod +x cada0001_alpha
-./cada0001_alpha -config config.example.yaml < tests/smoke_input.txt
+chmod +x cada1070_alpha
+./cada1070_alpha -config config.example.yaml < tests/smoke_input.txt
 ```
 
 Expected behavior:
