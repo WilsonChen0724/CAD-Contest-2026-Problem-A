@@ -1,0 +1,10 @@
+config.yaml
+config.yml
+.env
+*.env
+*.log
+__pycache__/
+.venv/
+output/
+result/
+results/
