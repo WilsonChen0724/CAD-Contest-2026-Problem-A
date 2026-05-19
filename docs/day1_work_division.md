@@ -70,6 +70,6 @@ Day1 tasks:
 
 Day1 done when:
 
-- `./cada0001_alpha -config config.example.yaml < tests/smoke_input.txt` runs.
+- `./cada1070_alpha -config config.example.yaml < tests/smoke_input.txt` runs.
 - stdout uses `#RESPONSE N` and `#END N`.
 - log file is generated for a begun testcase.

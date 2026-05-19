@@ -50,20 +50,55 @@ def find_path(design: Design, src: str, dst: str, avoid: list[str] | None = None
 
     return []
 
-
+#----------DAG + DP for longest path from src to dst. In a DAG, this is guaranteed to terminate and yield the correct result.
 def max_depth(design: Design, src: str, dst: str) -> tuple[int, list[str]]:
     """
-    MVP placeholder.
+    Compute the maximum combinational gate depth from src to dst.
 
-    Return:
-        (depth, example_path)
-
-    Day2/Day3 task:
-        Replace this with DAG DP/topological traversal.
+    The traversal relaxes depths over the fanout graph. Nets carry a depth, and
+    crossing a primitive gate adds one. DFF sinks are intentionally not traversed
+    because they are sequential boundaries in docs/tool_spec.md.
     """
-    path = find_path(design, src, dst)
-    depth = sum(1 for x in path if x in design.gates)
-    return depth, path
+    rebuild_graph(design)
+    if src == dst:
+        return 0, [src]
+
+    best_depth: dict[str, int] = {src: 0}
+    best_path: dict[str, list[str]] = {src: [src]}
+    q = deque([src])
+
+    # In a DAG, each net's best depth can improve only a bounded number of
+    # times. This guard prevents an accidental combinational loop from turning
+    # the longest-path relaxation into an infinite loop.
+    relax_limit = max(1, len(design.gates) + len(design.wires) + len(design.outputs) + len(design.inputs))
+    relax_count: dict[str, int] = {}
+
+    while q:
+        net = q.popleft()
+        current_depth = best_depth[net]
+        current_path = best_path[net]
+
+        for sink in design.fanouts.get(net, []):
+            if not sink.startswith("GATE:"):
+                continue
+
+            gate_name = sink.split(":", 1)[1]
+            gate = design.gates[gate_name]
+            out_net = gate.output
+            candidate_depth = current_depth + 1
+            if candidate_depth <= best_depth.get(out_net, -1):
+                continue
+
+            best_depth[out_net] = candidate_depth
+            best_path[out_net] = current_path + [gate.name, out_net]
+            relax_count[out_net] = relax_count.get(out_net, 0) + 1
+            if relax_count[out_net] > relax_limit:
+                raise ValueError("Combinational loop detected while computing max depth.")
+            q.append(out_net)
+
+    if dst not in best_depth:
+        return 0, []
+    return best_depth[dst], best_path[dst]
 
 
 def logic_cone(design: Design, target: str) -> list[str]:

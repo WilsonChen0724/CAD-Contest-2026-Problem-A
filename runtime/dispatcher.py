@@ -22,6 +22,7 @@ SUPPORTED_OPS = {
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "unsupported",
 }
 
 REQUIRED_ARGS = {
@@ -36,6 +37,7 @@ REQUIRED_ARGS = {
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
     "check_depth": ("src", "dst", "max_depth"),
+    "unsupported": ("reason",),
 }
 
 
@@ -60,6 +62,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     args = plan.get("args", {}) or {}
     save_as = plan.get("save_as")
     _validate_tool_call(op, args)
+
+    if op == "unsupported":
+        return (
+            "I could not map the request to a supported EDA operation. "
+            f"Reason: {args['reason']}"
+        )
 
     if op == "begin_testcase":
         case_name = args["case_name"]

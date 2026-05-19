@@ -15,15 +15,23 @@ from eda.graph import rebuild_graph
 # 9. check_dangling_gates
 
 def check_connectivity(design: Design) -> dict:
-    """Check whether all design nets have legal drivers."""
+    """Check missing drivers and duplicate drivers."""
     rebuild_graph(design)
+    net_drivers = _collect_net_drivers(design)
+    duplicate_drivers = {
+        net: drivers
+        for net, drivers in sorted(net_drivers.items())
+        if len(drivers) > 1
+    }
+
     missing_drivers = []
     for net in design.all_nets():
         if net not in design.drivers and net not in design.inputs:
             missing_drivers.append(net)
     return {
-        "ok": len(missing_drivers) == 0,
+        "ok": len(missing_drivers) == 0 and len(duplicate_drivers) == 0,
         "missing_drivers": sorted(missing_drivers),
+        "duplicate_drivers": duplicate_drivers,
     }
 
 
@@ -52,3 +60,20 @@ def check_depth(design: Design, src: str, dst: str, max_allowed_depth: int) -> d
         "max_allowed_depth": max_allowed_depth,
         "path": path,
     }
+
+
+def _collect_net_drivers(design: Design) -> dict[str, list[str]]:
+    """Build a full driver list per net so duplicates are not hidden by graph maps."""
+    drivers: dict[str, list[str]] = {}
+
+    def add_driver(net: str, driver: str) -> None:
+        drivers.setdefault(net, []).append(driver)
+
+    for net in design.inputs:
+        add_driver(net, f"PI:{net}")
+    for gate in design.gates.values():
+        add_driver(gate.output, f"GATE:{gate.name}")
+    for dff in design.dffs.values():
+        add_driver(dff.q, f"DFF:{dff.name}")
+
+    return drivers

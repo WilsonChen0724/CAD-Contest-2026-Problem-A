@@ -29,6 +29,11 @@ class PlanCheckerTest(unittest.TestCase):
         with self.assertRaises(PlanValidationError):
             parse_plan_json("not json")
 
+    def test_accepts_unsupported_plan_shape_used_by_rule_planner(self) -> None:
+        plan = validate_plan({"op": "unsupported", "args": {"reason": "not mapped"}})
+
+        self.assertEqual(plan["op"], "unsupported")
+
 
 if __name__ == "__main__":
     unittest.main()

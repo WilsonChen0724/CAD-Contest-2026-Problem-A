@@ -3,33 +3,41 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from eda.design import Design, Gate
+from eda.design import Design, DFF, Gate
 from eda.graph import rebuild_graph
 
 
 _PRIMITIVES = {"and", "or", "nand", "nor", "not", "buf", "xor", "xnor"}
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
-_CONSTANTS = {"1'b0", "1'b1"}
+_BIT_SELECT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_$]*)\[(\d+)\]$")
+_CONSTANTS = {"1'b0", "1'b1", "1'bx", "1'bz", "0", "1"}
 _DECL_RE = re.compile(r"^(input|output|wire)\s+(.+)$", re.S)
 _INST_RE = re.compile(
     r"^(and|or|nand|nor|not|buf|xor|xnor)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)$",
     re.S,
 )
+_DFF_RE = re.compile(
+    r"^(dff[A-Za-z0-9_$]*)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)$",
+    re.S | re.I,
+)
 
 
 def parse_verilog(path: str | Path) -> Design:
     """
-    MVP scalar primitive parser.
+    MVP primitive parser with expanded bus-bit support.
 
     Supported Day1/Day2 subset:
         module top(...);
         input a, b;
+        input [3:0] bus;
         output y;
         wire n1;
         and U1(n1, a, b);
         buf U2(y, n1);
+        dff U3(q, d, clk);
 
-    This intentionally avoids full Verilog grammar.
+    Bus declarations are expanded in the IR as bit-select nets such as bus[0].
+    DFF positional syntax is assumed to be dff <inst>(q, d, clk[, rst]).
     """
     path = Path(path)
     text = path.read_text()
@@ -82,6 +90,19 @@ def parse_verilog(path: str | Path) -> Design:
                 _raise_parse_error(text, absolute_start, str(exc))
             continue
 
+        dff_match = _DFF_RE.match(stmt)
+        if dff_match:
+            cell_type, name, pin_text = dff_match.group(1), dff_match.group(2), dff_match.group(3)
+            pins = _parse_pin_list(pin_text, text, absolute_start)
+            _validate_dff_pins(name, pins, text, absolute_start)
+            q, d, clk = pins[0], pins[1], pins[2]
+            rst = pins[3] if len(pins) >= 4 else None
+            try:
+                design.add_dff(DFF(name=name, q=q, d=d, clk=clk, rst=rst, attrs={"cell_type": cell_type}))
+            except ValueError as exc:
+                _raise_parse_error(text, absolute_start, str(exc))
+            continue
+
         _raise_parse_error(text, absolute_start, f"Unsupported or invalid statement: {stmt}")
 
     rebuild_graph(design)
@@ -114,17 +135,30 @@ def _iter_statements(body: str, body_start: int, full_text: str) -> list[tuple[s
 
 
 def _parse_declaration_names(names_text: str, full_text: str, statement_start: int) -> list[str]:
-    if "[" in names_text or "]" in names_text:
-        _raise_parse_error(full_text, statement_start, "Bus declarations are not supported by scalar parser")
+    range_match = re.match(r"^\s*(?:\[(\d+)\s*:\s*(\d+)\]\s*)?(.*)$", names_text, flags=re.S)
+    if range_match is None:
+        _raise_parse_error(full_text, statement_start, "Invalid declaration")
 
-    names = [token.strip() for token in names_text.replace("\n", " ").split(",")]
+    msb_text, lsb_text, raw_names = range_match.groups()
+    if ("[" in raw_names or "]" in raw_names) and msb_text is None:
+        _raise_parse_error(full_text, statement_start, "Bus range must appear before declared names")
+
+    names = [token.strip() for token in raw_names.replace("\n", " ").split(",")]
     if not names or any(not name for name in names):
         _raise_parse_error(full_text, statement_start, "Declaration contains an empty signal name")
 
     for name in names:
         if not _is_identifier(name):
-            _raise_parse_error(full_text, statement_start, f"Invalid scalar signal name: {name}")
-    return names
+            _raise_parse_error(full_text, statement_start, f"Invalid signal name: {name}")
+
+    if msb_text is None:
+        return names
+
+    msb = int(msb_text)
+    lsb = int(lsb_text)
+    step = 1 if lsb <= msb else -1
+    bit_indexes = range(lsb, msb + step, step)
+    return [f"{name}[{index}]" for name in names for index in bit_indexes]
 
 
 def _parse_pin_list(pin_text: str, full_text: str, statement_start: int) -> list[str]:
@@ -162,12 +196,27 @@ def _validate_primitive_pins(
         )
 
 
+def _validate_dff_pins(name: str, pins: list[str], full_text: str, statement_start: int) -> None:
+    if len(pins) not in {3, 4}:
+        _raise_parse_error(
+            full_text,
+            statement_start,
+            f"DFF {name} expects 3 or 4 pins: q, d, clk[, rst]",
+        )
+    if pins[0] in _CONSTANTS:
+        _raise_parse_error(full_text, statement_start, f"DFF {name} q output cannot be a constant")
+
+
 def _is_identifier(value: str) -> bool:
     return bool(_IDENT_RE.fullmatch(value))
 
 
+def _is_bit_select(value: str) -> bool:
+    return bool(_BIT_SELECT_RE.fullmatch(value))
+
+
 def _is_signal_or_constant(value: str) -> bool:
-    return value in _CONSTANTS or _is_identifier(value)
+    return value in _CONSTANTS or _is_identifier(value) or _is_bit_select(value)
 
 
 def _raise_parse_error(text: str, index: int, message: str) -> None:
