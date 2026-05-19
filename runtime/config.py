@@ -4,12 +4,7 @@ from pathlib import Path
 
 
 def load_config(path: str | None) -> dict:
-    """
-    Day1 config loader.
-
-    To avoid external dependencies, this returns raw text for now.
-    Day2 can replace this with yaml.safe_load if PyYAML is available.
-    """
+    """Load the optional contest config file as raw text."""
     if path is None:
         return {}
     p = Path(path)

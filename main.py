@@ -20,6 +20,7 @@ from runtime.state import CurrentState
 
 
 def main() -> int:
+    """Run the stdin-driven contest request loop."""
     parser = argparse.ArgumentParser()
     parser.add_argument("-config", dest="config", required=False)
     # planner_mode: rule, llm, hybrid
