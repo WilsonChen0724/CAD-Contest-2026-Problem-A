@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-import argparse
-import sys
+import argparse # read command line argument
+import sys      # read natural language request from stdin
 
-from agent.planner import plan_request
-from runtime.config import load_config
-from runtime.dispatcher import dispatch_plan
-from runtime.response import emit_response
-from runtime.state import CurrentState
+from agent.planner import plan_request          # turn natural language into tool call
+from runtime.config import load_config          # 
+from runtime.dispatcher import dispatch_plan    # do tool call
+from runtime.response import emit_response      # wrapping result
+from runtime.state import CurrentState          # including state.design/previous_results.etc
 
 
 def main() -> int:
+    """Run the stdin-driven contest request loop."""
     parser = argparse.ArgumentParser()
     parser.add_argument("-config", dest="config", required=False)
     args = parser.parse_args()
 
-    _config = load_config(args.config)
-    state = CurrentState()
+    config = load_config(args.config)
+    state = CurrentState(config=config)
 
     for raw_line in sys.stdin:
         request = raw_line.strip()
