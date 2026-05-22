@@ -34,15 +34,16 @@ def rebuild_graph(design: Design) -> None:
         add_fanout(out, f"PO:{out}")
 
     for gate in design.gates.values():
-        if gate.output in drivers:
-            # Keep the first driver but expose the issue in verification later.
-            pass
-        drivers[gate.output] = f"GATE:{gate.name}"
+        if gate.output not in drivers:
+            drivers[gate.output] = f"GATE:{gate.name}"
         for net in gate.inputs:
             add_fanout(net, f"GATE:{gate.name}")
 
     for dff in design.dffs.values():
-        drivers[dff.q] = f"DFF:{dff.name}"
+        # Keep the first driver in the graph map. Duplicate drivers are reported
+        # by eda.verify.check_connectivity(), where the full driver list is built.
+        if dff.q not in drivers:
+            drivers[dff.q] = f"DFF:{dff.name}"
         add_fanout(dff.d, f"DFF:{dff.name}")
         if dff.clk:
             add_fanout(dff.clk, f"DFF:{dff.name}")

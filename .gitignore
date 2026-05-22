@@ -3,6 +3,12 @@ config.yaml
 config.yml
 .env
 *.env
+*.log
+__pycache__/
+.venv/
+output/
+result/
+results/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
