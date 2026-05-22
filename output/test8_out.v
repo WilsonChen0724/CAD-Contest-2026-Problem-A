@@ -1,4 +1,4 @@
-module top(a, in0, b, out3, y);
+module top(in0, a, b, out3, y);
 
 input a, b, in0;
 output out3, y;
