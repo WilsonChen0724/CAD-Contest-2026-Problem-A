@@ -1,5 +1,6 @@
 cada1070_alpha text eol=lf
 *.py text eol=lf
+*.ps1 text eol=lf
 *.sh text eol=lf
 *.md text eol=lf
 *.yaml text eol=lf

@@ -50,6 +50,16 @@ def find_path(design: Design, src: str, dst: str, avoid: list[str] | None = None
 
     return []
 
+
+def all_paths_pass_through(design: Design, src: str, dst: str, node: str) -> bool:
+    """Return True when every combinational path from src to dst crosses node."""
+    if src == dst:
+        return src == node
+    if not find_path(design, src, dst):
+        return False
+    return not find_path(design, src, dst, avoid=[node])
+
+
 #----------DAG + DP for longest path from src to dst. In a DAG, this is guaranteed to terminate and yield the correct result.
 def max_depth(design: Design, src: str, dst: str) -> tuple[int, list[str]]:
     """
@@ -122,3 +132,159 @@ def logic_cone(design: Design, target: str) -> list[str]:
         stack.extend(gate.inputs)
 
     return sorted(result)
+
+
+def fanout_cone(design: Design, source: str) -> dict:
+    """
+    Return the transitive combinational fanout cone from a source net.
+
+    Traversal crosses primitive gates from input nets to output nets, records
+    reached primary outputs, and treats DFF inputs as sequential endpoints.
+    """
+    rebuild_graph(design)
+    gates: set[str] = set()
+    nets: set[str] = set()
+    primary_outputs: set[str] = set()
+    dff_sinks: set[str] = set()
+    stack = [source]
+    seen_nets = {source}
+
+    while stack:
+        net = stack.pop()
+        nets.add(net)
+        for sink in design.fanouts.get(net, []):
+            if sink.startswith("PO:"):
+                primary_outputs.add(sink.split(":", 1)[1])
+                continue
+            if sink.startswith("DFF:"):
+                dff_sinks.add(sink.split(":", 1)[1])
+                continue
+            if not sink.startswith("GATE:"):
+                continue
+
+            gate_name = sink.split(":", 1)[1]
+            if gate_name in gates:
+                continue
+            gates.add(gate_name)
+            out_net = design.gates[gate_name].output
+            if out_net not in seen_nets:
+                seen_nets.add(out_net)
+                stack.append(out_net)
+
+    return {
+        "source": source,
+        "gates": sorted(gates),
+        "nets": sorted(nets),
+        "primary_outputs": sorted(primary_outputs),
+        "dff_sinks": sorted(dff_sinks),
+        "num_gates": len(gates),
+        "num_nets": len(nets),
+        "num_primary_outputs": len(primary_outputs),
+        "num_dff_sinks": len(dff_sinks),
+    }
+
+
+def primary_output_cone_sizes(design: Design) -> dict[str, dict]:
+    """Report fanin cone size for each primary output."""
+    rebuild_graph(design)
+    report: dict[str, dict] = {}
+    for output in sorted(design.outputs):
+        gates = logic_cone(design, output)
+        nets = _fanin_cone_nets(design, output)
+        report[output] = {
+            "num_gates": len(gates),
+            "num_nets": len(nets),
+            "gates": gates,
+            "nets": sorted(nets),
+        }
+    return report
+
+
+def dff_relationships(design: Design) -> dict:
+    """
+    Basic clock-domain and DFF connectivity report.
+
+    This is intentionally structural: it groups DFFs by clock and records
+    combinational DFF-to-DFF, PI-to-DFF, and DFF-to-PO relationships without
+    crossing through downstream DFFs.
+    """
+    rebuild_graph(design)
+    clock_domains: dict[str, list[str]] = {}
+    dffs: dict[str, dict] = {}
+    dff_to_dff: list[dict[str, str | list[str]]] = []
+    pi_to_dff: list[dict[str, str | list[str]]] = []
+    dff_to_po: list[dict[str, str | list[str]]] = []
+
+    for name, dff in sorted(design.dffs.items()):
+        clock = dff.clk or "(none)"
+        clock_domains.setdefault(clock, []).append(name)
+        dffs[name] = {
+            "d": dff.d,
+            "q": dff.q,
+            "clk": dff.clk,
+            "rst": dff.rst,
+        }
+
+        d_driver = design.drivers.get(dff.d)
+        if d_driver:
+            dffs[name]["d_driver"] = d_driver
+
+    for source_name, source_dff in sorted(design.dffs.items()):
+        endpoints = _combinational_endpoints_from_net(design, source_dff.q)
+        for sink_dff in endpoints["dffs"]:
+            if sink_dff != source_name:
+                dff_to_dff.append({"src_dff": source_name, "dst_dff": sink_dff})
+        for output in endpoints["primary_outputs"]:
+            dff_to_po.append({"src_dff": source_name, "dst_output": output})
+
+    for pi in sorted(design.inputs):
+        endpoints = _combinational_endpoints_from_net(design, pi)
+        for sink_dff in endpoints["dffs"]:
+            pi_to_dff.append({"src_input": pi, "dst_dff": sink_dff})
+
+    return {
+        "num_dffs": len(design.dffs),
+        "clock_domains": {clock: sorted(names) for clock, names in sorted(clock_domains.items())},
+        "dffs": dffs,
+        "dff_to_dff": dff_to_dff,
+        "pi_to_dff": pi_to_dff,
+        "dff_to_primary_output": dff_to_po,
+    }
+
+
+def _fanin_cone_nets(design: Design, target: str) -> set[str]:
+    nets: set[str] = set()
+    stack = [target]
+    while stack:
+        net = stack.pop()
+        if net in nets:
+            continue
+        nets.add(net)
+        driver = design.drivers.get(net)
+        if not driver or not driver.startswith("GATE:"):
+            continue
+        gate = design.gates[driver.split(":", 1)[1]]
+        stack.extend(gate.inputs)
+    return nets
+
+
+def _combinational_endpoints_from_net(design: Design, source: str) -> dict[str, set[str]]:
+    primary_outputs: set[str] = set()
+    dffs: set[str] = set()
+    stack = [source]
+    seen_nets = {source}
+
+    while stack:
+        net = stack.pop()
+        for sink in design.fanouts.get(net, []):
+            if sink.startswith("PO:"):
+                primary_outputs.add(sink.split(":", 1)[1])
+            elif sink.startswith("DFF:"):
+                dffs.add(sink.split(":", 1)[1])
+            elif sink.startswith("GATE:"):
+                gate = design.gates[sink.split(":", 1)[1]]
+                if gate.output not in seen_nets:
+                    seen_nets.add(gate.output)
+                    stack.append(gate.output)
+
+    return {"primary_outputs": primary_outputs, "dffs": dffs}
