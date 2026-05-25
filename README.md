@@ -136,6 +136,10 @@ The implemented transformations are:
 - `replace_or_with_nand_not`: 2-input OR gates in a requested cone are rewritten
   as equivalent NAND/NOT logic.
 
+Function-preserving transformations are transactional: they run on a copied
+design, pass connectivity checks, and must preserve common primary-output
+functions before the modified design is committed.
+
 ## Requirements
 
 - Python 3.10 or newer.

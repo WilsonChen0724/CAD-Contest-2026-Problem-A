@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from eda.design import DFF, Design, Gate
 from runtime.dispatcher import dispatch_plan
@@ -92,6 +93,22 @@ class DispatcherTest(unittest.TestCase):
                 state,
                 {"op": "replace_buffers_with_and", "args": {"targets": ["U_buf"], "extra_input": "missing_ctrl"}},
             )
+
+        self.assertEqual(state.design.gates["U_buf"].type, "buf")
+        self.assertEqual(state.design.gates["U_buf"].inputs, ["a"])
+
+    def test_function_preserving_transform_rejects_equivalence_failure(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_buf", type="buf", inputs=["a"], output="y"))
+
+        def bad_transform(design):
+            design.gates["U_buf"].type = "not"
+            return {"changed": ["U_buf"], "num_changed": 1}
+
+        with patch("runtime.dispatcher.replace_inv_buf_with_inv", side_effect=bad_transform):
+            with self.assertRaisesRegex(RuntimeError, "equivalence check failed"):
+                dispatch_plan(state, {"op": "replace_inv_buf_with_inv", "args": {}})
 
         self.assertEqual(state.design.gates["U_buf"].type, "buf")
         self.assertEqual(state.design.gates["U_buf"].inputs, ["a"])

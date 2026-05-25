@@ -81,6 +81,32 @@ def check_property(design: Design, target: str, property_text: str) -> dict:
     return _prove_no_counterexample(engine, ~prop_expr)
 
 
+def check_design_equivalence(before: Design, after: Design, outputs: list[str] | None = None) -> dict:
+    """Check whether two designs produce the same values on selected outputs."""
+    selected_outputs = sorted(outputs if outputs is not None else before.outputs & after.outputs)
+    if not selected_outputs:
+        return {"ok": True, "engine": "none", "outputs": [], "failures": {}}
+
+    failures: dict[str, dict] = {}
+    engines: set[str] = set()
+    for output in selected_outputs:
+        before_engine = _BooleanEngine()
+        after_engine = _BooleanEngine()
+        before_expr = before_engine.net_expr(before, output)
+        after_expr = after_engine.net_expr(after, output)
+        result = _prove_no_counterexample(before_engine, before_expr != after_expr)
+        engines.add(result.get("engine", "unknown"))
+        if not result.get("ok", False):
+            failures[output] = result
+
+    return {
+        "ok": len(failures) == 0,
+        "engine": ",".join(sorted(engines)) if engines else "none",
+        "outputs": selected_outputs,
+        "failures": failures,
+    }
+
+
 def _collect_net_drivers(design: Design) -> dict[str, list[str]]:
     """Build a full driver list per net so duplicates are not hidden by graph maps."""
     drivers: dict[str, list[str]] = {}

@@ -24,6 +24,7 @@ from eda.transform import (
 from eda.verify import (
     check_connectivity,
     check_depth,
+    check_design_equivalence,
     check_equivalence,
     check_fanout,
     check_property,
@@ -246,7 +247,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "remove_dangling":
         _require_design(state)
-        result = _run_transactional_transform(state, remove_dangling)
+        result = _run_transactional_transform(state, remove_dangling, verify_equivalence=True)
         return (
             "Removed dangling logic: "
             f'{result["num_removed_gates"]} gate(s), '
@@ -258,12 +259,17 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_inv_buf_with_inv":
         _require_design(state)
-        result = _run_transactional_transform(state, replace_inv_buf_with_inv)
+        result = _run_transactional_transform(state, replace_inv_buf_with_inv, verify_equivalence=True)
         return f'Replaced {result["num_changed"]} inverter-buffer chain(s): {result["changed"]}'
 
     if op == "replace_or_with_nand_not":
         _require_design(state)
-        result = _run_transactional_transform(state, replace_or_with_nand_not, args["cone_target"])
+        result = _run_transactional_transform(
+            state,
+            replace_or_with_nand_not,
+            args["cone_target"],
+            verify_equivalence=True,
+        )
         return (
             f'Replaced {result["num_changed"]} OR gate(s) in the cone of '
             f'"{args["cone_target"]}" with NAND/NOT logic: {result["changed"]}'
@@ -314,7 +320,13 @@ def _require_design(state: CurrentState) -> None:
         raise RuntimeError("No design has been loaded yet.")
 
 
-def _run_transactional_transform(state: CurrentState, transform, *args: Any, **kwargs: Any) -> dict:
+def _run_transactional_transform(
+    state: CurrentState,
+    transform,
+    *args: Any,
+    verify_equivalence: bool = False,
+    **kwargs: Any,
+) -> dict:
     """
     Run a transform on a copied design and commit only after verification.
 
@@ -322,11 +334,16 @@ def _run_transactional_transform(state: CurrentState, transform, *args: Any, **k
     testcase's evolving design state.
     """
     _require_design(state)
-    candidate = deepcopy(state.design)
+    original = state.design
+    candidate = deepcopy(original)
     result = transform(candidate, *args, **kwargs)
     connectivity = check_connectivity(candidate)
     if not connectivity.get("ok", False):
         raise RuntimeError(f"Transformation rejected: connectivity check failed: {connectivity}")
+    if verify_equivalence:
+        equivalence = check_design_equivalence(original, candidate)
+        if not equivalence.get("ok", False):
+            raise RuntimeError(f"Transformation rejected: equivalence check failed: {equivalence}")
     state.design = candidate
     return result
 

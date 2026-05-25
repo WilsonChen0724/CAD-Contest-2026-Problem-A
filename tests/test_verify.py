@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from eda.design import Design, Gate
-from eda.verify import check_connectivity, check_equivalence, check_property
+from eda.verify import check_connectivity, check_design_equivalence, check_equivalence, check_property
 
 
 class VerifyTest(unittest.TestCase):
@@ -60,6 +60,29 @@ class VerifyTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIsInstance(result["counterexample"], dict)
+
+    def test_check_design_equivalence_accepts_same_output_function(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        before.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="y"))
+        after = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        after.add_gate(Gate(name="U_na", type="not", inputs=["a"], output="na"))
+        after.add_gate(Gate(name="U_nb", type="not", inputs=["b"], output="nb"))
+        after.add_gate(Gate(name="U_nand", type="nand", inputs=["na", "nb"], output="y"))
+
+        result = check_design_equivalence(before, after)
+
+        self.assertTrue(result["ok"])
+
+    def test_check_design_equivalence_reports_changed_output_function(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        before.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="y"))
+        after = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        after.add_gate(Gate(name="U_and", type="and", inputs=["a", "b"], output="y"))
+
+        result = check_design_equivalence(before, after)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("y", result["failures"])
 
 
 if __name__ == "__main__":

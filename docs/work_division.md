@@ -29,7 +29,9 @@ Known gaps:
   `agent/plan_checker.py`, `agent/planner.py`, and `runtime/dispatcher.py`:
   all-paths-through, primary-output cone-size reports, and same-clock-domain
   DFF checks.
-- Several transformation tools are still placeholders.
+- Core structural transformations are implemented and wired through the
+  dispatcher. Function-preserving transformations are now guarded by
+  connectivity and primary-output equivalence checks before commit.
 - Combinational equivalence/property checking is now implemented for the first
   Tool API version. It uses `z3-solver` when installed and a small brute-force
   fallback otherwise.
