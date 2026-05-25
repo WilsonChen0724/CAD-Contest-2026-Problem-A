@@ -9,6 +9,12 @@ __pycache__/
 output/
 result/
 results/
+third_party/yosys/oss-cad-suite/
+third_party/yosys/*.zip
+third_party/yosys/*.exe
+third_party/yosys/*.tgz
+third_party/yosys/*.tar.gz
+third_party/yosys/*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

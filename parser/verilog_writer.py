@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 from eda.design import Design
+from parser.yosys_tools import quote_yosys_path, run_yosys_script
 
 
 def write_verilog(design: Design, path: str | Path) -> None:
     """
-    Minimal Verilog writer for MVP scalar netlists.
+    Write a Design as primitive Verilog and validate it with Yosys.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    content = _render_verilog(design)
+    _validate_with_yosys(content, design.module_name)
+    p.write_text(content, encoding="utf-8")
 
+
+def _render_verilog(design: Design) -> str:
     ports = _format_port_list(design.inputs, design.outputs)
     lines = []
     lines.append(f"module {design.module_name}({', '.join(ports)});")
@@ -30,13 +37,15 @@ def write_verilog(design: Design, path: str | Path) -> None:
         lines.extend(_format_declarations("wire", set(internal_wires)))
 
     lines.append("")
-    for gate in design.gates.values():
+    for gate_name in sorted(design.gates):
+        gate = design.gates[gate_name]
         pins = [gate.output] + gate.inputs
         lines.append(f"{gate.type} {gate.name}({', '.join(pins)});")
 
     # Parser support assumes positional DFF syntax: dff <inst>(q, d, clk[, rst]).
     # The writer preserves that normalized form for parsed sequential cells.
-    for dff in design.dffs.values():
+    for dff_name in sorted(design.dffs):
+        dff = design.dffs[dff_name]
         pins = [dff.q, dff.d]
         if dff.clk:
             pins.append(dff.clk)
@@ -49,7 +58,27 @@ def write_verilog(design: Design, path: str | Path) -> None:
     lines.append("endmodule")
     lines.append("")
 
-    p.write_text("\n".join(lines))
+    return "\n".join(lines)
+
+
+def _validate_with_yosys(content: str, module_name: str) -> None:
+    """Use Yosys as the writer-side syntax and hierarchy checker."""
+    from parser.verilog_parser import _build_wrapper_prelude, _rewrite_primitives_as_wrappers
+
+    rewritten_content, wrappers = _rewrite_primitives_as_wrappers(content)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp) / "writer_check.v"
+        tmp_path.write_text(_build_wrapper_prelude(wrappers) + "\n" + rewritten_content, encoding="utf-8")
+        script = "\n".join(
+            [
+                f"read_verilog -noopt {quote_yosys_path(tmp_path)}",
+                f"hierarchy -check -top {module_name}",
+            ]
+        )
+        completed = run_yosys_script(script)
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout).strip()
+            raise ValueError(f"Yosys rejected generated Verilog: {message}")
 
 
 def _format_port_list(inputs: set[str], outputs: set[str]) -> list[str]:
