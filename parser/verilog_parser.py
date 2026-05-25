@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import json
 import re
+import tempfile
 from pathlib import Path
+from typing import Any
 
 from eda.design import Design, DFF, Gate
 from eda.graph import rebuild_graph
+from parser.yosys_tools import quote_yosys_path, run_yosys_script
 
 
 _PRIMITIVES = {"and", "or", "nand", "nor", "not", "buf", "xor", "xnor"}
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
-_BIT_SELECT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_$]*)\[(\d+)\]$")
-_CONSTANTS = {"1'b0", "1'b1", "1'bx", "1'bz", "0", "1"}
-_DECL_RE = re.compile(r"^(input|output|wire)\s+(.+)$", re.S)
-_INST_RE = re.compile(
+_PRIMITIVE_RE = re.compile(
     r"^(and|or|nand|nor|not|buf|xor|xnor)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)$",
     re.S,
 )
@@ -20,212 +20,347 @@ _DFF_RE = re.compile(
     r"^(dff[A-Za-z0-9_$]*)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)$",
     re.S | re.I,
 )
+_MODULE_RE = re.compile(r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\(", re.S)
+_WRAPPER_PREFIX = "__cada_"
 
 
 def parse_verilog(path: str | Path) -> Design:
     """
-    MVP primitive parser with expanded bus-bit support.
+    Parse Verilog through Yosys and convert the Yosys JSON netlist to Design.
 
-    Supported Day1/Day2 subset:
-        module top(...);
-        input a, b;
-        input [3:0] bus;
-        output y;
-        wire n1;
-        and U1(n1, a, b);
-        buf U2(y, n1);
-        dff U3(q, d, clk);
-
-    Bus declarations are expanded in the IR as bit-select nets such as bus[0].
-    DFF positional syntax is assumed to be dff <inst>(q, d, clk[, rst]).
+    Primitive gate instances are rewritten to private wrapper cells before
+    Yosys sees the file. This keeps instance names and buffer cells intact while
+    still letting Yosys handle Verilog parsing, port expansion, and syntax
+    checking.
     """
-    path = Path(path)
-    text = path.read_text()
-    text = _remove_comments(text)
+    source_path = Path(path)
+    text = source_path.read_text(encoding="utf-8")
+    top_module = _find_top_module(text)
+    try:
+        rewritten_text, wrappers = _rewrite_primitives_as_wrappers(text)
+    except ValueError as exc:
+        raise ValueError(f"Verilog parse error in {source_path}: {exc}") from exc
+    prelude = _build_wrapper_prelude(wrappers)
 
-    module_headers = list(
-        re.finditer(r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*?)\)\s*;", text, re.S)
-    )
-    if not module_headers:
-        _raise_parse_error(text, 0, "Missing or invalid module declaration")
-    if len(module_headers) > 1:
-        _raise_parse_error(text, module_headers[1].start(), "Only one top module is supported")
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        yosys_input = tmp_dir / "input_for_yosys.v"
+        yosys_json = tmp_dir / "design.json"
+        yosys_prefix = prelude + "\n" if prelude else ""
+        yosys_input.write_text(yosys_prefix + rewritten_text, encoding="utf-8")
+        line_offset = yosys_prefix.count("\n")
 
-    module_match = module_headers[0]
-    module_name = module_match.group(1)
-    endmodule_match = re.search(r"\bendmodule\b", text[module_match.end() :])
-    if not endmodule_match:
-        _raise_parse_error(text, module_match.start(), f"Module {module_name} is missing endmodule")
+        script = "\n".join(
+            [
+                f"read_verilog -noopt {quote_yosys_path(yosys_input)}",
+                f"hierarchy -check -top {top_module}",
+                f"write_json {quote_yosys_path(yosys_json)}",
+            ]
+        )
+        completed = run_yosys_script(script, cwd=source_path.parent)
+        if completed.returncode != 0:
+            raise ValueError(
+                _format_yosys_parse_error(
+                    source_path,
+                    completed.stdout,
+                    completed.stderr,
+                    line_offset=line_offset,
+                )
+            )
 
-    body_start = module_match.end()
-    body_end = module_match.end() + endmodule_match.start()
-    trailing = text[body_end + len("endmodule") :].strip()
-    if trailing:
-        _raise_parse_error(text, body_end + len("endmodule"), "Unexpected text after endmodule")
+        data = json.loads(yosys_json.read_text(encoding="utf-8"))
 
-    design = Design(module_name=module_name)
+    return _yosys_json_to_design(data, top_module)
 
-    body = text[body_start:body_end]
-    for stmt, absolute_start in _iter_statements(body, body_start, text):
-        decl_match = _DECL_RE.match(stmt)
-        if decl_match:
-            kind, names_text = decl_match.group(1), decl_match.group(2)
-            names = _parse_declaration_names(names_text, text, absolute_start)
-            target_set = {
-                "input": design.inputs,
-                "output": design.outputs,
-                "wire": design.wires,
-            }[kind]
-            target_set.update(names)
+
+def _find_top_module(text: str) -> str:
+    match = _MODULE_RE.search(text)
+    if not match:
+        raise ValueError("Verilog parse error: missing module declaration")
+    return match.group(1)
+
+
+def _format_yosys_parse_error(source_path: Path, stdout: str, stderr: str, line_offset: int = 0) -> str:
+    raw_message = (stderr or stdout or "unknown Yosys error").strip()
+    source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    location = _extract_yosys_location(raw_message)
+    if location is None:
+        return f"Verilog parse error in {source_path}: {raw_message}"
+
+    yosys_line_no, column_no = location
+    line_no = max(1, yosys_line_no - line_offset)
+    source_line = _line_at(source_text, line_no)
+    detail = _last_error_line(raw_message)
+    pointer = " " * max(column_no - 1, 0) + "^" if column_no is not None else ""
+    parts = [
+        f"Verilog parse error in {source_path} at line {line_no}"
+        + (f", column {column_no}" if column_no is not None else "")
+        + f": {detail}",
+        f"Source: {source_line.strip()}",
+    ]
+    if pointer:
+        parts.append(f"        {pointer}")
+    return "\n".join(parts)
+
+
+def _extract_yosys_location(message: str) -> tuple[int, int | None] | None:
+    line_column_match = re.search(r":(\d+):(\d+):\s*(?:ERROR:\s*)?", message)
+    if line_column_match:
+        return int(line_column_match.group(1)), int(line_column_match.group(2))
+
+    line_match = re.search(r":(\d+):\s*ERROR:", message)
+    if line_match:
+        return int(line_match.group(1)), None
+    return None
+
+
+def _line_at(text: str, line_no: int) -> str:
+    lines = text.splitlines()
+    if 1 <= line_no <= len(lines):
+        return lines[line_no - 1]
+    return ""
+
+
+def _last_error_line(message: str) -> str:
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if "ERROR:" in line:
+            return line.split("ERROR:", 1)[1].strip()
+    return lines[-1] if lines else "unknown Yosys error"
+
+
+def _rewrite_primitives_as_wrappers(text: str) -> tuple[str, set[tuple[str, int]]]:
+    wrappers: set[tuple[str, int]] = set()
+    statements: list[str] = []
+
+    for raw_statement in text.split(";"):
+        stripped = raw_statement.strip()
+        if not stripped:
+            statements.append(raw_statement)
             continue
 
-        inst_match = _INST_RE.match(stmt)
-        if inst_match:
-            gate_type, name, pin_text = inst_match.group(1), inst_match.group(2), inst_match.group(3)
-            pins = _parse_pin_list(pin_text, text, absolute_start)
-            _validate_primitive_pins(gate_type, name, pins, text, absolute_start)
-            try:
-                design.add_gate(Gate(name=name, type=gate_type, inputs=pins[1:], output=pins[0]))
-            except ValueError as exc:
-                _raise_parse_error(text, absolute_start, str(exc))
+        primitive_match = _PRIMITIVE_RE.match(stripped)
+        dff_match = _DFF_RE.match(stripped)
+        if primitive_match:
+            gate_type, inst_name, pin_text = primitive_match.groups()
+            pins = _split_pin_list(pin_text)
+            input_count = len(pins) - 1
+            if gate_type in {"not", "buf"} and input_count != 1:
+                raise ValueError(f"Primitive {inst_name} ({gate_type}) expects one input")
+            if gate_type not in {"not", "buf"} and input_count < 2:
+                raise ValueError(f"Primitive {inst_name} ({gate_type}) expects at least two inputs")
+            wrapper_type = _gate_wrapper_name(gate_type, input_count)
+            wrappers.add((gate_type, input_count))
+            statements.append(_replace_statement(raw_statement, f"{wrapper_type} {inst_name}({', '.join(pins)})"))
             continue
 
-        dff_match = _DFF_RE.match(stmt)
         if dff_match:
-            cell_type, name, pin_text = dff_match.group(1), dff_match.group(2), dff_match.group(3)
-            pins = _parse_pin_list(pin_text, text, absolute_start)
-            _validate_dff_pins(name, pins, text, absolute_start)
-            q, d, clk = pins[0], pins[1], pins[2]
-            rst = pins[3] if len(pins) >= 4 else None
-            try:
-                design.add_dff(DFF(name=name, q=q, d=d, clk=clk, rst=rst, attrs={"cell_type": cell_type}))
-            except ValueError as exc:
-                _raise_parse_error(text, absolute_start, str(exc))
+            _, inst_name, pin_text = dff_match.groups()
+            pins = _split_pin_list(pin_text)
+            if len(pins) not in {3, 4}:
+                raise ValueError(f"DFF {inst_name} expects q, d, clk[, rst]")
+            wrapper_type = _dff_wrapper_name(len(pins))
+            wrappers.add(("dff", len(pins)))
+            statements.append(_replace_statement(raw_statement, f"{wrapper_type} {inst_name}({', '.join(pins)})"))
             continue
 
-        _raise_parse_error(text, absolute_start, f"Unsupported or invalid statement: {stmt}")
+        statements.append(raw_statement)
+
+    return ";".join(statements), wrappers
+
+
+def _replace_statement(original: str, replacement: str) -> str:
+    prefix_len = len(original) - len(original.lstrip())
+    suffix_len = len(original) - len(original.rstrip())
+    return original[:prefix_len] + replacement + original[len(original) - suffix_len :]
+
+
+def _split_pin_list(pin_text: str) -> list[str]:
+    pins = [pin.strip() for pin in pin_text.replace("\n", " ").split(",")]
+    if not pins or any(not pin for pin in pins):
+        raise ValueError("Instance contains an empty pin")
+    return pins
+
+
+def _build_wrapper_prelude(wrappers: set[tuple[str, int]]) -> str:
+    modules = [_build_gate_wrapper(gate_type, input_count) for gate_type, input_count in sorted(wrappers) if gate_type != "dff"]
+    modules.extend(_build_dff_wrapper(pin_count) for gate_type, pin_count in sorted(wrappers) if gate_type == "dff")
+    return "\n\n".join(modules)
+
+
+def _build_gate_wrapper(gate_type: str, input_count: int) -> str:
+    name = _gate_wrapper_name(gate_type, input_count)
+    inputs = [f"A{i}" for i in range(input_count)]
+    ports = ["Y"] + inputs
+    expr = _gate_expression(gate_type, inputs)
+    return (
+        f"module {name}({', '.join(ports)});\n"
+        "output Y;\n"
+        f"input {', '.join(inputs)};\n"
+        f"assign Y = {expr};\n"
+        "endmodule\n"
+    )
+
+
+def _build_dff_wrapper(pin_count: int) -> str:
+    name = _dff_wrapper_name(pin_count)
+    if pin_count == 3:
+        return (
+            f"module {name}(q, d, clk);\n"
+            "output q;\n"
+            "input d, clk;\n"
+            "endmodule\n"
+        )
+    return (
+        f"module {name}(q, d, clk, rst);\n"
+        "output q;\n"
+        "input d, clk, rst;\n"
+        "endmodule\n"
+    )
+
+
+def _gate_expression(gate_type: str, inputs: list[str]) -> str:
+    if gate_type == "buf":
+        return inputs[0]
+    if gate_type == "not":
+        return f"~{inputs[0]}"
+    operators = {
+        "and": "&",
+        "or": "|",
+        "xor": "^",
+        "nand": "&",
+        "nor": "|",
+        "xnor": "^",
+    }
+    joined = f" {operators[gate_type]} ".join(inputs)
+    if gate_type in {"nand", "nor", "xnor"}:
+        return f"~({joined})"
+    return joined
+
+
+def _gate_wrapper_name(gate_type: str, input_count: int) -> str:
+    return f"{_WRAPPER_PREFIX}{gate_type}_{input_count}"
+
+
+def _dff_wrapper_name(pin_count: int) -> str:
+    return f"{_WRAPPER_PREFIX}dff_{pin_count}"
+
+
+def _yosys_json_to_design(data: dict[str, Any], top_module: str) -> Design:
+    modules = data.get("modules", {})
+    if top_module not in modules:
+        raise ValueError(f"Yosys JSON does not contain top module {top_module}")
+    module = modules[top_module]
+    design = Design(module_name=top_module)
+    bit_names = _build_bit_name_map(module)
+
+    for port_name, port in module.get("ports", {}).items():
+        target = design.inputs if port.get("direction") == "input" else design.outputs
+        for net in _expand_named_bits(port_name, port.get("bits", [])):
+            target.add(net)
+
+    for net_name, net_info in module.get("netnames", {}).items():
+        if net_info.get("hide_name"):
+            continue
+        design.wires.update(_expand_named_bits(net_name, net_info.get("bits", [])))
+
+    for cell_name, cell in module.get("cells", {}).items():
+        cell_type = cell.get("type", "")
+        connections = cell.get("connections", {})
+        if cell_type.startswith(_WRAPPER_PREFIX) and not cell_type.startswith(_WRAPPER_PREFIX + "dff_"):
+            gate_type, input_count = _decode_gate_wrapper(cell_type)
+            inputs = [_net_from_connection(connections[f"A{i}"], bit_names) for i in range(input_count)]
+            output = _net_from_connection(connections["Y"], bit_names)
+            design.add_gate(Gate(name=cell_name, type=gate_type, inputs=inputs, output=output))
+        elif cell_type.startswith(_WRAPPER_PREFIX + "dff_"):
+            dff = DFF(
+                name=cell_name,
+                q=_net_from_connection(connections["q"], bit_names),
+                d=_net_from_connection(connections["d"], bit_names),
+                clk=_net_from_connection(connections["clk"], bit_names),
+                rst=_net_from_connection(connections["rst"], bit_names) if "rst" in connections else None,
+                attrs={"cell_type": "dff"},
+            )
+            design.add_dff(dff)
+        else:
+            _add_yosys_builtin_cell(design, cell_name, cell_type, connections, bit_names)
 
     rebuild_graph(design)
     return design
 
 
-def _remove_comments(text: str) -> str:
-    text = re.sub(r"//[^\n\r]*", "", text)
-
-    def keep_newlines(match: re.Match[str]) -> str:
-        return "\n" * match.group(0).count("\n")
-
-    text = re.sub(r"/\*.*?\*/", keep_newlines, text, flags=re.S)
-    return text
+def _decode_gate_wrapper(cell_type: str) -> tuple[str, int]:
+    rest = cell_type.removeprefix(_WRAPPER_PREFIX)
+    gate_type, count_text = rest.rsplit("_", 1)
+    if gate_type not in _PRIMITIVES:
+        raise ValueError(f"Unsupported wrapped gate type: {gate_type}")
+    return gate_type, int(count_text)
 
 
-def _iter_statements(body: str, body_start: int, full_text: str) -> list[tuple[str, int]]:
-    statements: list[tuple[str, int]] = []
-    pos = 0
-    for part in body.split(";"):
-        absolute_start = body_start + pos
-        pos += len(part) + 1
-        stmt = part.strip()
-        if stmt:
-            statements.append((stmt, absolute_start + part.find(stmt)))
-
-    if body.rstrip() and not body.rstrip().endswith(";"):
-        _raise_parse_error(full_text, body_start + len(body.rstrip()), "Missing semicolon before endmodule")
-    return statements
-
-
-def _parse_declaration_names(names_text: str, full_text: str, statement_start: int) -> list[str]:
-    range_match = re.match(r"^\s*(?:\[(\d+)\s*:\s*(\d+)\]\s*)?(.*)$", names_text, flags=re.S)
-    if range_match is None:
-        _raise_parse_error(full_text, statement_start, "Invalid declaration")
-
-    msb_text, lsb_text, raw_names = range_match.groups()
-    if ("[" in raw_names or "]" in raw_names) and msb_text is None:
-        _raise_parse_error(full_text, statement_start, "Bus range must appear before declared names")
-
-    names = [token.strip() for token in raw_names.replace("\n", " ").split(",")]
-    if not names or any(not name for name in names):
-        _raise_parse_error(full_text, statement_start, "Declaration contains an empty signal name")
-
-    for name in names:
-        if not _is_identifier(name):
-            _raise_parse_error(full_text, statement_start, f"Invalid signal name: {name}")
-
-    if msb_text is None:
-        return names
-
-    msb = int(msb_text)
-    lsb = int(lsb_text)
-    step = 1 if lsb <= msb else -1
-    bit_indexes = range(lsb, msb + step, step)
-    return [f"{name}[{index}]" for name in names for index in bit_indexes]
-
-
-def _parse_pin_list(pin_text: str, full_text: str, statement_start: int) -> list[str]:
-    pins = [token.strip() for token in pin_text.replace("\n", " ").split(",")]
-    if not pins or any(not pin for pin in pins):
-        _raise_parse_error(full_text, statement_start, "Primitive instance contains an empty pin")
-
-    for pin in pins:
-        if not _is_signal_or_constant(pin):
-            _raise_parse_error(full_text, statement_start, f"Invalid scalar pin: {pin}")
-    return pins
-
-
-def _validate_primitive_pins(
-    gate_type: str,
-    name: str,
-    pins: list[str],
-    full_text: str,
-    statement_start: int,
+def _add_yosys_builtin_cell(
+    design: Design,
+    cell_name: str,
+    cell_type: str,
+    connections: dict[str, list[Any]],
+    bit_names: dict[Any, str],
 ) -> None:
-    if pins[0] in _CONSTANTS:
-        _raise_parse_error(full_text, statement_start, f"Primitive {name} output cannot be a constant")
-
-    if gate_type in {"not", "buf"} and len(pins) != 2:
-        _raise_parse_error(
-            full_text,
-            statement_start,
-            f"Primitive {name} ({gate_type}) expects exactly 2 pins: output, input",
+    builtin_map = {
+        "$and": "and",
+        "$or": "or",
+        "$nand": "nand",
+        "$nor": "nor",
+        "$not": "not",
+        "$xor": "xor",
+        "$xnor": "xnor",
+    }
+    if cell_type in builtin_map:
+        gate_type = builtin_map[cell_type]
+        inputs = [_net_from_connection(connections["A"], bit_names)]
+        if "B" in connections:
+            inputs.append(_net_from_connection(connections["B"], bit_names))
+        output = _net_from_connection(connections["Y"], bit_names)
+        design.add_gate(Gate(name=_safe_cell_name(cell_name), type=gate_type, inputs=inputs, output=output))
+        return
+    if cell_type == "$dff":
+        design.add_dff(
+            DFF(
+                name=_safe_cell_name(cell_name),
+                q=_net_from_connection(connections["Q"], bit_names),
+                d=_net_from_connection(connections["D"], bit_names),
+                clk=_net_from_connection(connections["CLK"], bit_names),
+            )
         )
-    if gate_type not in {"not", "buf"} and len(pins) < 3:
-        _raise_parse_error(
-            full_text,
-            statement_start,
-            f"Primitive {name} ({gate_type}) expects at least 3 pins: output, input1, input2",
-        )
+        return
+    raise ValueError(f"Unsupported Yosys cell type in top module: {cell_type}")
 
 
-def _validate_dff_pins(name: str, pins: list[str], full_text: str, statement_start: int) -> None:
-    if len(pins) not in {3, 4}:
-        _raise_parse_error(
-            full_text,
-            statement_start,
-            f"DFF {name} expects 3 or 4 pins: q, d, clk[, rst]",
-        )
-    if pins[0] in _CONSTANTS:
-        _raise_parse_error(full_text, statement_start, f"DFF {name} q output cannot be a constant")
+def _build_bit_name_map(module: dict[str, Any]) -> dict[Any, str]:
+    bit_names: dict[Any, str] = {"0": "1'b0", "1": "1'b1", "x": "1'bx", "z": "1'bz"}
+    for name, net_info in module.get("netnames", {}).items():
+        if net_info.get("hide_name"):
+            continue
+        for bit, expanded_name in zip(net_info.get("bits", []), _expand_named_bits(name, net_info.get("bits", []))):
+            bit_names.setdefault(bit, expanded_name)
+    return bit_names
 
 
-def _is_identifier(value: str) -> bool:
-    return bool(_IDENT_RE.fullmatch(value))
+def _expand_named_bits(name: str, bits: list[Any]) -> list[str]:
+    if len(bits) <= 1:
+        return [name]
+    return [f"{name}[{index}]" for index in range(len(bits))]
 
 
-def _is_bit_select(value: str) -> bool:
-    return bool(_BIT_SELECT_RE.fullmatch(value))
+def _net_from_connection(bits: list[Any], bit_names: dict[Any, str]) -> str:
+    if len(bits) != 1:
+        raise ValueError(f"Expected scalar connection, got {bits}")
+    bit = bits[0]
+    if bit in bit_names:
+        return bit_names[bit]
+    return f"_yosys_bit_{bit}"
 
 
-def _is_signal_or_constant(value: str) -> bool:
-    return value in _CONSTANTS or _is_identifier(value) or _is_bit_select(value)
-
-
-def _raise_parse_error(text: str, index: int, message: str) -> None:
-    line = text.count("\n", 0, index) + 1
-    line_start = text.rfind("\n", 0, index) + 1
-    line_end = text.find("\n", index)
-    if line_end == -1:
-        line_end = len(text)
-    source_line = text[line_start:line_end].strip()
-    if source_line:
-        raise ValueError(f"Verilog parse error at line {line}: {message}. Source: {source_line}")
-    raise ValueError(f"Verilog parse error at line {line}: {message}")
+def _safe_cell_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_$]", "_", name)
+    if not safe or safe[0].isdigit():
+        safe = "U_" + safe
+    return safe

@@ -1,6 +1,7 @@
 # Tool API Specification
 
-The LLM agent may only request operations listed in this document.
+The LLM agent may only request operations listed in this document. The backend
+owns all parsing, graph analysis, transformation, optimization, and verification.
 
 The planner should output JSON with this shape:
 
@@ -24,11 +25,14 @@ For a single-step task, this is also accepted:
 }
 ```
 
+Each step may include `save_as` when the result should be stored in
+`state.previous_results` for a later request.
+
 ## 1. Testcase and IO Tools
 
 ### begin_testcase
 
-Initialize a new testcase.
+Initialize a new testcase and reset testcase-local state.
 
 Input:
 
@@ -41,15 +45,12 @@ Input:
 }
 ```
 
-Output summary:
+Effects:
 
-```json
-{
-  "ok": true,
-  "case_name": "test8",
-  "message": "Initialized testcase."
-}
-```
+- Reset current design state.
+- Clear saved previous results.
+- Reset response numbering for the new testcase.
+- Create `output/logs/<case_name>.log`.
 
 ### read_design
 
@@ -66,20 +67,16 @@ Input:
 }
 ```
 
-Output summary:
+Backend rules:
 
-```json
-{
-  "ok": true,
-  "module": "top",
-  "num_gates": 120,
-  "num_dffs": 10
-}
-```
+- Parse one flattened top module.
+- Support primitive gates, DFFs, wires, buses, and constants.
+- Rebuild driver and fanout maps after parsing.
+- Optional parser helpers such as Yosys or Lark may be used internally.
 
 ### write_design
 
-Write current design state to a Verilog file.
+Write current design state to a gate-level Verilog file.
 
 Input:
 
@@ -92,14 +89,11 @@ Input:
 }
 ```
 
-Output summary:
+Backend rules:
 
-```json
-{
-  "ok": true,
-  "path": "test8_out.v"
-}
-```
+- Output legal flattened gate-level Verilog.
+- Preserve the current transformed design state.
+- Create parent directories when needed.
 
 ## 2. Analysis Tools
 
@@ -120,23 +114,17 @@ Input:
 }
 ```
 
-Notes:
+Rules:
 
 - `avoid` is optional.
-- The path should not cross DFF boundaries unless explicitly enabled in future versions.
-
-Output summary:
-
-```json
-{
-  "ok": true,
-  "path": ["in0", "U1", "n1", "U2", "out3"]
-}
-```
+- The path must not cross DFF boundaries.
+- `avoid` may contain gate names or net names.
+- Return a counterexample path when answering a negative all-paths query.
 
 ### all_paths_pass_through
 
-Check whether every path from `src` to `dst` passes through `node`.
+Check whether every combinational path from `src` to `dst` passes through
+`node`.
 
 Input:
 
@@ -151,9 +139,12 @@ Input:
 }
 ```
 
-Implementation idea:
+Backend rule:
 
-Temporarily block `node`, then test whether `src` can still reach `dst`.
+- Temporarily block `node`.
+- If `dst` is still reachable from `src`, return `ok: false` and one path that
+  avoids `node`.
+- Otherwise return `ok: true`.
 
 ### max_depth
 
@@ -176,6 +167,7 @@ Depth convention:
 - Primary input to primary output with no gate has depth 0.
 - Each primitive gate counts as 1.
 - DFF is a sequential boundary and is not counted in combinational depth.
+- The result should include one longest path when available.
 
 ### logic_cone
 
@@ -188,18 +180,26 @@ Input:
   "op": "logic_cone",
   "args": {
     "target": "flag"
-  }
+  },
+  "save_as": "flag_cone"
 }
 ```
 
-Output summary:
+Output should include gate names and the number of gates in the cone.
+
+### report_outputs_by_cone_size
+
+Report primary outputs whose logic cone contains more than a threshold number of
+gates.
+
+Input:
 
 ```json
 {
-  "ok": true,
-  "target": "flag",
-  "gates": ["U1", "U2", "U3"],
-  "num_gates": 3
+  "op": "report_outputs_by_cone_size",
+  "args": {
+    "min_gates": 100
+  }
 }
 ```
 
@@ -226,7 +226,26 @@ Rules:
 - `name_contains` may be null.
 - If `save_as` exists, result is stored in `state.previous_results[save_as]`.
 
+### same_clock_domain
+
+Check whether two DFFs are under the same clock domain.
+
+Input:
+
+```json
+{
+  "op": "same_clock_domain",
+  "args": {
+    "dff_a": "dff1",
+    "dff_b": "dff2"
+  }
+}
+```
+
 ## 3. Transformation Tools
+
+Transformations must be transactional. A failed transformation must not modify
+the current design state.
 
 ### replace_buffers_with_and
 
@@ -265,7 +284,7 @@ buf U(out, in);
 becomes:
 
 ```verilog
-and U_repl(out, in, extra_input);
+and U(out, in, extra_input);
 ```
 
 ### remove_dangling
@@ -297,6 +316,7 @@ Input:
 Safety condition:
 
 - Intermediate net must have only the buffer as fanout.
+- The replacement must preserve the final output net value.
 
 ### replace_or_with_nand_not
 
@@ -326,6 +346,75 @@ not U_na(na, a);
 not U_nb(nb, b);
 nand U_nand(y, na, nb);
 ```
+
+### insert_buffers_for_fanout
+
+Insert buffer stages on a high-fanout net so every driven gate fanout is at most
+`max_fanout`.
+
+Input:
+
+```json
+{
+  "op": "insert_buffers_for_fanout",
+  "args": {
+    "net": "clk_en",
+    "max_fanout": 8
+  }
+}
+```
+
+Rules:
+
+- Preserve logical functionality.
+- Report number of inserted buffers and final maximum fanout.
+
+### balance_depth_with_buffers
+
+Add buffers to balance path depths from one source to multiple destinations.
+
+Input:
+
+```json
+{
+  "op": "balance_depth_with_buffers",
+  "args": {
+    "src": "A",
+    "dsts": ["B", "C", "D", "E"],
+    "minimize_buffers": true
+  }
+}
+```
+
+Rules:
+
+- Only insert buffers.
+- Preserve functionality.
+- Prefer the fewest inserted buffers that satisfy the requested balance.
+
+### optimize_cone
+
+Optimize the logic cone of a target under hard constraints.
+
+Input:
+
+```json
+{
+  "op": "optimize_cone",
+  "args": {
+    "target": "h",
+    "max_depth": 5,
+    "minimize_gate_count": true
+  }
+}
+```
+
+Rules:
+
+- Hard constraints must be satisfied first.
+- Gate count minimization is secondary.
+- Optional Yosys or ABC adapters may be used internally.
+- Equivalence must be checked before commit when functionality must be preserved.
 
 ## 4. Verification Tools
 
@@ -373,6 +462,50 @@ Input:
   }
 }
 ```
+
+### check_equivalence
+
+Check whether a Boolean expression is equivalent to a target net.
+
+Input:
+
+```json
+{
+  "op": "check_equivalence",
+  "args": {
+    "expr": "a & b",
+    "target": "z"
+  }
+}
+```
+
+Rules:
+
+- Encode the target combinational cone.
+- Use a Boolean solver such as Z3 when available.
+- Return a counterexample assignment when not equivalent.
+
+### check_property
+
+Check whether a target signal satisfies a Boolean property.
+
+Input:
+
+```json
+{
+  "op": "check_property",
+  "args": {
+    "target": "done",
+    "property": "done -> (req & !busy)"
+  }
+}
+```
+
+Rules:
+
+- Encode the relevant combinational cone.
+- Return `ok: true` if the property always holds.
+- Return `ok: false` with a counterexample if it does not hold.
 
 ## 5. Planner Output Examples
 
@@ -433,6 +566,48 @@ Planner output:
   "args": {
     "targets_from": "found_buffers",
     "extra_input": "_gc_ctrl"
+  }
+}
+```
+
+### Example 4
+
+Request:
+
+```text
+Does every path from A to B pass through C?
+```
+
+Planner output:
+
+```json
+{
+  "op": "all_paths_pass_through",
+  "args": {
+    "src": "A",
+    "dst": "B",
+    "node": "C"
+  }
+}
+```
+
+### Example 5
+
+Request:
+
+```text
+Optimize the logic cone of h so that the maximum depth is less than or equal to 5 and the gate count is minimized.
+```
+
+Planner output:
+
+```json
+{
+  "op": "optimize_cone",
+  "args": {
+    "target": "h",
+    "max_depth": 5,
+    "minimize_gate_count": true
   }
 }
 ```

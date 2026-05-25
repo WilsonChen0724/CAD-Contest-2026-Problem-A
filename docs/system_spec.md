@@ -2,47 +2,110 @@
 
 ## 1. Project Goal
 
-Build a system that accepts natural-language requests, translates them into deterministic EDA tool operations, executes those operations on the current gate-level Verilog design state, and returns analysis results or writes transformed netlists.
+Build a deterministic LLM-assisted EDA system for ICCAD Contest Problem A style
+netlist exploration and transformation.
 
-The LLM must not directly edit Verilog. The LLM should produce a structured plan using the allowed Tool API. The deterministic backend executes the plan.
+The system accepts natural-language requests from stdin, asks an LLM planner to
+translate each request into a validated Tool API plan, executes that plan on the
+current gate-level Verilog design state, and returns a concise response or writes
+a transformed netlist.
+
+The LLM must never directly edit Verilog. It may only request operations listed
+in `docs/tool_spec.md`. All parsing, graph analysis, transformation,
+optimization, and verification are performed by deterministic backend code.
 
 ## 2. High-Level Architecture
 
 ```text
 stdin request
-    ↓
+    |
+    v
 runtime/main loop
-    ↓
+    |
+    v
 agent/planner.py
-    ↓
-JSON-like tool plan
-    ↓
+    |
+    v
+validated Tool API JSON plan
+    |
+    v
 runtime/dispatcher.py
-    ↓
-eda backend
-    ↓
+    |
+    v
+eda backend + optional open-source helper adapters
+    |
+    v
 response formatter
-    ↓
-stdout + testcase log
+    |
+    v
+stdout + testcase log + optional output netlist
 ```
 
-## 3. Runtime Rules
+## 3. Open-Source Helper Strategy
 
-### 3.1 Program Invocation
+Open-source libraries and tools may be used as helpers, but they do not replace
+the project's public Tool API or persistent design state.
+
+### 3.1 Dependency Tiers
+
+Core Python helpers:
+
+- `networkx`: graph algorithms for reachability, path queries, cone traversal,
+  fanout analysis, and depth computation.
+- `z3-solver`: Boolean equivalence, property checking, and counterexample
+  generation for combinational cones.
+
+Optional parser helper:
+
+- `lark`: grammar-based parser for the contest Verilog subset if the handwritten
+  parser becomes too fragile.
+
+Optional external EDA helpers:
+
+- `yosys`: Verilog normalization, read/write sanity checks, and optional formal
+  checks.
+- `abc`: cone-level logic optimization experiments such as rewrite and balance.
+
+Reference-only or low-priority helpers:
+
+- `circuitgraph`: useful for prototyping graph/SAT ideas, but should not replace
+  the project IR.
+- `pyverilog`: useful as a parser/codegen reference, but not a primary dependency
+  unless Yosys is unavailable and Lark is insufficient.
+
+### 3.2 Integration Rules
+
+- The backend owns the canonical `Design` IR.
+- External tools may be called only through explicit adapter modules, such as
+  `parser/yosys_adapter.py` or `eda/abc_adapter.py`.
+- External tool output must be parsed back into the project IR before any later
+  Tool API operation uses it.
+- Every transformation that uses an optional helper must run project-level
+  verification before committing the modified design state.
+- The system must still support a basic pure-Python path for core contest tasks
+  if optional binaries are unavailable in the evaluation environment.
+
+## 4. Runtime Rules
+
+### 4.1 Program Invocation
 
 The executable should support:
 
 ```bash
-./cada0001_alpha -config <config_file_path>
+./cada1070_alpha -config <config_file_path>
 ```
 
-### 3.2 Input Mode
+If the official team number changes, only the executable name should change; the
+runtime behavior must stay the same.
+
+### 4.2 Input Mode
 
 The program reads natural-language requests from stdin line by line.
 
-Each non-empty line is treated as one request.
+Each non-empty line is treated as one request. The next request may arrive only
+after stdout contains the matching `#END <id>` tag for the current response.
 
-### 3.3 Output Format
+### 4.3 Output Format
 
 For request id `N`, stdout must be:
 
@@ -52,17 +115,37 @@ For request id `N`, stdout must be:
 #END N
 ```
 
-The same response block must also be appended to the current testcase log file if a testcase is active.
+The same response block must also be appended to the current testcase log file if
+a testcase is active.
 
-### 3.4 Testcase State
+### 4.4 Testcase State
 
 Each testcase has one evolving design state.
 
-Every transformation modifies the current design. Later requests operate on the modified design, not the original design.
+When `begin_testcase` is executed:
 
-## 4. Internal Representation
+- `state.testcase` is set to the new testcase name.
+- `state.response_id` is reset to 1.
+- `state.design` is cleared.
+- `state.previous_results` is cleared.
+- `output/logs/<case_name>.log` is created or overwritten.
 
-### 4.1 Gate
+Every successful transformation modifies the current design. Later requests
+operate on the modified design, not the original design.
+
+### 4.5 Transformation Transactions
+
+Transformations must be transactional:
+
+- Validate arguments before modifying the design.
+- Work on a copy or rollback-capable representation.
+- Run required structural checks after editing.
+- Commit the modified design only if hard requirements pass.
+- Return a clear rejection if the transformation cannot be safely applied.
+
+## 5. Internal Representation
+
+### 5.1 Gate
 
 ```python
 @dataclass
@@ -74,13 +157,16 @@ class Gate:
     attrs: dict[str, str] = field(default_factory=dict)
 ```
 
-Allowed primitive gate types in the first milestone:
+Allowed primitive gate types:
 
 ```text
 and, or, nand, nor, not, buf, xor, xnor
 ```
 
-### 4.2 DFF
+All primitive gates have two inputs and one output except `buf` and `not`, which
+have one input and one output.
+
+### 5.2 DFF
 
 ```python
 @dataclass
@@ -94,7 +180,10 @@ class DFF:
     attrs: dict[str, str] = field(default_factory=dict)
 ```
 
-### 4.3 Design
+DFFs are sequential boundaries for combinational path, cone, equivalence, and
+depth analysis unless a future tool explicitly asks for sequential reasoning.
+
+### 5.3 Design
 
 ```python
 @dataclass
@@ -109,7 +198,10 @@ class Design:
     fanouts: dict[str, list[str]]
 ```
 
-### 4.4 Driver/Fanout Convention
+Bus signals should be represented internally as bit-level scalar nets, using a
+stable naming convention such as `a[0]`, `a[1]`, and so on.
+
+### 5.4 Driver/Fanout Convention
 
 `drivers[net]` maps a net name to one driver id.
 
@@ -133,24 +225,38 @@ GATE:<inst>     gate input sink
 DFF:<inst>      dff d/clk/rst input sink
 ```
 
-## 5. Netlist Scope for MVP
+## 6. Supported Netlist Scope
 
-The first milestone assumes:
+The target contest subset is:
 
-- One top module.
-- Flattened gate-level Verilog.
-- Positional primitive instances, such as `and U1(y, a, b);`.
-- Scalar signals first.
-- Bus support can be added after scalar parser works.
-- Constants `1'b0` and `1'b1` are accepted as nets with constant drivers.
+- One flattened top module.
+- Primitive gate instances with positional pins.
+- DFF instances using the contest DFF model.
+- Scalar and bus inputs, outputs, and wires.
+- Constants `1'b0` and `1'b1`.
+- No hierarchy after parsing.
 
-## 6. Agent Rule
+The pure-Python implementation should support the contest subset directly. Yosys
+may be used as a normalization helper when available.
 
-The LLM agent must return only a JSON object or JSON list using the Tool API in `docs/tool_spec.md`.
+## 7. Agent Rules
 
-The backend must validate every tool call before execution.
+The LLM planner must return only a JSON object or JSON list using the Tool API in
+`docs/tool_spec.md`.
 
-## 7. Error Handling
+The backend must validate every tool call before execution. Validation includes:
+
+- Known operation name.
+- Required arguments.
+- Argument types.
+- Existing design state when required.
+- Existing saved result keys when `targets_from` or similar references are used.
+
+If the LLM returns invalid JSON or an invalid tool call, the planner may attempt
+one repair pass. If repair fails, the request is rejected with the unsupported
+request message.
+
+## 8. Error Handling
 
 For unsupported or ambiguous requests:
 
@@ -170,14 +276,49 @@ For missing design state:
 No design has been loaded yet.
 ```
 
-## 8. Day1 Completion Definition
+For a failed transformation:
 
-Day1 is complete when:
+```text
+Transformation rejected: <reason>
+```
 
-- The repository structure exists.
-- `docs/system_spec.md` exists.
-- `docs/tool_spec.md` exists.
-- `eda/design.py` defines the IR.
-- `runtime/state.py` defines current testcase state.
-- `main.py` can read stdin and print valid response blocks.
-- `cada0001_alpha` runs the program.
+## 9. Milestones
+
+### M0: Skeleton Stabilization
+
+- Repository structure exists.
+- Core docs exist.
+- CLI reads stdin and emits valid response blocks.
+- Testcase logging works.
+- MVP parser, writer, dispatcher, and smoke test exist.
+
+### M1: Basic Contest Pass
+
+- Scalar and bus gate-level parser works.
+- DFFs are represented as sequential boundaries.
+- Read/write, path, path avoidance, all-paths-through, max-depth, cone, and gate
+  search tools work.
+- Basic transformations work: buffer-to-AND, dangling removal, inverter-buffer
+  merge, OR-to-NAND/NOT.
+
+### M2: Formal Verification
+
+- Z3-based combinational cone encoding works.
+- Equivalence and property checks are supported.
+- Transformations run structural and equivalence checks before commit when
+  functionality must be preserved.
+
+### M3: Optimization
+
+- Fanout buffer insertion supports hard fanout bounds.
+- Depth balancing supports buffer insertion with minimal or near-minimal changes.
+- Cone optimization can reduce gate count under hard depth or functionality
+  constraints.
+- Optional Yosys/ABC adapters may be used when available.
+
+### M4: Submission Hardening
+
+- LLM planner supports schema validation and one repair pass.
+- Timeouts and graceful fallback paths exist.
+- Regression tests cover PDF-style examples.
+- Config files never expose API keys.

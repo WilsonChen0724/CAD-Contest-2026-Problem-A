@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,7 +35,20 @@ def main() -> int:
         default="rule",
         help="rule: deterministic planner; llm: direct LLM planner; hybrid: rule first, LLM fallback",
     )
+    parser.add_argument(
+        "--ensure-yosys",
+        action="store_true",
+        help="ensure a local or system Yosys is available before reading requests",
+    )
+    parser.add_argument(
+        "--force-yosys-install",
+        action="store_true",
+        help="reinstall the local OSS CAD Suite when used with --ensure-yosys",
+    )
     args = parser.parse_args()
+
+    if args.ensure_yosys:
+        _ensure_yosys_available(force=args.force_yosys_install)
 
     config = load_config(args.config)
     state = CurrentState()
@@ -78,6 +94,52 @@ def _make_plan(request: str, state: CurrentState, config: dict, prompt: str, pla
 
 def _load_prompt() -> str:
     return (Path(__file__).parent / "agent" / "prompt.txt").read_text(encoding="utf-8")
+
+
+def _ensure_yosys_available(force: bool = False) -> None:
+    """
+    Ensure Yosys is available before the stdin response loop starts.
+
+    Installer output is routed to stderr so contest response blocks on stdout
+    remain clean.
+    """
+    repo_root = Path(__file__).resolve().parent
+    local_bin_dir = repo_root / "third_party" / "yosys" / "oss-cad-suite" / "bin"
+    local_yosys = local_bin_dir / ("yosys.exe" if os.name == "nt" else "yosys")
+
+    if not force:
+        system_yosys = shutil.which("yosys")
+        if system_yosys:
+            print(f"Yosys found: {system_yosys}", file=sys.stderr)
+            return
+
+        if local_yosys.exists():
+            os.environ["PATH"] = str(local_bin_dir) + os.pathsep + os.environ.get("PATH", "")
+            print(f"Using local Yosys: {local_yosys}", file=sys.stderr)
+            return
+
+    installer = repo_root / "scripts" / "install_yosys.py"
+    command = [sys.executable, str(installer)]
+    if force:
+        command.append("--force")
+
+    print("Yosys not found; installing local OSS CAD Suite...", file=sys.stderr)
+    completed = subprocess.run(
+        command,
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+    )
+    if completed.stdout:
+        print(completed.stdout, file=sys.stderr, end="")
+    if completed.stderr:
+        print(completed.stderr, file=sys.stderr, end="")
+    if completed.returncode != 0:
+        raise RuntimeError(f"Yosys installation failed with exit code {completed.returncode}.")
+
+    os.environ["PATH"] = str(local_bin_dir) + os.pathsep + os.environ.get("PATH", "")
+    if shutil.which("yosys") is None:
+        raise RuntimeError("Yosys installation finished, but yosys is still not available on PATH.")
 
 
 if __name__ == "__main__":
