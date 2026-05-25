@@ -67,9 +67,12 @@ These operations are wired through both the plan checker and dispatcher:
 - `read_design`
 - `write_design`
 - `find_path`
+- `all_paths_pass_through`
 - `max_depth`
 - `logic_cone`
+- `report_outputs_by_cone_size`
 - `find_gates`
+- `same_clock_domain`
 - `replace_buffers_with_and`
 - `check_connectivity`
 - `check_fanout`
@@ -108,10 +111,10 @@ The current backend includes:
 - depth-bound checking,
 - connectivity checking for missing and duplicate drivers.
 
-Additional analysis helpers exist in `eda/analysis.py` for fanout cones, primary
-output cone sizes, all-paths-through checks, and DFF relationship reports.
-Some of these are tested internally but are not yet exposed as dispatcher Tool
-API operations in v0.3.0.
+Additional analysis helpers exist in `eda/analysis.py` for fanout cones and
+related structural reports. Primary-output cone-size reports,
+all-paths-through checks, and same-clock-domain DFF checks are exposed through
+the dispatcher Tool API.
 
 ### Transformation
 
@@ -240,8 +243,8 @@ and Tool API safety boundary.
 
 ## Known Limits in v0.3.0
 
-- The dispatcher exposes only the implemented operation list above, even though
-  `docs/tool_spec.md` describes the broader contest target.
+- The dispatcher exposes the implemented operation list above, while
+  `docs/tool_spec.md` still describes a broader contest target.
 - Formal equivalence and property checking are not implemented yet.
 - Fanout-buffer insertion, depth balancing, and cone optimization are not
   implemented yet.

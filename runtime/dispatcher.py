@@ -6,7 +6,14 @@ from typing import Any
 from runtime.state import CurrentState
 from parser.verilog_parser import parse_verilog
 from parser.verilog_writer import write_verilog
-from eda.analysis import find_gates, find_path, max_depth, logic_cone
+from eda.analysis import (
+    all_paths_pass_through,
+    find_gates,
+    find_path,
+    logic_cone,
+    max_depth,
+    primary_output_cone_sizes,
+)
 from eda.transform import replace_buffers_with_and
 from eda.verify import check_connectivity, check_fanout, check_depth
 
@@ -16,8 +23,11 @@ SUPPORTED_OPS = {
     "write_design",
     "find_gates",
     "find_path",
+    "all_paths_pass_through",
     "max_depth",
     "logic_cone",
+    "report_outputs_by_cone_size",
+    "same_clock_domain",
     "replace_buffers_with_and",
     "check_connectivity",
     "check_fanout",
@@ -31,8 +41,11 @@ REQUIRED_ARGS = {
     "write_design": ("path",),
     "find_gates": (),
     "find_path": ("src", "dst"),
+    "all_paths_pass_through": ("src", "dst", "node"),
     "max_depth": ("src", "dst"),
     "logic_cone": ("target",),
+    "report_outputs_by_cone_size": ("min_gates",),
+    "same_clock_domain": ("dff_a", "dff_b"),
     "replace_buffers_with_and": ("extra_input",),
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
@@ -113,6 +126,36 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             return f'No path found from "{args["src"]}" to "{args["dst"]}".'
         return "Found path:\n" + " -> ".join(path)
 
+    if op == "all_paths_pass_through":
+        _require_design(state)
+        ok = all_paths_pass_through(
+            state.design,
+            src=args["src"],
+            dst=args["dst"],
+            node=args["node"],
+        )
+        if ok:
+            return (
+                f'Yes. Every combinational path from "{args["src"]}" '
+                f'to "{args["dst"]}" passes through "{args["node"]}".'
+            )
+        avoiding_path = find_path(
+            state.design,
+            src=args["src"],
+            dst=args["dst"],
+            avoid=[args["node"]],
+        )
+        if avoiding_path:
+            return (
+                f'No. There is a combinational path from "{args["src"]}" '
+                f'to "{args["dst"]}" that avoids "{args["node"]}":\n'
+                + " -> ".join(avoiding_path)
+            )
+        return (
+            f'No. No combinational path from "{args["src"]}" '
+            f'to "{args["dst"]}" was found.'
+        )
+
     if op == "max_depth":
         _require_design(state)
         depth, path = max_depth(state.design, args["src"], args["dst"])
@@ -127,6 +170,40 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if save_as:
             state.remember_result(save_as, gates, kind="gate_list")
         return f'Logic cone of "{args["target"]}" contains {len(gates)} gates:\n' + "\n".join(gates)
+
+    if op == "report_outputs_by_cone_size":
+        _require_design(state)
+        min_gates = args["min_gates"]
+        report = primary_output_cone_sizes(state.design)
+        matched = [
+            (output, item["num_gates"])
+            for output, item in sorted(report.items())
+            if item["num_gates"] > min_gates
+        ]
+        if not matched:
+            return f"No primary outputs have logic cones with more than {min_gates} gates."
+        lines = [f"Primary outputs with logic cones larger than {min_gates} gates:"]
+        for output, num_gates in matched:
+            lines.append(f"- {output}: {num_gates} gates")
+        return "\n".join(lines)
+
+    if op == "same_clock_domain":
+        _require_design(state)
+        dff_a = state.design.dffs.get(args["dff_a"])
+        dff_b = state.design.dffs.get(args["dff_b"])
+        if dff_a is None:
+            raise ValueError(f'DFF not found: {args["dff_a"]}')
+        if dff_b is None:
+            raise ValueError(f'DFF not found: {args["dff_b"]}')
+        if dff_a.clk == dff_b.clk:
+            return (
+                f'Yes. "{args["dff_a"]}" and "{args["dff_b"]}" '
+                f'are in the same clock domain "{dff_a.clk}".'
+            )
+        return (
+            f'No. "{args["dff_a"]}" uses clock "{dff_a.clk}", '
+            f'while "{args["dff_b"]}" uses clock "{dff_b.clk}".'
+        )
 
     if op == "replace_buffers_with_and":
         _require_design(state)

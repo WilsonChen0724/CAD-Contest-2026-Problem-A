@@ -35,7 +35,10 @@ Common mappings:
 - Replace the found buffers with AND -> replace_buffers_with_and with {"targets_from": "found_buffers", "extra_input": "_gc_ctrl"}.
 - Maximum logic depth from input A to output B -> max_depth with {"src": "A", "dst": "B"}.
 - Find a path from A to B -> find_path with {"src": "A", "dst": "B"}.
+- Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.
 - Fanin cone of target T -> logic_cone with {"target": "T"}.
+- Report primary outputs whose logic cone contains more than N gates -> report_outputs_by_cone_size with {"min_gates": N}.
+- Check whether DFF A and DFF B are in the same clock domain -> same_clock_domain with {"dff_a": "A", "dff_b": "B"}.
 - Check connectivity -> check_connectivity with {}.
 - Check fanout <= N -> check_fanout with {"max_fanout": N}.
 - Check depth from A to B <= N -> check_depth with {"src": "A", "dst": "B", "max_depth": N}.

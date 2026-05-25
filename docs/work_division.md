@@ -16,14 +16,22 @@ M0 skeleton is mostly complete:
 - Planner is currently rule-based and should be replaced or supplemented by an
   LLM planner.
 
+> v0.3.0 note: the main branch has moved beyond this original M0 snapshot.
+> The parser/writer path is now Yosys-backed, the LLM planner and plan checker
+> exist, max-depth and connectivity checks have been strengthened, and the
+> default smoke flow passes when Yosys is available.
+
 Known gaps:
 
-- Parser is regex-based and mostly scalar-only.
-- DFF parsing/writing is incomplete.
-- `max_depth` is not yet a true longest-path implementation.
-- Several transformation tools are placeholders.
+- Parser/writer behavior now depends on Yosys availability in the local or
+  evaluation environment.
+- The first batch of extra analysis helpers has been exposed through
+  `agent/plan_checker.py`, `agent/planner.py`, and `runtime/dispatcher.py`:
+  all-paths-through, primary-output cone-size reports, and same-clock-domain
+  DFF checks.
+- Several transformation tools are still placeholders.
 - Formal equivalence/property checking is not implemented.
-- Tool call validation is not strict enough yet.
+- Optimization tasks are not implemented yet.
 
 ## Person A: EDA Core / Parser / Graph
 

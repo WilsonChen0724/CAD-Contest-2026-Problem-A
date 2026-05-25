@@ -34,6 +34,17 @@ class PlanCheckerTest(unittest.TestCase):
 
         self.assertEqual(plan["op"], "unsupported")
 
+    def test_accepts_new_analysis_operations(self) -> None:
+        plans = [
+            {"op": "all_paths_pass_through", "args": {"src": "A", "dst": "B", "node": "C"}},
+            {"op": "report_outputs_by_cone_size", "args": {"min_gates": 100}},
+            {"op": "same_clock_domain", "args": {"dff_a": "FF0", "dff_b": "FF1"}},
+        ]
+
+        for plan in plans:
+            with self.subTest(op=plan["op"]):
+                self.assertEqual(validate_plan(plan), plan)
+
 
 if __name__ == "__main__":
     unittest.main()

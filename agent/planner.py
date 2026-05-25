@@ -9,9 +9,12 @@ SUPPORTED_OPS = {
     "read_design",
     "write_design",
     "find_path",
+    "all_paths_pass_through",
     "max_depth",
     "logic_cone",
+    "report_outputs_by_cone_size",
     "find_gates",
+    "same_clock_domain",
     "replace_buffers_with_and",
     "check_connectivity",
     "check_fanout",
@@ -194,11 +197,33 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
             plan["save_as"] = "found_buffers"
         return plan
 
+    if (
+        ("primary output" in low or "primary outputs" in low or "outputs" in low)
+        and ("logic cone" in low or "fanin cone" in low or "fan-in cone" in low)
+        and any(word in low for word in ("more than", "greater than", "over", "larger than", "contains"))
+    ):
+        min_gates = _extract_limit_int(text)
+        if min_gates is not None:
+            return {"op": "report_outputs_by_cone_size", "args": {"min_gates": min_gates}}
+
+    if "clock domain" in low:
+        dff_pair = _extract_dff_pair(text)
+        if dff_pair:
+            dff_a, dff_b = dff_pair
+            return {"op": "same_clock_domain", "args": {"dff_a": dff_a, "dff_b": dff_b}}
+
     if "logic cone" in low or "fanin cone" in low or "fan-in cone" in low:
         target = _extract_after_keyword(text, "of") or _extract_after_keyword(text, "for")
         target = target or _extract_after_keyword(text, "target")
         if target:
             return {"op": "logic_cone", "args": {"target": target}}
+
+    if "every" in low and "path" in low and "from" in low and "to" in low and "through" in low:
+        endpoints = _extract_src_dst(text)
+        node = _extract_after_keyword(text, "through")
+        if endpoints and node:
+            src, dst = endpoints
+            return {"op": "all_paths_pass_through", "args": {"src": src, "dst": dst, "node": node}}
 
     if "maximum logic depth" in low or "max logic depth" in low or "max depth" in low:
         endpoints = _extract_src_dst(text)
@@ -393,6 +418,35 @@ def _extract_avoid_list(text: str) -> list[str]:
         for token in (_clean_token(part) for part in re.split(r"[,\s]+", match.group(1)))
         if token and token.lower() not in {"and", "or"}
     ]
+
+
+def _extract_dff_pair(text: str) -> tuple[str, str] | None:
+    tokens = re.findall(_SIGNAL_RE, text)
+    stop_words = {
+        "does",
+        "do",
+        "are",
+        "is",
+        "and",
+        "under",
+        "same",
+        "clock",
+        "domain",
+        "domains",
+        "flip",
+        "flop",
+        "flipflop",
+        "dff",
+        "dffs",
+    }
+    candidates = [
+        token
+        for token in tokens
+        if token.lower() not in stop_words and re.search(r"(?:^|_)d?ff|dff|\bff", token, flags=re.I)
+    ]
+    if len(candidates) >= 2:
+        return candidates[0], candidates[1]
+    return None
 
 
 def _extract_int_after(text: str, keyword: str) -> int | None:
