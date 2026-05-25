@@ -30,7 +30,9 @@ Known gaps:
   all-paths-through, primary-output cone-size reports, and same-clock-domain
   DFF checks.
 - Several transformation tools are still placeholders.
-- Formal equivalence/property checking is not implemented.
+- Combinational equivalence/property checking is now implemented for the first
+  Tool API version. It uses `z3-solver` when installed and a small brute-force
+  fallback otherwise.
 - Optimization tasks are not implemented yet.
 
 ## Person A: EDA Core / Parser / Graph

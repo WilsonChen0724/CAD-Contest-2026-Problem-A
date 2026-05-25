@@ -36,6 +36,19 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "replace_or_with_nand_not", "args": {"cone_target": "flag"}})
 
+    def test_maps_equivalence_check(self) -> None:
+        plan = plan_request("Check whether (a & b) is equivalent to z.", None)
+
+        self.assertEqual(plan, {"op": "check_equivalence", "args": {"expr": "(a & b)", "target": "z"}})
+
+    def test_maps_asserted_only_when_property(self) -> None:
+        plan = plan_request("For output done, verify that it is asserted only when both req is 1 and busy is 0.", None)
+
+        self.assertEqual(
+            plan,
+            {"op": "check_property", "args": {"target": "done", "property": "done -> (req & !busy)"}},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

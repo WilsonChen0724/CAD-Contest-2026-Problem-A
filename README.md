@@ -80,6 +80,8 @@ These operations are wired through both the plan checker and dispatcher:
 - `check_connectivity`
 - `check_fanout`
 - `check_depth`
+- `check_equivalence`
+- `check_property`
 - `unsupported`
 
 Multi-step plans with a top-level `steps` array are supported. A step may use
@@ -113,6 +115,8 @@ The current backend includes:
 - fanout-bound checking,
 - depth-bound checking,
 - connectivity checking for missing and duplicate drivers.
+- combinational equivalence/property checking, using `z3-solver` when
+  installed and a small brute-force fallback otherwise.
 
 Additional analysis helpers exist in `eda/analysis.py` for fanout cones and
 related structural reports. Primary-output cone-size reports,
@@ -238,8 +242,9 @@ Open-source tools may be used behind deterministic adapters. The canonical
 design state remains the project `Design` IR.
 
 - Yosys is the current parser/writer syntax and normalization helper.
-- `networkx` and `z3-solver` remain recommended future helpers for graph and
-  formal tasks.
+- `networkx` remains a recommended future helper for graph tasks.
+- `z3-solver` is used for formal tasks when installed; otherwise small checks
+  fall back to brute-force enumeration.
 - Optional future optimization adapters may use Yosys or ABC, but any
   function-preserving transformation should verify before commit.
 
@@ -250,7 +255,8 @@ and Tool API safety boundary.
 
 - The dispatcher exposes the implemented operation list above, while
   `docs/tool_spec.md` still describes a broader contest target.
-- Formal equivalence and property checking are not implemented yet.
+- Formal checks are combinational-only in this version. Sequential
+  unrolling/property checking is not implemented yet.
 - Fanout-buffer insertion, depth balancing, and general cone optimization are
   not implemented yet.
 - The writer emits a normalized flattened primitive style instead of preserving

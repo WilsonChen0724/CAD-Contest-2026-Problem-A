@@ -123,6 +123,23 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(state.design.gates["U_buf"].type, "not")
         self.assertEqual(state.design.gates["U_or"].type, "nand")
 
+    def test_dispatcher_runs_formal_checks(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
+        state.design.add_gate(Gate(name="U1", type="and", inputs=["a", "b"], output="z"))
+
+        equivalence = dispatch_plan(
+            state,
+            {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
+        )
+        prop = dispatch_plan(
+            state,
+            {"op": "check_property", "args": {"target": "z", "property": "z -> a"}},
+        )
+
+        self.assertIn("'ok': True", equivalence)
+        self.assertIn("'ok': True", prop)
+
 
 if __name__ == "__main__":
     unittest.main()

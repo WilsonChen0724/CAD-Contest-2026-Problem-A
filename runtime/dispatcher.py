@@ -21,7 +21,13 @@ from eda.transform import (
     replace_inv_buf_with_inv,
     replace_or_with_nand_not,
 )
-from eda.verify import check_connectivity, check_fanout, check_depth
+from eda.verify import (
+    check_connectivity,
+    check_depth,
+    check_equivalence,
+    check_fanout,
+    check_property,
+)
 
 SUPPORTED_OPS = {
     "begin_testcase",
@@ -41,6 +47,8 @@ SUPPORTED_OPS = {
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalence",
+    "check_property",
     "unsupported",
 }
 
@@ -62,6 +70,8 @@ REQUIRED_ARGS = {
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
     "check_depth": ("src", "dst", "max_depth"),
+    "check_equivalence": ("expr", "target"),
+    "check_property": ("target", "property"),
     "unsupported": ("reason",),
 }
 
@@ -270,6 +280,14 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "check_depth":
         _require_design(state)
         return str(check_depth(state.design, args["src"], args["dst"], args["max_depth"]))
+
+    if op == "check_equivalence":
+        _require_design(state)
+        return str(check_equivalence(state.design, args["expr"], args["target"]))
+
+    if op == "check_property":
+        _require_design(state)
+        return str(check_property(state.design, args["target"], args["property"]))
 
     raise ValueError(f"Unsupported operation: {op}")
 

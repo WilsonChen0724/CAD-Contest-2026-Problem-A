@@ -26,6 +26,8 @@ SUPPORTED_OPS = {
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalence",
+    "check_property",
     "unsupported",
 }
 
@@ -47,6 +49,8 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "check_connectivity": {},
     "check_fanout": {"max_fanout": int},
     "check_depth": {"src": str, "dst": str, "max_depth": int},
+    "check_equivalence": {"expr": str, "target": str},
+    "check_property": {"target": str, "property": str},
     "unsupported": {"reason": str},
 }
 

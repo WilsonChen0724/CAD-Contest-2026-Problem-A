@@ -45,6 +45,8 @@ Common mappings:
 - Check connectivity -> check_connectivity with {}.
 - Check fanout <= N -> check_fanout with {"max_fanout": N}.
 - Check depth from A to B <= N -> check_depth with {"src": "A", "dst": "B", "max_depth": N}.
+- Check whether expression E is equivalent to target T -> check_equivalence with {"expr": "E", "target": "T"}.
+- Check whether target T satisfies property P -> check_property with {"target": "T", "property": "P"}.
 
 Important state conventions:
 - If a previous find_gates result should be reused, reference it with {"targets_from": "found_buffers"}.

@@ -22,6 +22,8 @@ SUPPORTED_OPS = {
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalence",
+    "check_property",
 }
 
 _SIGNAL_RE = r"[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?"
@@ -291,6 +293,18 @@ def _plan_verification(text: str, low: str) -> dict[str, Any] | None:
     if "connectivity" in low or "connection" in low or "floating" in low or "driver" in low:
         return {"op": "check_connectivity", "args": {}}
 
+    if "equivalent" in low or "equivalence" in low:
+        equivalence = _extract_equivalence(text)
+        if equivalence:
+            expr, target = equivalence
+            return {"op": "check_equivalence", "args": {"expr": expr, "target": target}}
+
+    if "property" in low or "asserted only when" in low or "only when" in low:
+        prop = _extract_property(text)
+        if prop:
+            target, property_text = prop
+            return {"op": "check_property", "args": {"target": target, "property": property_text}}
+
     if "fanout" in low or "fan-out" in low:
         max_fanout = _extract_limit_int(text)
         if max_fanout is None:
@@ -471,6 +485,67 @@ def _extract_dff_pair(text: str) -> tuple[str, str] | None:
     if len(candidates) >= 2:
         return candidates[0], candidates[1]
     return None
+
+
+def _extract_equivalence(text: str) -> tuple[str, str] | None:
+    quoted_expr = _extract_quoted_text(text)
+    target = _extract_after_keyword(text, "to") or _extract_after_keyword(text, "target")
+    if quoted_expr and target:
+        return quoted_expr, target
+
+    match = re.search(
+        rf"(?:is|whether|verify|check|such\s+that)\s*(.+?)\s+"
+        rf"(?:is\s+)?equivalent\s+to\s+(?:signal\s+|net\s+)?({_SIGNAL_RE})",
+        text,
+        flags=re.I,
+    )
+    if match:
+        expr = _normalize_boolean_expr(match.group(1))
+        return expr, match.group(2)
+
+    match = re.search(
+        rf"(?:is|whether|verify|check)\s+(?:signal\s+|net\s+)?({_SIGNAL_RE})\s+"
+        rf"(?:is\s+)?equivalent\s+to\s+(.+)",
+        text,
+        flags=re.I,
+    )
+    if match:
+        return _normalize_boolean_expr(match.group(2)), match.group(1)
+    return None
+
+
+def _extract_property(text: str) -> tuple[str, str] | None:
+    match = re.search(
+        rf"(?:for\s+)?(?:output\s+|signal\s+|net\s+)?({_SIGNAL_RE}).*?"
+        rf"asserted\s+only\s+when\s+(.+)",
+        text,
+        flags=re.I,
+    )
+    if match:
+        target = match.group(1)
+        condition = _normalize_boolean_expr(match.group(2))
+        return target, f"{target} -> ({condition})"
+
+    quoted = _extract_quoted_text(text)
+    target = _extract_after_keyword(text, "target") or _extract_after_keyword(text, "for")
+    if quoted and target:
+        return target, quoted
+    return None
+
+
+def _normalize_boolean_expr(text: str) -> str:
+    expr = text.strip().strip("?.")
+    expr = re.sub(r"^(?:whether|that)\s+", "", expr, flags=re.I)
+    expr = re.sub(rf"\b({_SIGNAL_RE})\s+is\s+1\b", r"\1", expr, flags=re.I)
+    expr = re.sub(rf"\b({_SIGNAL_RE})\s+is\s+0\b", r"!\1", expr, flags=re.I)
+    expr = re.sub(r"\bboth\b", "", expr, flags=re.I)
+    expr = re.sub(r"\band\b", "&", expr, flags=re.I)
+    expr = re.sub(r"\bor\b", "|", expr, flags=re.I)
+    expr = re.sub(r"\bnot\b", "!", expr, flags=re.I)
+    expr = re.sub(r"\bis\s+equivalent\s+to\b", "", expr, flags=re.I)
+    expr = expr.replace("&&", "&").replace("||", "|")
+    expr = re.sub(r"\s+", " ", expr)
+    return expr.strip()
 
 
 def _extract_int_after(text: str, keyword: str) -> int | None:
