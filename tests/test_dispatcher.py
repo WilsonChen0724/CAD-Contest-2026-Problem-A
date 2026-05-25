@@ -82,6 +82,47 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("U_dead", cleanup)
         self.assertNotIn("U_dead", state.design.gates)
 
+    def test_transform_rejects_invalid_candidate_without_polluting_state(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_buf", type="buf", inputs=["a"], output="y"))
+
+        with self.assertRaisesRegex(RuntimeError, "Transformation rejected"):
+            dispatch_plan(
+                state,
+                {"op": "replace_buffers_with_and", "args": {"targets": ["U_buf"], "extra_input": "missing_ctrl"}},
+            )
+
+        self.assertEqual(state.design.gates["U_buf"].type, "buf")
+        self.assertEqual(state.design.gates["U_buf"].inputs, ["a"])
+
+    def test_multi_step_transform_plan_operates_on_evolving_state(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_inv", type="not", inputs=["a"], output="n_mid"))
+        state.design.add_gate(Gate(name="U_buf", type="buf", inputs=["n_mid"], output="n_or"))
+        state.design.add_gate(Gate(name="U_or", type="or", inputs=["n_or", "b"], output="y"))
+        state.design.add_gate(Gate(name="U_dead", type="buf", inputs=["b"], output="dead"))
+
+        body = dispatch_plan(
+            state,
+            {
+                "steps": [
+                    {"op": "replace_inv_buf_with_inv", "args": {}},
+                    {"op": "replace_or_with_nand_not", "args": {"cone_target": "y"}},
+                    {"op": "remove_dangling", "args": {}},
+                    {"op": "check_connectivity", "args": {}},
+                ]
+            },
+        )
+
+        self.assertIn("Replaced 1 inverter-buffer", body)
+        self.assertIn("Replaced 1 OR gate", body)
+        self.assertIn("'ok': True", body)
+        self.assertNotIn("U_dead", state.design.gates)
+        self.assertEqual(state.design.gates["U_buf"].type, "not")
+        self.assertEqual(state.design.gates["U_or"].type, "nand")
+
 
 if __name__ == "__main__":
     unittest.main()

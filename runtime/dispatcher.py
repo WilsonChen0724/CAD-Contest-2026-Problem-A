@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -225,8 +226,9 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             raise ValueError('Tool call rejected: "targets" or "targets_from" is required.')
         if not isinstance(targets, list) or not all(isinstance(item, str) for item in targets):
             raise ValueError('Tool call rejected: "targets" must be a list of gate names.')
-        result = replace_buffers_with_and(
-            state.design,
+        result = _run_transactional_transform(
+            state,
+            replace_buffers_with_and,
             targets=targets,
             extra_input=args["extra_input"],
         )
@@ -234,7 +236,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "remove_dangling":
         _require_design(state)
-        result = remove_dangling(state.design)
+        result = _run_transactional_transform(state, remove_dangling)
         return (
             "Removed dangling logic: "
             f'{result["num_removed_gates"]} gate(s), '
@@ -246,12 +248,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_inv_buf_with_inv":
         _require_design(state)
-        result = replace_inv_buf_with_inv(state.design)
+        result = _run_transactional_transform(state, replace_inv_buf_with_inv)
         return f'Replaced {result["num_changed"]} inverter-buffer chain(s): {result["changed"]}'
 
     if op == "replace_or_with_nand_not":
         _require_design(state)
-        result = replace_or_with_nand_not(state.design, args["cone_target"])
+        result = _run_transactional_transform(state, replace_or_with_nand_not, args["cone_target"])
         return (
             f'Replaced {result["num_changed"]} OR gate(s) in the cone of '
             f'"{args["cone_target"]}" with NAND/NOT logic: {result["changed"]}'
@@ -292,6 +294,23 @@ def _require_design(state: CurrentState) -> None:
     """Ensure a design has been loaded before running design operations."""
     if state.design is None:
         raise RuntimeError("No design has been loaded yet.")
+
+
+def _run_transactional_transform(state: CurrentState, transform, *args: Any, **kwargs: Any) -> dict:
+    """
+    Run a transform on a copied design and commit only after verification.
+
+    This keeps a failed or structurally invalid transform from polluting the
+    testcase's evolving design state.
+    """
+    _require_design(state)
+    candidate = deepcopy(state.design)
+    result = transform(candidate, *args, **kwargs)
+    connectivity = check_connectivity(candidate)
+    if not connectivity.get("ok", False):
+        raise RuntimeError(f"Transformation rejected: connectivity check failed: {connectivity}")
+    state.design = candidate
+    return result
 
 
 def _resolve_read_path(path: str) -> Path:
