@@ -14,7 +14,12 @@ from eda.analysis import (
     max_depth,
     primary_output_cone_sizes,
 )
-from eda.transform import replace_buffers_with_and
+from eda.transform import (
+    remove_dangling,
+    replace_buffers_with_and,
+    replace_inv_buf_with_inv,
+    replace_or_with_nand_not,
+)
 from eda.verify import check_connectivity, check_fanout, check_depth
 
 SUPPORTED_OPS = {
@@ -29,6 +34,9 @@ SUPPORTED_OPS = {
     "report_outputs_by_cone_size",
     "same_clock_domain",
     "replace_buffers_with_and",
+    "remove_dangling",
+    "replace_inv_buf_with_inv",
+    "replace_or_with_nand_not",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -47,6 +55,9 @@ REQUIRED_ARGS = {
     "report_outputs_by_cone_size": ("min_gates",),
     "same_clock_domain": ("dff_a", "dff_b"),
     "replace_buffers_with_and": ("extra_input",),
+    "remove_dangling": (),
+    "replace_inv_buf_with_inv": (),
+    "replace_or_with_nand_not": ("cone_target",),
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
     "check_depth": ("src", "dst", "max_depth"),
@@ -220,6 +231,31 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             extra_input=args["extra_input"],
         )
         return f'Replaced {result["num_changed"]} buffer(s) with AND gate(s): {result["changed"]}'
+
+    if op == "remove_dangling":
+        _require_design(state)
+        result = remove_dangling(state.design)
+        return (
+            "Removed dangling logic: "
+            f'{result["num_removed_gates"]} gate(s), '
+            f'{result["num_removed_dffs"]} DFF(s), '
+            f'{result["num_removed_nets"]} net(s).\n'
+            f'Gates: {result["removed_gates"]}\n'
+            f'Nets: {result["removed_nets"]}'
+        )
+
+    if op == "replace_inv_buf_with_inv":
+        _require_design(state)
+        result = replace_inv_buf_with_inv(state.design)
+        return f'Replaced {result["num_changed"]} inverter-buffer chain(s): {result["changed"]}'
+
+    if op == "replace_or_with_nand_not":
+        _require_design(state)
+        result = replace_or_with_nand_not(state.design, args["cone_target"])
+        return (
+            f'Replaced {result["num_changed"]} OR gate(s) in the cone of '
+            f'"{args["cone_target"]}" with NAND/NOT logic: {result["changed"]}'
+        )
 
     if op == "check_connectivity":
         _require_design(state)

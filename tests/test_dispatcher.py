@@ -65,6 +65,23 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Yes", same)
         self.assertIn("No", different)
 
+    def test_dispatcher_runs_new_transformations(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_inv", type="not", inputs=["a"], output="n_mid"))
+        state.design.add_gate(Gate(name="U_buf", type="buf", inputs=["n_mid"], output="n_or"))
+        state.design.add_gate(Gate(name="U_or", type="or", inputs=["n_or", "b"], output="y"))
+        state.design.add_gate(Gate(name="U_dead", type="buf", inputs=["b"], output="dead"))
+
+        collapse = dispatch_plan(state, {"op": "replace_inv_buf_with_inv", "args": {}})
+        rewrite = dispatch_plan(state, {"op": "replace_or_with_nand_not", "args": {"cone_target": "y"}})
+        cleanup = dispatch_plan(state, {"op": "remove_dangling", "args": {}})
+
+        self.assertIn("1 inverter-buffer", collapse)
+        self.assertIn("1 OR gate", rewrite)
+        self.assertIn("U_dead", cleanup)
+        self.assertNotIn("U_dead", state.design.gates)
+
 
 if __name__ == "__main__":
     unittest.main()

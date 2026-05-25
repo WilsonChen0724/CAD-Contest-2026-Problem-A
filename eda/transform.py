@@ -4,7 +4,8 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any, TypeVar
 
-from eda.design import Design
+from eda.analysis import logic_cone
+from eda.design import Design, Gate, is_constant
 from eda.graph import rebuild_graph
 
 # todo
@@ -54,16 +55,137 @@ def replace_buffers_with_and(design: Design, targets: list[str], extra_input: st
 @_rebuild_graph_after_transform
 def remove_dangling(design: Design) -> dict:
     """Remove gates and nets that do not affect any primary output."""
-    return {"removed_gates": [], "removed_nets": []}
+    rebuild_graph(design)
+    live_gates: set[str] = set()
+    live_dffs: set[str] = set()
+    live_nets: set[str] = set(design.outputs)
+    stack = list(design.outputs)
+
+    while stack:
+        net = stack.pop()
+        driver = design.drivers.get(net)
+        if not driver:
+            continue
+
+        kind, name = driver.split(":", 1)
+        if kind == "GATE":
+            if name in live_gates:
+                continue
+            gate = design.gates[name]
+            live_gates.add(name)
+            live_nets.add(gate.output)
+            for input_net in gate.inputs:
+                live_nets.add(input_net)
+                if not is_constant(input_net):
+                    stack.append(input_net)
+        elif kind == "DFF":
+            if name in live_dffs:
+                continue
+            dff = design.dffs[name]
+            live_dffs.add(name)
+            live_nets.add(dff.q)
+            for input_net in (dff.d, dff.clk, dff.rst):
+                if input_net and not is_constant(input_net):
+                    live_nets.add(input_net)
+                    stack.append(input_net)
+
+    removed_gates = sorted(set(design.gates) - live_gates)
+    removed_dffs = sorted(set(design.dffs) - live_dffs)
+    for name in removed_gates:
+        del design.gates[name]
+    for name in removed_dffs:
+        del design.dffs[name]
+
+    used_nets = set(design.inputs) | set(design.outputs)
+    for gate in design.gates.values():
+        used_nets.add(gate.output)
+        used_nets.update(net for net in gate.inputs if not is_constant(net))
+    for dff in design.dffs.values():
+        used_nets.add(dff.q)
+        for net in (dff.d, dff.clk, dff.rst):
+            if net and not is_constant(net):
+                used_nets.add(net)
+
+    removed_nets = sorted(net for net in design.wires if net not in used_nets and not is_constant(net))
+    design.wires = {net for net in design.wires if net in used_nets or is_constant(net)}
+    return {
+        "removed_gates": removed_gates,
+        "removed_dffs": removed_dffs,
+        "removed_nets": removed_nets,
+        "num_removed_gates": len(removed_gates),
+        "num_removed_dffs": len(removed_dffs),
+        "num_removed_nets": len(removed_nets),
+    }
 
 
 @_rebuild_graph_after_transform
 def replace_inv_buf_with_inv(design: Design) -> dict:
     """Collapse safe inverter-buffer chains into one inverter."""
-    return {"changed": []}
+    rebuild_graph(design)
+    changed: list[dict[str, str]] = []
+
+    for buf_name, buf_gate in list(design.gates.items()):
+        if buf_gate.type != "buf" or len(buf_gate.inputs) != 1:
+            continue
+
+        mid_net = buf_gate.inputs[0]
+        driver = design.drivers.get(mid_net)
+        if not driver or not driver.startswith("GATE:"):
+            continue
+
+        inv_name = driver.split(":", 1)[1]
+        inv_gate = design.gates.get(inv_name)
+        if inv_gate is None or inv_gate.type != "not" or len(inv_gate.inputs) != 1:
+            continue
+
+        if design.fanouts.get(mid_net, []) != [f"GATE:{buf_name}"]:
+            continue
+
+        buf_gate.type = "not"
+        buf_gate.inputs = [inv_gate.inputs[0]]
+        del design.gates[inv_name]
+        if mid_net not in design.inputs and mid_net not in design.outputs:
+            design.wires.discard(mid_net)
+        changed.append(
+            {
+                "removed_inverter": inv_name,
+                "rewritten_buffer": buf_name,
+                "removed_net": mid_net,
+            }
+        )
+        rebuild_graph(design)
+
+    return {"changed": changed, "num_changed": len(changed)}
 
 
 @_rebuild_graph_after_transform
 def replace_or_with_nand_not(design: Design, cone_target: str) -> dict:
     """Rewrite OR gates in a cone using equivalent NAND/NOT logic."""
-    return {"changed": [], "cone_target": cone_target}
+    cone_gates = set(logic_cone(design, cone_target))
+    changed: list[dict[str, Any]] = []
+
+    for gate_name in sorted(cone_gates):
+        gate = design.gates.get(gate_name)
+        if gate is None or gate.type != "or" or len(gate.inputs) != 2:
+            continue
+
+        input_a, input_b = gate.inputs
+        not_a_net = design.make_unique_wire_name(f"{gate.name}_na")
+        not_b_net = design.make_unique_wire_name(f"{gate.name}_nb")
+        not_a_name = design.make_unique_gate_name(f"{gate.name}_not_a")
+        not_b_name = design.make_unique_gate_name(f"{gate.name}_not_b")
+
+        design.add_gate(Gate(name=not_a_name, type="not", inputs=[input_a], output=not_a_net))
+        design.add_gate(Gate(name=not_b_name, type="not", inputs=[input_b], output=not_b_net))
+        gate.type = "nand"
+        gate.inputs = [not_a_net, not_b_net]
+
+        changed.append(
+            {
+                "rewritten_gate": gate_name,
+                "added_gates": [not_a_name, not_b_name],
+                "added_nets": [not_a_net, not_b_net],
+            }
+        )
+
+    return {"changed": changed, "cone_target": cone_target, "num_changed": len(changed)}

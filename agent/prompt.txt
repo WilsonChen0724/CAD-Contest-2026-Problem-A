@@ -33,6 +33,9 @@ Common mappings:
 - Write/output/save a .v file -> write_design with {"path": "..."}.
 - Find buffers named like _gc__ -> find_gates with {"gate_type": "buf", "name_contains": "_gc__"} and save_as "found_buffers".
 - Replace the found buffers with AND -> replace_buffers_with_and with {"targets_from": "found_buffers", "extra_input": "_gc_ctrl"}.
+- Remove dangling or unused gates/nets -> remove_dangling with {}.
+- Replace inverter followed by buffer -> replace_inv_buf_with_inv with {}.
+- Replace OR gates in cone T with NAND/NOT -> replace_or_with_nand_not with {"cone_target": "T"}.
 - Maximum logic depth from input A to output B -> max_depth with {"src": "A", "dst": "B"}.
 - Find a path from A to B -> find_path with {"src": "A", "dst": "B"}.
 - Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.

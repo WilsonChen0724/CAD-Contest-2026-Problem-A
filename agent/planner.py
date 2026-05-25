@@ -16,6 +16,9 @@ SUPPORTED_OPS = {
     "find_gates",
     "same_clock_domain",
     "replace_buffers_with_and",
+    "remove_dangling",
+    "replace_inv_buf_with_inv",
+    "replace_or_with_nand_not",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -166,6 +169,27 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
             args["targets_from"] = "found_buffers"
 
         return {"op": "replace_buffers_with_and", "args": args}
+
+    if "remove" in low and ("dangling" in low or "unused" in low):
+        return {"op": "remove_dangling", "args": {}}
+
+    if (
+        ("replace" in low or "collapse" in low or "merge" in low)
+        and ("inverter" in low or "inverters" in low or "inv" in low)
+        and ("buffer" in low or "buffers" in low or "buf" in low)
+    ):
+        return {"op": "replace_inv_buf_with_inv", "args": {}}
+
+    if (
+        "replace" in low
+        and _mentions_gate_type(low, "or")
+        and "nand" in low
+        and ("not" in low or "inverter" in low or "inverters" in low)
+    ):
+        target = _extract_after_keyword(text, "cone of") or _extract_after_keyword(text, "of")
+        target = target or _extract_after_keyword(text, "for") or _extract_after_keyword(text, "target")
+        if target:
+            return {"op": "replace_or_with_nand_not", "args": {"cone_target": target}}
 
     return None
 

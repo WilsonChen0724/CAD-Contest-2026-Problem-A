@@ -74,6 +74,9 @@ These operations are wired through both the plan checker and dispatcher:
 - `find_gates`
 - `same_clock_domain`
 - `replace_buffers_with_and`
+- `remove_dangling`
+- `replace_inv_buf_with_inv`
+- `replace_or_with_nand_not`
 - `check_connectivity`
 - `check_fanout`
 - `check_depth`
@@ -118,14 +121,16 @@ the dispatcher Tool API.
 
 ### Transformation
 
-The implemented transformation is:
+The implemented transformations are:
 
 - `replace_buffers_with_and`: selected one-input `buf` gates are changed to
   two-input `and` gates using the requested extra input net.
-
-Transformation stubs for dangling removal, inverter-buffer collapsing, and OR
-to NAND/NOT rewriting are present in `eda/transform.py`, but they are not wired
-as production Tool API operations yet.
+- `remove_dangling`: gates, DFFs, and internal nets that do not contribute to
+  any primary output are removed.
+- `replace_inv_buf_with_inv`: safe inverter-buffer chains are collapsed into a
+  single inverter when the intermediate net has no other fanout.
+- `replace_or_with_nand_not`: 2-input OR gates in a requested cone are rewritten
+  as equivalent NAND/NOT logic.
 
 ## Requirements
 
@@ -246,8 +251,8 @@ and Tool API safety boundary.
 - The dispatcher exposes the implemented operation list above, while
   `docs/tool_spec.md` still describes a broader contest target.
 - Formal equivalence and property checking are not implemented yet.
-- Fanout-buffer insertion, depth balancing, and cone optimization are not
-  implemented yet.
+- Fanout-buffer insertion, depth balancing, and general cone optimization are
+  not implemented yet.
 - The writer emits a normalized flattened primitive style instead of preserving
   original formatting or comments.
 - Named-pin, library-specific sequential cells are future work beyond the

@@ -39,6 +39,9 @@ class PlanCheckerTest(unittest.TestCase):
             {"op": "all_paths_pass_through", "args": {"src": "A", "dst": "B", "node": "C"}},
             {"op": "report_outputs_by_cone_size", "args": {"min_gates": 100}},
             {"op": "same_clock_domain", "args": {"dff_a": "FF0", "dff_b": "FF1"}},
+            {"op": "remove_dangling", "args": {}},
+            {"op": "replace_inv_buf_with_inv", "args": {}},
+            {"op": "replace_or_with_nand_not", "args": {"cone_target": "flag"}},
         ]
 
         for plan in plans:
