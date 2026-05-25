@@ -289,11 +289,13 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "check_equivalence":
         _require_design(state)
-        return str(check_equivalence(state.design, args["expr"], args["target"]))
+        result = check_equivalence(state.design, args["expr"], args["target"])
+        return _format_equivalence_result(args["expr"], args["target"], result)
 
     if op == "check_property":
         _require_design(state)
-        return str(check_property(state.design, args["target"], args["property"]))
+        result = check_property(state.design, args["target"], args["property"])
+        return _format_property_result(args["target"], args["property"], result)
 
     raise ValueError(f"Unsupported operation: {op}")
 
@@ -374,3 +376,44 @@ def _format_list_result(title: str, items: list[str]) -> str:
     for i, item in enumerate(items, 1):
         lines.append(f"{i}. {item}")
     return "\n".join(lines)
+
+
+def _format_equivalence_result(expr: str, target: str, result: dict[str, Any]) -> str:
+    if result.get("ok"):
+        return (
+            f'Equivalent. Expression "{expr}" matches target "{target}" '
+            f'for all checked assignments using {result.get("engine")} engine.'
+        )
+    lines = [
+        f'Not equivalent. Expression "{expr}" does not match target "{target}".',
+        _format_counterexample(result),
+    ]
+    if result.get("reason"):
+        lines.append(f'Reason: {result["reason"]}')
+    return "\n".join(line for line in lines if line)
+
+
+def _format_property_result(target: str, property_text: str, result: dict[str, Any]) -> str:
+    if result.get("ok"):
+        return (
+            f'Property holds for "{target}": {property_text}. '
+            f'Checked with {result.get("engine")} engine.'
+        )
+    lines = [
+        f'Property does not hold for "{target}": {property_text}.',
+        _format_counterexample(result),
+    ]
+    if result.get("reason"):
+        lines.append(f'Reason: {result["reason"]}')
+    return "\n".join(line for line in lines if line)
+
+
+def _format_counterexample(result: dict[str, Any]) -> str:
+    counterexample = result.get("counterexample")
+    if not isinstance(counterexample, dict):
+        return ""
+    assignments = ", ".join(
+        f"{name}={int(value)}"
+        for name, value in sorted(counterexample.items())
+    )
+    return f"Counterexample: {assignments}."

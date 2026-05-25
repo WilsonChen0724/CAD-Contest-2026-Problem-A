@@ -154,8 +154,45 @@ class DispatcherTest(unittest.TestCase):
             {"op": "check_property", "args": {"target": "z", "property": "z -> a"}},
         )
 
-        self.assertIn("'ok': True", equivalence)
-        self.assertIn("'ok': True", prop)
+        self.assertIn("Equivalent", equivalence)
+        self.assertIn("Property holds", prop)
+
+    def test_dispatcher_formats_formal_counterexamples(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
+        state.design.add_gate(Gate(name="U1", type="or", inputs=["a", "b"], output="z"))
+
+        equivalence = dispatch_plan(
+            state,
+            {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
+        )
+        prop = dispatch_plan(
+            state,
+            {"op": "check_property", "args": {"target": "z", "property": "z -> (a & b)"}},
+        )
+
+        self.assertIn("Not equivalent", equivalence)
+        self.assertIn("Counterexample:", equivalence)
+        self.assertIn("Property does not hold", prop)
+        self.assertIn("Counterexample:", prop)
+
+    def test_formal_multi_step_plan_reads_like_end_to_end_flow(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
+        state.design.add_gate(Gate(name="U1", type="and", inputs=["a", "b"], output="z"))
+
+        body = dispatch_plan(
+            state,
+            {
+                "steps": [
+                    {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
+                    {"op": "check_property", "args": {"target": "z", "property": "z -> a"}},
+                ]
+            },
+        )
+
+        self.assertIn("Equivalent", body)
+        self.assertIn("Property holds", body)
 
 
 if __name__ == "__main__":

@@ -75,7 +75,8 @@ def check_equivalence(design: Design, expr: str, target: str) -> dict:
 
 def check_property(design: Design, target: str, property_text: str) -> dict:
     """Check whether a Boolean property holds for all assignments."""
-    del target  # The property string defines the checked formula for v1.
+    if target not in _tokenize_expr(property_text):
+        raise ValueError(f'Property must reference target "{target}".')
     engine = _BooleanEngine()
     prop_expr = engine.parse_expr(property_text, design)
     return _prove_no_counterexample(engine, ~prop_expr)

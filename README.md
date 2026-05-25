@@ -145,7 +145,15 @@ functions before the modified design is committed.
 - Python 3.10 or newer.
 - Yosys, either installed on `PATH` or installed locally under
   `third_party/yosys/oss-cad-suite`.
+- `z3-solver` is recommended for formal equivalence/property checks. Without
+  it, small formal checks fall back to brute-force enumeration.
 - Optional OpenAI API key for `-planner llm` or `-planner hybrid` fallback.
+
+Install Python dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
 
 Install or verify a local Yosys copy:
 
@@ -175,7 +183,7 @@ chmod +x cada1070_alpha
 On Windows PowerShell, run Python directly:
 
 ```powershell
-python .\main.py --ensure-yosys -config .\config.example.yaml < .\tests\smoke_input.txt
+Get-Content .\tests\smoke_input.txt | python .\main.py --ensure-yosys -config .\config.example.yaml
 ```
 
 Installer logs go to stderr so stdout can remain in the contest response

@@ -61,6 +61,13 @@ class VerifyTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIsInstance(result["counterexample"], dict)
 
+    def test_check_property_requires_target_reference(self) -> None:
+        design = Design(module_name="top", inputs={"req"}, outputs={"done"})
+        design.add_gate(Gate(name="U_done", type="buf", inputs=["req"], output="done"))
+
+        with self.assertRaisesRegex(ValueError, "must reference target"):
+            check_property(design, "done", "req")
+
     def test_check_design_equivalence_accepts_same_output_function(self) -> None:
         before = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
         before.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="y"))
