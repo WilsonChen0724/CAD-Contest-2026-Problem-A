@@ -1,14 +1,17 @@
-# CADA1070 Alpha
+# CADA1070 v0.3.0
 
-This repository is an alpha baseline for an ICCAD Contest Problem A style
-project: LLM-assisted netlist exploration and transformation.
+This repository is an ICCAD Contest Problem A style prototype for
+LLM-assisted netlist exploration and transformation.
 
-The system accepts natural-language requests, translates them into a restricted
-Tool API plan, executes deterministic EDA backend operations on the current
-gate-level Verilog design state, and prints contest-compliant responses.
+The runtime accepts natural-language requests from stdin, turns each request
+into a restricted Tool API plan, validates the plan, executes deterministic EDA
+backend operations on the current gate-level Verilog design state, and prints
+contest-style response blocks.
 
-The LLM must not directly edit Verilog. It may only call tools described in
-`docs/tool_spec.md`.
+The LLM never edits Verilog directly. It may only produce JSON tool calls that
+pass `agent/plan_checker.py` and are executed through `runtime/dispatcher.py`.
+The broader target API is documented in `docs/tool_spec.md`; this README marks
+which parts are implemented in v0.3.0.
 
 ## Architecture
 
@@ -16,10 +19,10 @@ The LLM must not directly edit Verilog. It may only call tools described in
 stdin request
     |
     v
-runtime/main loop
+main.py request loop
     |
     v
-agent/planner.py
+rule planner / LLM planner / hybrid planner
     |
     v
 validated Tool API JSON plan
@@ -28,10 +31,197 @@ validated Tool API JSON plan
 runtime/dispatcher.py
     |
     v
-eda backend + optional open-source helper adapters
+Yosys-backed Verilog parser/writer + Design IR + EDA backend
     |
     v
 stdout response + testcase log + optional output netlist
+```
+
+## What v0.3.0 Supports
+
+### Planner modes
+
+`main.py` supports three planner modes:
+
+```bash
+python main.py -config config.example.yaml -planner rule
+python main.py -config config.example.yaml -planner llm
+python main.py -config config.example.yaml -planner hybrid
+```
+
+- `rule`: deterministic keyword/rule planner. This is the default and needs no
+  API key.
+- `llm`: sends each request to the OpenAI Responses API and validates the
+  returned JSON tool plan.
+- `hybrid`: tries the deterministic planner first, then falls back to the LLM
+  only when the rule planner returns `unsupported`.
+
+The LLM path includes one repair retry when the model returns invalid JSON or a
+checker-rejected tool plan.
+
+### Implemented Tool API operations
+
+These operations are wired through both the plan checker and dispatcher:
+
+- `begin_testcase`
+- `read_design`
+- `write_design`
+- `find_path`
+- `max_depth`
+- `logic_cone`
+- `find_gates`
+- `replace_buffers_with_and`
+- `check_connectivity`
+- `check_fanout`
+- `check_depth`
+- `unsupported`
+
+Multi-step plans with a top-level `steps` array are supported. A step may use
+`save_as` to store a result in testcase-local state, and later steps can reuse
+saved gate lists with arguments such as `targets_from`.
+
+### Verilog frontend and backend
+
+v0.3.0 moves the parser/writer path to a Yosys-backed flow:
+
+- `parser/verilog_parser.py` reads one flattened top module through Yosys JSON.
+- Primitive instances are temporarily rewritten as private wrapper cells so
+  instance names and buffer cells are preserved.
+- Supported primitive gates: `and`, `or`, `nand`, `nor`, `not`, `buf`, `xor`,
+  `xnor`.
+- Supported sequential cells: positional `dff` style cells with
+  `(q, d, clk)` or `(q, d, clk, rst)`.
+- Bus ports and wires are expanded into bit-select nets in the internal
+  `Design` IR, then re-emitted as bus declarations when possible.
+- `parser/verilog_writer.py` emits deterministic primitive Verilog and checks
+  the generated result with Yosys before writing it.
+
+### Analysis and verification
+
+The current backend includes:
+
+- path search that does not cross DFF boundaries,
+- longest combinational max-depth propagation with loop guarding,
+- fanin logic-cone collection,
+- gate search by type and/or name substring,
+- fanout-bound checking,
+- depth-bound checking,
+- connectivity checking for missing and duplicate drivers.
+
+Additional analysis helpers exist in `eda/analysis.py` for fanout cones, primary
+output cone sizes, all-paths-through checks, and DFF relationship reports.
+Some of these are tested internally but are not yet exposed as dispatcher Tool
+API operations in v0.3.0.
+
+### Transformation
+
+The implemented transformation is:
+
+- `replace_buffers_with_and`: selected one-input `buf` gates are changed to
+  two-input `and` gates using the requested extra input net.
+
+Transformation stubs for dangling removal, inverter-buffer collapsing, and OR
+to NAND/NOT rewriting are present in `eda/transform.py`, but they are not wired
+as production Tool API operations yet.
+
+## Requirements
+
+- Python 3.10 or newer.
+- Yosys, either installed on `PATH` or installed locally under
+  `third_party/yosys/oss-cad-suite`.
+- Optional OpenAI API key for `-planner llm` or `-planner hybrid` fallback.
+
+Install or verify a local Yosys copy:
+
+```bash
+python scripts/install_yosys.py
+```
+
+Reinstall from scratch:
+
+```bash
+python scripts/install_yosys.py --force
+```
+
+You can also ask the main program to ensure Yosys exists before reading stdin:
+
+```bash
+python main.py --ensure-yosys -config config.example.yaml
+```
+
+On Linux/macOS, the shell launcher is:
+
+```bash
+chmod +x cada1070_alpha
+./cada1070_alpha --ensure-yosys -config config.example.yaml < tests/smoke_input.txt
+```
+
+On Windows PowerShell, run Python directly:
+
+```powershell
+python .\main.py --ensure-yosys -config .\config.example.yaml < .\tests\smoke_input.txt
+```
+
+Installer logs go to stderr so stdout can remain in the contest response
+format.
+
+## Configuration
+
+`config.example.yaml` shows the supported shape:
+
+```yaml
+provider: "openai"
+openai:
+  api_key: "<YOUR_API_KEY>"
+  model: "gpt-4.1-mini"
+generation:
+  temperature: 0.2
+  max_output_tokens: 4096
+```
+
+For local development, prefer setting `OPENAI_API_KEY` in the environment or
+using an untracked `config.yaml`. Do not commit real API keys.
+
+## Smoke Test
+
+Run the default deterministic planner flow:
+
+```bash
+python main.py --ensure-yosys -config config.example.yaml < tests/smoke_input.txt
+```
+
+Expected behavior:
+
+- The program reads each non-empty stdin line as one request.
+- It prints responses wrapped by `#RESPONSE <id>` and `#END <id>`.
+- `begin_testcase` creates `output/logs/<case_name>.log`.
+- Later requests operate on the current testcase design state.
+- The smoke input loads `tests/design/netlist/test8.v`, finds `_gc__`
+  buffers, replaces them with AND gates, reports max depth, and writes
+  `output/test8_out.v`.
+
+## Run Tests
+
+```bash
+python -m unittest discover -s tests
+```
+
+Parser and writer tests require Yosys. If Yosys is not on `PATH`, install it
+with `python scripts/install_yosys.py` or run commands through
+`python main.py --ensure-yosys ...` first.
+
+## Repository Layout
+
+```text
+agent/       rule planner, LLM API wrapper, JSON plan checker, prompt
+eda/         Design IR, graph maps, analysis, transforms, verification
+parser/      Yosys-backed Verilog parser/writer and Yosys resolver
+runtime/     state, dispatcher, response formatter, config loader
+scripts/     cross-platform Yosys install helpers
+docs/        system spec, Tool API spec, workflow notes
+tests/       unit tests, smoke input, sample netlists
+third_party/ local Yosys install location, not committed
+output/      generated logs and output netlists
 ```
 
 ## Open-Source Helper Policy
@@ -39,50 +229,26 @@ stdout response + testcase log + optional output netlist
 Open-source tools may be used behind deterministic adapters. The canonical
 design state remains the project `Design` IR.
 
-Recommended core helpers:
+- Yosys is the current parser/writer syntax and normalization helper.
+- `networkx` and `z3-solver` remain recommended future helpers for graph and
+  formal tasks.
+- Optional future optimization adapters may use Yosys or ABC, but any
+  function-preserving transformation should verify before commit.
 
-- `networkx`: graph traversal, path queries, cone analysis, depth computation.
-- `z3-solver`: equivalence checks, property checks, counterexamples.
+The pure Python backend still owns the IR, graph traversal, response behavior,
+and Tool API safety boundary.
 
-Optional helpers:
+## Known Limits in v0.3.0
 
-- `lark`: parser for the contest Verilog subset.
-- `yosys`: Verilog normalization and optional formal/sanity checks.
-- `abc`: cone-level logic optimization experiments.
-
-Reference-only or lower-priority helpers:
-
-- `circuitgraph`
-- `pyverilog`
-
-The pure-Python backend should still cover core contest tasks if optional
-external binaries are unavailable.
-
-## Main Modules
-
-```text
-agent/      LLM planner, prompt, JSON plan parser
-eda/        IR, graph, analysis, transform, verification
-parser/     Verilog parser and writer
-runtime/    state, dispatcher, response formatter, config loader
-docs/       system spec, tool spec, team division
-tests/      smoke tests and small netlists
-output/     generated logs and output netlists
-```
-
-## Run Smoke Test
-
-```bash
-chmod +x cada1070_alpha
-./cada1070_alpha -config config.example.yaml < tests/smoke_input.txt
-```
-
-Expected behavior:
-
-- The program reads each line from stdin.
-- It prints responses wrapped by `#RESPONSE <id>` and `#END <id>`.
-- It creates a log file under `output/logs/` when a testcase begins.
-- Later requests operate on the current testcase design state.
+- The dispatcher exposes only the implemented operation list above, even though
+  `docs/tool_spec.md` describes the broader contest target.
+- Formal equivalence and property checking are not implemented yet.
+- Fanout-buffer insertion, depth balancing, and cone optimization are not
+  implemented yet.
+- The writer emits a normalized flattened primitive style instead of preserving
+  original formatting or comments.
+- Named-pin, library-specific sequential cells are future work beyond the
+  normalized DFF support.
 
 ## Milestones
 
@@ -97,9 +263,9 @@ Expected behavior:
 
 - Scalar and bus netlists parse into IR.
 - DFFs are represented as sequential boundaries.
-- Read/write, path, avoid-path, all-paths-through, max-depth, logic-cone, and
-  gate-search tools work.
-- Basic transformations pass structural checks.
+- Read/write, path, max-depth, logic-cone, gate-search, and basic verification
+  tools work.
+- Basic buffer-to-AND transformation works.
 
 ### M2: Formal Verification
 
@@ -116,7 +282,7 @@ Expected behavior:
 
 ### M4: Submission Hardening
 
-- LLM planner supports schema validation and one repair pass.
+- LLM planner supports schema validation and repair.
 - Runtime handles invalid requests and failed transformations gracefully.
 - Regression tests cover PDF-style examples.
 - Config files do not expose API keys.
@@ -128,10 +294,62 @@ Expected behavior:
 - Person C, IC contest background: runtime, dispatcher, transformations,
   verification, optional optimization adapters.
 
-See `docs/work_division.md` for the detailed milestone-based ownership
-plan.
+See `docs/work_division.md` for the detailed milestone-based ownership plan.
 
 ## Version Notes
+
+### v0.3.0 - Yosys-backed frontend and planner hardening (2026-05-25)
+
+This version documents the current mainline behavior after integrating the
+Yosys parser/writer path and the safer planner/runtime boundary.
+
+1. Yosys parser and writer flow
+
+   `parse_verilog()` now uses Yosys JSON as the frontend and converts the
+   result into the project `Design` IR. Primitive gates are wrapped before
+   Yosys parsing so gate instance names and `buf` cells survive normalization.
+
+   `write_verilog()` emits deterministic primitive Verilog, reconstructs bus
+   declarations where possible, emits normalized positional DFF instances, and
+   validates the generated module with Yosys before writing the file.
+
+2. Local Yosys installation support
+
+   The repository now includes cross-platform install helpers under `scripts/`
+   and a local toolchain home under `third_party/yosys/`.
+
+   ```bash
+   python scripts/install_yosys.py
+   python main.py --ensure-yosys -config config.example.yaml
+   ```
+
+   Windows and Linux local OSS CAD Suite layouts are resolved by
+   `parser/yosys_tools.py`.
+
+3. Planner modes
+
+   `main.py` now supports `rule`, `llm`, and `hybrid` planner modes. The LLM
+   planner calls the OpenAI Responses API, requests structured JSON, validates
+   the result through `plan_checker.py`, and retries once with a repair request
+   when validation fails.
+
+4. Stronger Tool API safety boundary
+
+   The checker and dispatcher now share the implemented operation set and reject
+   unsupported operations, unknown fields, missing required arguments, and basic
+   type mismatches before backend execution.
+
+5. Expanded analysis coverage
+
+   The analysis module includes tested helpers for all-paths-through queries,
+   fanout cone reports, primary-output cone sizes, and DFF relationship reports.
+   The dispatcher-exposed surface remains intentionally smaller in v0.3.0.
+
+6. Regression coverage
+
+   Unit tests cover Yosys resolution, parser/writer behavior, LLM repair retry,
+   plan validation, dispatcher behavior, analysis helpers, transformations, and
+   verification checks.
 
 ### v0.2.0 - Day2 correctness fixes (2026-05-20)
 
@@ -142,8 +360,8 @@ Day2 LLM planner integration.
 
    Added `.gitattributes` rules so shell scripts and source files keep stable LF
    line endings across Windows/Linux environments. The `cada1070_alpha` launcher
-   is also intended to be stored with executable permission in Git, so Linux/macOS
-   users can run it with:
+   is also intended to be stored with executable permission in Git, so
+   Linux/macOS users can run it with:
 
    ```bash
    ./cada1070_alpha -config config.example.yaml < tests/smoke_input.txt
@@ -173,7 +391,7 @@ Day2 LLM planner integration.
 
 4. Bus and DFF parser support
 
-   The Verilog parser now supports simple bus declarations and expands them into
+   The Verilog parser supports simple bus declarations and expands them into
    bit-select nets in the IR. For example:
 
    ```verilog
@@ -189,8 +407,8 @@ Day2 LLM planner integration.
    dff FF1(q, d, clk, rst);
    ```
 
-   The writer can emit these bus declarations and DFF instances back to Verilog.
-   Full library-specific named-pin cell parsing is still future work.
+   The writer can emit these bus declarations and DFF instances back to
+   Verilog. Full library-specific named-pin cell parsing is still future work.
 
 5. Stronger connectivity verification
 
