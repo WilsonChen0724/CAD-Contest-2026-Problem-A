@@ -78,6 +78,8 @@ These operations are wired through both the plan checker and dispatcher:
 - `replace_inv_buf_with_inv`
 - `replace_or_with_nand_not`
 - `insert_buffers_for_fanout`
+- `balance_depth_with_buffers`
+- `optimize_cone`
 - `check_connectivity`
 - `check_fanout`
 - `check_depth`
@@ -120,6 +122,11 @@ The current backend includes:
   installed and a small brute-force fallback otherwise.
 - transactional high-fanout buffer insertion guarded by connectivity,
   equivalence, and final fanout-bound checks.
+- transactional endpoint depth balancing with inserted buffers, guarded by
+  connectivity, equivalence, and final depth-balance checks.
+- transactional cone optimization with local buffer/double-inverter
+  simplification, guarded by connectivity, equivalence, and optional depth
+  constraints.
 
 Additional analysis helpers exist in `eda/analysis.py` for fanout cones and
 related structural reports. Primary-output cone-size reports,
@@ -272,10 +279,23 @@ and Tool API safety boundary.
   `docs/tool_spec.md` still describes a broader contest target.
 - Formal checks are combinational-only in this version. Sequential
   unrolling/property checking is not implemented yet.
-- Depth balancing and general cone optimization are not implemented yet.
+- Cone optimization is implemented as a first local simplification pass for
+  redundant buffers and double inverters. General Boolean resynthesis is not
+  implemented yet.
 - Fanout-buffer insertion is implemented for gate/DFF sinks; primary-output
   sinks remain directly tied to the original net and count against the root
   fanout budget.
+- Depth balancing is implemented for independent gate-driven destination nets
+  by inserting buffer chains before the selected endpoints.
+- Depth balancing is a structural logic-depth helper, not a physical timing
+  optimizer. It is intended for requests that require path-depth alignment or
+  for preparing normalized cones before later optimization. It counts primitive
+  gates as depth stages and does not model Liberty delay, placement, routing,
+  slew, or clock skew.
+- Current depth balancing pads each endpoint independently. Future versions
+  should share buffers across common subtrees, support DFF-input/primary-output
+  endpoints when safe, and accept hard constraints such as max inserted buffers
+  or max final depth.
 - The writer emits a normalized flattened primitive style instead of preserving
   original formatting or comments.
 - Named-pin, library-specific sequential cells are future work beyond the
@@ -308,7 +328,7 @@ and Tool API safety boundary.
 
 - Fanout buffer insertion satisfies hard fanout bounds.
 - Depth balancing supports buffer insertion.
-- Cone optimization reduces gate count under hard constraints.
+- Cone optimization reduces simple redundant logic under hard constraints.
 - Optional Yosys/ABC adapters may be used behind verification guards.
 
 ### M4: Submission Hardening

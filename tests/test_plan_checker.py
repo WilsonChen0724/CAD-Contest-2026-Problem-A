@@ -43,6 +43,8 @@ class PlanCheckerTest(unittest.TestCase):
             {"op": "replace_inv_buf_with_inv", "args": {}},
             {"op": "replace_or_with_nand_not", "args": {"cone_target": "flag"}},
             {"op": "insert_buffers_for_fanout", "args": {"net": "clk_en", "max_fanout": 8}},
+            {"op": "balance_depth_with_buffers", "args": {"src": "A", "dsts": ["B", "C"]}},
+            {"op": "optimize_cone", "args": {"target": "h", "max_depth": 5, "minimize_gate_count": True}},
             {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
             {"op": "check_property", "args": {"target": "done", "property": "done -> req"}},
         ]

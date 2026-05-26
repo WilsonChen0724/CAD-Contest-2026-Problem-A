@@ -20,6 +20,8 @@ SUPPORTED_OPS = {
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
     "insert_buffers_for_fanout",
+    "balance_depth_with_buffers",
+    "optimize_cone",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -204,6 +206,29 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         max_fanout = _extract_limit_int(text)
         if net and max_fanout is not None:
             return {"op": "insert_buffers_for_fanout", "args": {"net": net, "max_fanout": max_fanout}}
+
+    if "balance" in low and "depth" in low and ("buffer" in low or "buffers" in low):
+        src = _extract_after_keyword(text, "source") or _extract_after_keyword(text, "from")
+        dsts = _extract_destination_list(text)
+        if src and dsts:
+            return {
+                "op": "balance_depth_with_buffers",
+                "args": {"src": src, "dsts": dsts, "minimize_buffers": True},
+            }
+
+    if "optimize" in low and ("logic cone" in low or "cone" in low):
+        target = _extract_after_keyword(text, "cone of") or _extract_after_keyword(text, "of")
+        target = target or _extract_after_keyword(text, "target") or _extract_after_keyword(text, "for")
+        if target:
+            args: dict[str, Any] = {
+                "target": target,
+                "minimize_gate_count": "gate count" in low or "minimize" in low or "reduce" in low,
+            }
+            if "depth" in low:
+                max_allowed_depth = _extract_limit_int(text)
+                if max_allowed_depth is not None:
+                    args["max_depth"] = max_allowed_depth
+            return {"op": "optimize_cone", "args": args}
 
     return None
 
@@ -468,6 +493,26 @@ def _extract_avoid_list(text: str) -> list[str]:
         for token in (_clean_token(part) for part in re.split(r"[,\s]+", match.group(1)))
         if token and token.lower() not in {"and", "or"}
     ]
+
+
+def _extract_destination_list(text: str) -> list[str]:
+    patterns = [
+        rf"(?:dsts?|destinations?|outputs?)\s+((?:{_SIGNAL_RE}[\s,]*(?:and\s+)?){{1,}})",
+        rf"\bto\s+((?:{_SIGNAL_RE}[\s,]*(?:and\s+)?){{1,}})(?:\s+with|\s+using|\s+by|\s+so|\s*$|[.])",
+    ]
+    stop_words = {"and", "with", "using", "by", "so", "buffer", "buffers"}
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        tokens = [
+            token
+            for token in (_clean_token(part) for part in re.split(r"[,\s]+", match.group(1)))
+            if token and token.lower() not in stop_words
+        ]
+        if tokens:
+            return tokens
+    return []
 
 
 def _extract_dff_pair(text: str) -> tuple[str, str] | None:

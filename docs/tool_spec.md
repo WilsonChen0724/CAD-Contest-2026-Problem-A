@@ -392,6 +392,11 @@ Rules:
 - Only insert buffers.
 - Preserve functionality.
 - Prefer the fewest inserted buffers that satisfy the requested balance.
+- First implementation supports independent gate-driven destination nets.
+- Commit only after connectivity, equivalence, and final depth-balance checks
+  pass.
+- This is a structural logic-depth operation. It treats primitive gates,
+  including buffers, as depth stages and does not model physical timing delay.
 
 ### optimize_cone
 
@@ -416,6 +421,8 @@ Rules:
 - Gate count minimization is secondary.
 - Optional Yosys or ABC adapters may be used internally.
 - Equivalence must be checked before commit when functionality must be preserved.
+- First implementation performs local simplification only: redundant internal
+  buffer removal and double-inverter simplification.
 
 ## 4. Verification Tools
 

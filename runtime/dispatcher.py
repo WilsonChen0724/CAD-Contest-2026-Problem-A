@@ -16,7 +16,9 @@ from eda.analysis import (
     primary_output_cone_sizes,
 )
 from eda.transform import (
+    balance_depth_with_buffers,
     insert_buffers_for_fanout,
+    optimize_cone,
     remove_dangling,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
@@ -47,6 +49,8 @@ SUPPORTED_OPS = {
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
     "insert_buffers_for_fanout",
+    "balance_depth_with_buffers",
+    "optimize_cone",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -71,6 +75,8 @@ REQUIRED_ARGS = {
     "replace_inv_buf_with_inv": (),
     "replace_or_with_nand_not": ("cone_target",),
     "insert_buffers_for_fanout": ("net", "max_fanout"),
+    "balance_depth_with_buffers": ("src", "dsts"),
+    "optimize_cone": ("target",),
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
     "check_depth": ("src", "dst", "max_depth"),
@@ -293,6 +299,45 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             f'"{args["net"]}". Final max fanout is {result["final_max_fanout"]}.'
         )
 
+    if op == "balance_depth_with_buffers":
+        _require_design(state)
+        dsts = args["dsts"]
+        if not isinstance(dsts, list) or not all(isinstance(item, str) for item in dsts):
+            raise ValueError('Tool call rejected: "dsts" must be a list of destination net names.')
+        result = _run_transactional_transform(
+            state,
+            balance_depth_with_buffers,
+            args["src"],
+            dsts,
+            minimize_buffers=args.get("minimize_buffers", True),
+            verify_equivalence=True,
+            depth_balance=(args["src"], dsts),
+        )
+        return (
+            f'Inserted {result["num_inserted_buffers"]} buffer(s) to balance depths from '
+            f'"{args["src"]}". Final depths: {result["final_depths"]}.'
+        )
+
+    if op == "optimize_cone":
+        _require_design(state)
+        max_allowed_depth = args.get("max_depth")
+        if max_allowed_depth is not None and not isinstance(max_allowed_depth, int):
+            raise ValueError('Tool call rejected: "max_depth" must be an integer when provided.')
+        result = _run_transactional_transform(
+            state,
+            optimize_cone,
+            args["target"],
+            max_depth=max_allowed_depth,
+            minimize_gate_count=args.get("minimize_gate_count", True),
+            verify_equivalence=True,
+            cone_depth=(args["target"], max_allowed_depth),
+        )
+        return (
+            f'Optimized cone of "{args["target"]}": '
+            f'{result["initial_gate_count"]} -> {result["final_gate_count"]} gate(s), '
+            f'depth {result["initial_depth"]} -> {result["final_depth"]}.'
+        )
+
     if op == "check_connectivity":
         _require_design(state)
         return str(check_connectivity(state.design))
@@ -346,6 +391,8 @@ def _run_transactional_transform(
     *args: Any,
     verify_equivalence: bool = False,
     max_fanout: int | None = None,
+    depth_balance: tuple[str, list[str]] | None = None,
+    cone_depth: tuple[str, int | None] | None = None,
     **kwargs: Any,
 ) -> dict:
     """
@@ -369,6 +416,16 @@ def _run_transactional_transform(
         fanout = check_fanout(candidate, max_fanout)
         if not fanout.get("ok", False):
             raise RuntimeError(f"Transformation rejected: fanout check failed: {fanout}")
+    if depth_balance is not None:
+        src, dsts = depth_balance
+        balance = _check_depth_balance(candidate, src, dsts)
+        if not balance.get("ok", False):
+            raise RuntimeError(f"Transformation rejected: depth balance check failed: {balance}")
+    if cone_depth is not None:
+        target, max_allowed_depth = cone_depth
+        depth = _check_cone_depth_bound(candidate, target, max_allowed_depth)
+        if not depth.get("ok", False):
+            raise RuntimeError(f"Transformation rejected: cone depth check failed: {depth}")
     state.design = candidate
     return result
 
@@ -440,3 +497,33 @@ def _format_counterexample(result: dict[str, Any]) -> str:
         for name, value in sorted(counterexample.items())
     )
     return f"Counterexample: {assignments}."
+
+
+def _check_depth_balance(design, src: str, dsts: list[str]) -> dict[str, Any]:
+    depths: dict[str, int] = {}
+    for dst in dsts:
+        depth, path = max_depth(design, src, dst)
+        if not path:
+            return {"ok": False, "reason": f'No path from "{src}" to "{dst}".', "depths": depths}
+        depths[dst] = depth
+    unique_depths = set(depths.values())
+    return {"ok": len(unique_depths) <= 1, "depths": depths}
+
+
+def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) -> dict[str, Any]:
+    sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
+    depths: dict[str, int] = {}
+    for source in sorted(sources):
+        depth, path = max_depth(design, source, target)
+        if path:
+            depths[source] = depth
+    final_depth = max(depths.values(), default=0)
+    if max_allowed_depth is None:
+        return {"ok": True, "target": target, "final_depth": final_depth, "source_depths": depths}
+    return {
+        "ok": final_depth <= max_allowed_depth,
+        "target": target,
+        "final_depth": final_depth,
+        "max_allowed_depth": max_allowed_depth,
+        "source_depths": depths,
+    }

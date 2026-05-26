@@ -41,6 +41,28 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "insert_buffers_for_fanout", "args": {"net": "clk_en", "max_fanout": 8}})
 
+    def test_maps_balance_depth_with_buffers(self) -> None:
+        plan = plan_request("Balance depths from source src to destinations y0, y1 with buffers.", None)
+
+        self.assertEqual(
+            plan,
+            {
+                "op": "balance_depth_with_buffers",
+                "args": {"src": "src", "dsts": ["y0", "y1"], "minimize_buffers": True},
+            },
+        )
+
+    def test_maps_optimize_cone(self) -> None:
+        plan = plan_request(
+            "Optimize the logic cone of h so that the maximum depth is less than or equal to 5 and the gate count is minimized.",
+            None,
+        )
+
+        self.assertEqual(
+            plan,
+            {"op": "optimize_cone", "args": {"target": "h", "minimize_gate_count": True, "max_depth": 5}},
+        )
+
     def test_maps_equivalence_check(self) -> None:
         plan = plan_request("Check whether (a & b) is equivalent to z.", None)
 

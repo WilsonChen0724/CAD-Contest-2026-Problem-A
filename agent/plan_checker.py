@@ -24,6 +24,8 @@ SUPPORTED_OPS = {
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
     "insert_buffers_for_fanout",
+    "balance_depth_with_buffers",
+    "optimize_cone",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -48,6 +50,8 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "replace_inv_buf_with_inv": {},
     "replace_or_with_nand_not": {"cone_target": str},
     "insert_buffers_for_fanout": {"net": str, "max_fanout": int},
+    "balance_depth_with_buffers": {"src": str, "dsts": list},
+    "optimize_cone": {"target": str},
     "check_connectivity": {},
     "check_fanout": {"max_fanout": int},
     "check_depth": {"src": str, "dst": str, "max_depth": int},
@@ -60,6 +64,8 @@ _OPTIONAL_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "find_path": {"avoid": list},
     "find_gates": {"gate_type": (str, type(None)), "name_contains": (str, type(None))},
     "replace_buffers_with_and": {"targets": list, "targets_from": str},
+    "balance_depth_with_buffers": {"minimize_buffers": bool},
+    "optimize_cone": {"max_depth": int, "minimize_gate_count": bool},
 }
 
 
@@ -197,6 +203,10 @@ def _validate_args(op: str, args: dict[str, Any]) -> None:
     if op == "find_path" and "avoid" in args:
         if not all(isinstance(item, str) for item in args["avoid"]):
             raise PlanValidationError("find_path.args.avoid must be a list of strings.")
+
+    if op == "balance_depth_with_buffers":
+        if not args["dsts"] or not all(isinstance(item, str) for item in args["dsts"]):
+            raise PlanValidationError("balance_depth_with_buffers.args.dsts must be a non-empty list of strings.")
 
 
 def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:

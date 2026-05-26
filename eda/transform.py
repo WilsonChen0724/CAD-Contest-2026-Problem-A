@@ -5,7 +5,7 @@ from math import ceil
 from functools import wraps
 from typing import Any, TypeVar
 
-from eda.analysis import logic_cone
+from eda.analysis import find_path, logic_cone, max_depth
 from eda.design import DFF, Design, Gate, is_constant
 from eda.graph import rebuild_graph
 
@@ -19,6 +19,8 @@ from eda.graph import rebuild_graph
 # day 3. replace_or_with_nand_not
 # day 4: after every transformation auto verification
 # day 5: insert_buffers_for_fanout
+# day 6: balance_depth_with_buffers
+# day 7: optimize_cone
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -269,6 +271,110 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
     }
 
 
+@_rebuild_graph_after_transform
+def balance_depth_with_buffers(
+    design: Design,
+    src: str,
+    dsts: list[str],
+    minimize_buffers: bool = True,
+) -> dict:
+    """
+    Insert endpoint buffer chains so all selected src-to-dst depths match.
+
+    This first version supports independent, gate-driven destination nets. That
+    keeps the transform local and makes the inserted buffer count minimal for
+    the current endpoint-padding strategy.
+    """
+    del minimize_buffers  # Endpoint padding is already minimal for this strategy.
+    if not dsts:
+        raise ValueError("balance_depth_with_buffers requires at least one destination.")
+    if src not in design.all_nets():
+        raise ValueError(f'Source net not found: "{src}"')
+
+    rebuild_graph(design)
+    _require_independent_destinations(design, dsts)
+    initial_depths = _depths_from_source(design, src, dsts)
+    target_depth = max(initial_depths.values())
+
+    changed: list[dict[str, Any]] = []
+    for dst in dsts:
+        deficit = target_depth - initial_depths[dst]
+        if deficit <= 0:
+            continue
+        changed.append(_insert_buffer_chain_before_net(design, dst, deficit))
+        rebuild_graph(design)
+
+    final_depths = _depths_from_source(design, src, dsts)
+    return {
+        "src": src,
+        "dsts": dsts,
+        "initial_depths": initial_depths,
+        "target_depth": target_depth,
+        "final_depths": final_depths,
+        "changed": changed,
+        "num_inserted_buffers": sum(len(item["added_gates"]) for item in changed),
+    }
+
+
+@_rebuild_graph_after_transform
+def optimize_cone(
+    design: Design,
+    target: str,
+    max_depth: int | None = None,
+    minimize_gate_count: bool = True,
+) -> dict:
+    """
+    Locally simplify a target fanin cone with function-preserving rewrites.
+
+    First-version rules:
+    - remove internal one-input buffers by reconnecting their sinks,
+    - replace double inverters with a direct connection, or with one buffer if
+      the second inverter drives a primary output net.
+    """
+    del minimize_gate_count  # The current rule set always reduces gate count when possible.
+    if target not in design.all_nets():
+        raise ValueError(f'Target net not found: "{target}"')
+    if max_depth is not None and max_depth < 0:
+        raise ValueError("optimize_cone requires max_depth >= 0 when provided.")
+
+    rebuild_graph(design)
+    initial_gates = logic_cone(design, target)
+    initial_depth = _cone_max_depth(design, target)
+    changed: list[dict[str, Any]] = []
+    max_iterations = max(1, len(design.gates) + 1)
+
+    for _ in range(max_iterations):
+        cone_gates = set(logic_cone(design, target))
+        rewrite = _simplify_double_inverter_in_cone(design, cone_gates)
+        if rewrite is None:
+            rewrite = _remove_internal_buffer_in_cone(design, cone_gates)
+        if rewrite is None:
+            break
+        changed.append(rewrite)
+        rebuild_graph(design)
+    else:
+        raise RuntimeError("optimize_cone did not converge.")
+
+    final_depth = _cone_max_depth(design, target)
+    if max_depth is not None and final_depth > max_depth:
+        raise ValueError(
+            f'Optimized cone depth {final_depth} exceeds max_depth {max_depth} for target "{target}".'
+        )
+
+    final_gates = logic_cone(design, target)
+    return {
+        "target": target,
+        "max_depth": max_depth,
+        "initial_gate_count": len(initial_gates),
+        "final_gate_count": len(final_gates),
+        "removed_gate_count": len(initial_gates) - len(final_gates),
+        "initial_depth": initial_depth,
+        "final_depth": final_depth,
+        "changed": changed,
+        "num_changed": len(changed),
+    }
+
+
 def _redirect_sink(design: Design, sink: str, old_net: str, new_net: str) -> None:
     kind, name = sink.split(":", 1)
     if kind == "GATE":
@@ -300,3 +406,158 @@ def _redirect_dff_input(dff: DFF, old_net: str, new_net: str) -> None:
 def _max_fanout(design: Design) -> int:
     rebuild_graph(design)
     return max((len(sinks) for sinks in design.fanouts.values()), default=0)
+
+
+def _depths_from_source(design: Design, src: str, dsts: list[str]) -> dict[str, int]:
+    depths: dict[str, int] = {}
+    for dst in dsts:
+        depth, path = max_depth(design, src, dst)
+        if not path:
+            raise ValueError(f'No combinational path found from "{src}" to "{dst}".')
+        depths[dst] = depth
+    return depths
+
+
+def _require_independent_destinations(design: Design, dsts: list[str]) -> None:
+    for dst in dsts:
+        if dst not in design.all_nets():
+            raise ValueError(f'Destination net not found: "{dst}"')
+    for index, src_dst in enumerate(dsts):
+        for other_dst in dsts[index + 1 :]:
+            if find_path(design, src_dst, other_dst) or find_path(design, other_dst, src_dst):
+                raise ValueError(
+                    "balance_depth_with_buffers currently requires independent "
+                    f'destinations, but "{src_dst}" and "{other_dst}" are connected.'
+                )
+
+
+def _insert_buffer_chain_before_net(design: Design, dst: str, count: int) -> dict[str, Any]:
+    rebuild_graph(design)
+    driver = design.drivers.get(dst)
+    if driver is None:
+        raise ValueError(f'Destination net "{dst}" has no driver.')
+    if not driver.startswith("GATE:"):
+        raise ValueError(
+            f'Destination net "{dst}" is driven by {driver}; only gate-driven destinations are supported.'
+        )
+
+    driver_gate_name = driver.split(":", 1)[1]
+    driver_gate = design.gates[driver_gate_name]
+    driver_output = design.make_unique_wire_name(f"{dst}_balance_pre")
+    driver_gate.output = driver_output
+    design.wires.add(driver_output)
+
+    added_gates: list[str] = []
+    added_nets: list[str] = [driver_output]
+    source_net = driver_output
+    for index in range(count):
+        output_net = dst if index == count - 1 else design.make_unique_wire_name(f"{dst}_balance")
+        buffer_name = design.make_unique_gate_name(f"{dst}_balance_buf")
+        design.add_gate(Gate(name=buffer_name, type="buf", inputs=[source_net], output=output_net))
+        added_gates.append(buffer_name)
+        if output_net != dst:
+            added_nets.append(output_net)
+        source_net = output_net
+
+    return {
+        "dst": dst,
+        "old_driver": driver_gate_name,
+        "added_gates": added_gates,
+        "added_nets": added_nets,
+    }
+
+
+def _simplify_double_inverter_in_cone(design: Design, cone_gates: set[str]) -> dict[str, Any] | None:
+    rebuild_graph(design)
+    for second_name in sorted(cone_gates):
+        second = design.gates.get(second_name)
+        if second is None or second.type != "not" or len(second.inputs) != 1:
+            continue
+
+        mid_net = second.inputs[0]
+        first_driver = design.drivers.get(mid_net)
+        if not first_driver or not first_driver.startswith("GATE:"):
+            continue
+        first_name = first_driver.split(":", 1)[1]
+        if first_name not in cone_gates:
+            continue
+        first = design.gates.get(first_name)
+        if first is None or first.type != "not" or len(first.inputs) != 1:
+            continue
+        if design.fanouts.get(mid_net, []) != [f"GATE:{second_name}"]:
+            continue
+
+        source_net = first.inputs[0]
+        output_net = second.output
+        if output_net in design.outputs:
+            second.type = "buf"
+            second.inputs = [source_net]
+            del design.gates[first_name]
+            _discard_internal_wire(design, mid_net)
+            return {
+                "rule": "double_inverter_to_output_buffer",
+                "removed_gates": [first_name],
+                "rewritten_gate": second_name,
+                "removed_nets": [mid_net],
+            }
+
+        sinks = list(design.fanouts.get(output_net, []))
+        if any(sink.startswith("PO:") for sink in sinks):
+            continue
+        for sink in sinks:
+            _redirect_sink(design, sink, old_net=output_net, new_net=source_net)
+        del design.gates[first_name]
+        del design.gates[second_name]
+        _discard_internal_wire(design, mid_net)
+        _discard_internal_wire(design, output_net)
+        return {
+            "rule": "remove_double_inverter",
+            "removed_gates": [first_name, second_name],
+            "redirected_net": output_net,
+            "replacement_net": source_net,
+            "removed_nets": [mid_net, output_net],
+        }
+    return None
+
+
+def _remove_internal_buffer_in_cone(design: Design, cone_gates: set[str]) -> dict[str, Any] | None:
+    rebuild_graph(design)
+    for gate_name in sorted(cone_gates):
+        gate = design.gates.get(gate_name)
+        if gate is None or gate.type != "buf" or len(gate.inputs) != 1:
+            continue
+        output_net = gate.output
+        if output_net in design.outputs:
+            continue
+        sinks = list(design.fanouts.get(output_net, []))
+        if any(sink.startswith("PO:") for sink in sinks):
+            continue
+
+        replacement_net = gate.inputs[0]
+        for sink in sinks:
+            _redirect_sink(design, sink, old_net=output_net, new_net=replacement_net)
+        del design.gates[gate_name]
+        _discard_internal_wire(design, output_net)
+        return {
+            "rule": "remove_internal_buffer",
+            "removed_gates": [gate_name],
+            "redirected_net": output_net,
+            "replacement_net": replacement_net,
+            "removed_nets": [output_net],
+        }
+    return None
+
+
+def _discard_internal_wire(design: Design, net: str) -> None:
+    if net not in design.inputs and net not in design.outputs:
+        design.wires.discard(net)
+
+
+def _cone_max_depth(design: Design, target: str) -> int:
+    sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
+    depths = []
+    for source in sorted(sources):
+        depth, path = max_depth(design, source, target)
+        if path:
+            depths.append(depth)
+    return max(depths, default=0)

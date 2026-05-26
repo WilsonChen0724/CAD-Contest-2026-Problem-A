@@ -37,6 +37,8 @@ Common mappings:
 - Replace inverter followed by buffer -> replace_inv_buf_with_inv with {}.
 - Replace OR gates in cone T with NAND/NOT -> replace_or_with_nand_not with {"cone_target": "T"}.
 - Insert buffers on high-fanout net X so fanout <= N -> insert_buffers_for_fanout with {"net": "X", "max_fanout": N}.
+- Balance depths from source S to destinations A,B with buffers -> balance_depth_with_buffers with {"src": "S", "dsts": ["A", "B"], "minimize_buffers": true}.
+- Optimize logic cone of target T with max depth N and minimized gate count -> optimize_cone with {"target": "T", "max_depth": N, "minimize_gate_count": true}.
 - Maximum logic depth from input A to output B -> max_depth with {"src": "A", "dst": "B"}.
 - Find a path from A to B -> find_path with {"src": "A", "dst": "B"}.
 - Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.

@@ -129,6 +129,38 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Final max fanout", body)
         self.assertTrue(check_fanout(state.design, 2)["ok"])
 
+    def test_dispatcher_balances_depths_with_post_check(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src"}, outputs={"y0", "y1"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["src"], output="y0"))
+        state.design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="n1"))
+        state.design.add_gate(Gate(name="U2", type="buf", inputs=["n1"], output="y1"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "balance_depth_with_buffers", "args": {"src": "src", "dsts": ["y0", "y1"]}},
+        )
+
+        self.assertIn("Inserted 1 buffer", body)
+        self.assertIn("Final depths", body)
+
+    def test_dispatcher_optimizes_cone_with_depth_guard(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_buf", type="buf", inputs=["a"], output="n_buf"))
+        state.design.add_gate(Gate(name="U_not0", type="not", inputs=["n_buf"], output="n_inv"))
+        state.design.add_gate(Gate(name="U_not1", type="not", inputs=["n_inv"], output="n_clean"))
+        state.design.add_gate(Gate(name="U_and", type="and", inputs=["n_clean", "b"], output="y"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "optimize_cone", "args": {"target": "y", "max_depth": 1, "minimize_gate_count": True}},
+        )
+
+        self.assertIn("Optimized cone", body)
+        self.assertIn("4 -> 1 gate", body)
+        self.assertEqual(set(state.design.gates), {"U_and"})
+
     def test_multi_step_transform_plan_operates_on_evolving_state(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})

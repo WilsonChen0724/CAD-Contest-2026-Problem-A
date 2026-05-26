@@ -5,8 +5,11 @@ import unittest
 
 from eda.design import Design, Gate
 from eda.graph import rebuild_graph
+from eda.analysis import max_depth
 from eda.transform import (
+    balance_depth_with_buffers,
     insert_buffers_for_fanout,
+    optimize_cone,
     remove_dangling,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
@@ -101,6 +104,38 @@ class TransformTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "max_fanout >= 2"):
             insert_buffers_for_fanout(design, "src", 1)
+
+    def test_balance_depth_with_buffers_equalizes_endpoint_depths(self) -> None:
+        design = Design(inputs={"src"}, outputs={"y0", "y1", "y2"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["src"], output="y0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="n1"))
+        design.add_gate(Gate(name="U2", type="buf", inputs=["n1"], output="y1"))
+        design.add_gate(Gate(name="U3", type="buf", inputs=["src"], output="n2"))
+        design.add_gate(Gate(name="U4", type="buf", inputs=["n2"], output="n3"))
+        design.add_gate(Gate(name="U5", type="buf", inputs=["n3"], output="y2"))
+        before = deepcopy(design)
+
+        result = balance_depth_with_buffers(design, "src", ["y0", "y1", "y2"])
+
+        self.assertEqual(result["num_inserted_buffers"], 3)
+        self.assertEqual({max_depth(design, "src", dst)[0] for dst in ["y0", "y1", "y2"]}, {3})
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_optimize_cone_removes_buffer_and_double_inverter(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U_buf", type="buf", inputs=["a"], output="n_buf"))
+        design.add_gate(Gate(name="U_not0", type="not", inputs=["n_buf"], output="n_inv"))
+        design.add_gate(Gate(name="U_not1", type="not", inputs=["n_inv"], output="n_clean"))
+        design.add_gate(Gate(name="U_and", type="and", inputs=["n_clean", "b"], output="y"))
+        before = deepcopy(design)
+
+        result = optimize_cone(design, "y", max_depth=1)
+
+        self.assertEqual(result["final_gate_count"], 1)
+        self.assertEqual(result["final_depth"], 1)
+        self.assertEqual(set(design.gates), {"U_and"})
+        self.assertEqual(design.gates["U_and"].inputs, ["a", "b"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
 
 
 if __name__ == "__main__":

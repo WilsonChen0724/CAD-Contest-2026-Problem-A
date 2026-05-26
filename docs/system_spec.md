@@ -319,6 +319,12 @@ Transformation rejected: <reason>
 - Optional Yosys/ABC adapters may be used when available.
 - Current status: high-fanout buffer insertion is implemented first and is
   guarded by connectivity, equivalence, and fanout-bound checks.
+- Current status: endpoint depth balancing is implemented for independent
+  gate-driven destination nets and is guarded by connectivity, equivalence, and
+  depth-balance checks.
+- Current status: cone optimization has a first local simplification pass for
+  redundant buffers and double inverters. Broader Boolean resynthesis is future
+  work.
 
 ### M4: Submission Hardening
 
