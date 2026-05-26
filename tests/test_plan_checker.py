@@ -42,6 +42,7 @@ class PlanCheckerTest(unittest.TestCase):
             {"op": "remove_dangling", "args": {}},
             {"op": "replace_inv_buf_with_inv", "args": {}},
             {"op": "replace_or_with_nand_not", "args": {"cone_target": "flag"}},
+            {"op": "insert_buffers_for_fanout", "args": {"net": "clk_en", "max_fanout": 8}},
             {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
             {"op": "check_property", "args": {"target": "done", "property": "done -> req"}},
         ]

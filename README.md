@@ -77,6 +77,7 @@ These operations are wired through both the plan checker and dispatcher:
 - `remove_dangling`
 - `replace_inv_buf_with_inv`
 - `replace_or_with_nand_not`
+- `insert_buffers_for_fanout`
 - `check_connectivity`
 - `check_fanout`
 - `check_depth`
@@ -117,6 +118,8 @@ The current backend includes:
 - connectivity checking for missing and duplicate drivers.
 - combinational equivalence/property checking, using `z3-solver` when
   installed and a small brute-force fallback otherwise.
+- transactional high-fanout buffer insertion guarded by connectivity,
+  equivalence, and final fanout-bound checks.
 
 Additional analysis helpers exist in `eda/analysis.py` for fanout cones and
 related structural reports. Primary-output cone-size reports,
@@ -269,8 +272,10 @@ and Tool API safety boundary.
   `docs/tool_spec.md` still describes a broader contest target.
 - Formal checks are combinational-only in this version. Sequential
   unrolling/property checking is not implemented yet.
-- Fanout-buffer insertion, depth balancing, and general cone optimization are
-  not implemented yet.
+- Depth balancing and general cone optimization are not implemented yet.
+- Fanout-buffer insertion is implemented for gate/DFF sinks; primary-output
+  sinks remain directly tied to the original net and count against the root
+  fanout budget.
 - The writer emits a normalized flattened primitive style instead of preserving
   original formatting or comments.
 - Named-pin, library-specific sequential cells are future work beyond the

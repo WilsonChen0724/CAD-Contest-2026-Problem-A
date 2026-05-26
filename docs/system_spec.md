@@ -307,6 +307,8 @@ Transformation rejected: <reason>
 - Equivalence and property checks are supported.
 - Transformations run structural and equivalence checks before commit when
   functionality must be preserved.
+- Current status: implemented for combinational cones; counterexamples are
+  returned when a check fails.
 
 ### M3: Optimization
 
@@ -315,6 +317,8 @@ Transformation rejected: <reason>
 - Cone optimization can reduce gate count under hard depth or functionality
   constraints.
 - Optional Yosys/ABC adapters may be used when available.
+- Current status: high-fanout buffer insertion is implemented first and is
+  guarded by connectivity, equivalence, and fanout-bound checks.
 
 ### M4: Submission Hardening
 

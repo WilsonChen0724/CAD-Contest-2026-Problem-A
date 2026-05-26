@@ -16,6 +16,7 @@ from eda.analysis import (
     primary_output_cone_sizes,
 )
 from eda.transform import (
+    insert_buffers_for_fanout,
     remove_dangling,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
@@ -45,6 +46,7 @@ SUPPORTED_OPS = {
     "remove_dangling",
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
+    "insert_buffers_for_fanout",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -68,6 +70,7 @@ REQUIRED_ARGS = {
     "remove_dangling": (),
     "replace_inv_buf_with_inv": (),
     "replace_or_with_nand_not": ("cone_target",),
+    "insert_buffers_for_fanout": ("net", "max_fanout"),
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
     "check_depth": ("src", "dst", "max_depth"),
@@ -275,6 +278,21 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             f'"{args["cone_target"]}" with NAND/NOT logic: {result["changed"]}'
         )
 
+    if op == "insert_buffers_for_fanout":
+        _require_design(state)
+        result = _run_transactional_transform(
+            state,
+            insert_buffers_for_fanout,
+            args["net"],
+            args["max_fanout"],
+            verify_equivalence=True,
+            max_fanout=args["max_fanout"],
+        )
+        return (
+            f'Inserted {result["num_inserted_buffers"]} buffer(s) on net '
+            f'"{args["net"]}". Final max fanout is {result["final_max_fanout"]}.'
+        )
+
     if op == "check_connectivity":
         _require_design(state)
         return str(check_connectivity(state.design))
@@ -327,6 +345,7 @@ def _run_transactional_transform(
     transform,
     *args: Any,
     verify_equivalence: bool = False,
+    max_fanout: int | None = None,
     **kwargs: Any,
 ) -> dict:
     """
@@ -346,6 +365,10 @@ def _run_transactional_transform(
         equivalence = check_design_equivalence(original, candidate)
         if not equivalence.get("ok", False):
             raise RuntimeError(f"Transformation rejected: equivalence check failed: {equivalence}")
+    if max_fanout is not None:
+        fanout = check_fanout(candidate, max_fanout)
+        if not fanout.get("ok", False):
+            raise RuntimeError(f"Transformation rejected: fanout check failed: {fanout}")
     state.design = candidate
     return result
 

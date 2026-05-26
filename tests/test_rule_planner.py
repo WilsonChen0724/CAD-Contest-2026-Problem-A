@@ -36,6 +36,11 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "replace_or_with_nand_not", "args": {"cone_target": "flag"}})
 
+    def test_maps_insert_buffers_for_fanout(self) -> None:
+        plan = plan_request("Insert buffers on high-fanout net clk_en so fanout is at most 8.", None)
+
+        self.assertEqual(plan, {"op": "insert_buffers_for_fanout", "args": {"net": "clk_en", "max_fanout": 8}})
+
     def test_maps_equivalence_check(self) -> None:
         plan = plan_request("Check whether (a & b) is equivalent to z.", None)
 

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import unittest
 
 from eda.design import Design, Gate
 from eda.graph import rebuild_graph
 from eda.transform import (
+    insert_buffers_for_fanout,
     remove_dangling,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
     replace_or_with_nand_not,
 )
+from eda.verify import check_design_equivalence, check_fanout
 
 
 class TransformTest(unittest.TestCase):
@@ -77,6 +80,27 @@ class TransformTest(unittest.TestCase):
         added_gates = result["changed"][0]["added_gates"]
         self.assertEqual([design.gates[name].type for name in added_gates], ["not", "not"])
         self.assertEqual(design.gates["U_other_or"].type, "or")
+
+    def test_insert_buffers_for_fanout_builds_equivalent_buffer_tree(self) -> None:
+        design = Design(inputs={"src"}, outputs={f"y{i}" for i in range(5)})
+        for i in range(5):
+            design.add_gate(Gate(name=f"U{i}", type="buf", inputs=["src"], output=f"y{i}"))
+        before = deepcopy(design)
+
+        result = insert_buffers_for_fanout(design, "src", 2)
+
+        self.assertGreater(result["num_inserted_buffers"], 0)
+        self.assertTrue(check_fanout(design, 2)["ok"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+        self.assertLessEqual(len(design.fanouts["src"]), 2)
+
+    def test_insert_buffers_for_fanout_rejects_impossible_bound(self) -> None:
+        design = Design(inputs={"src"}, outputs={"src", "y"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["src"], output="y"))
+        rebuild_graph(design)
+
+        with self.assertRaisesRegex(ValueError, "max_fanout >= 2"):
+            insert_buffers_for_fanout(design, "src", 1)
 
 
 if __name__ == "__main__":

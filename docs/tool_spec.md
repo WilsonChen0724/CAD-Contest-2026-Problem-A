@@ -368,6 +368,7 @@ Rules:
 
 - Preserve logical functionality.
 - Report number of inserted buffers and final maximum fanout.
+- Commit only after connectivity, equivalence, and fanout-bound checks pass.
 
 ### balance_depth_with_buffers
 

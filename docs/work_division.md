@@ -35,7 +35,11 @@ Known gaps:
 - Combinational equivalence/property checking is now implemented for the first
   Tool API version. It uses `z3-solver` when installed and a small brute-force
   fallback otherwise.
-- Optimization tasks are not implemented yet.
+- Function-preserving transformations are now automatically checked with
+  `check_design_equivalence` before commit.
+- M3 has started: `insert_buffers_for_fanout` is implemented as a transactional
+  buffer-tree transform guarded by connectivity, equivalence, and final fanout
+  checks. Depth balancing and general cone optimization are still pending.
 
 ## Person A: EDA Core / Parser / Graph
 
@@ -153,15 +157,17 @@ Done when:
 
 Done when:
 
-- Combinational cones can be encoded into Z3.
+- Combinational cones can be encoded into Z3. **Done for combinational gates.**
 - `check_equivalence` and `check_property` return counterexamples when false.
-- Function-preserving transformations are checked before commit.
+  **Done for the first Tool API version.**
+- Function-preserving transformations are checked before commit. **Done.**
 
 ### M3: Optimization
 
 Done when:
 
-- High-fanout buffer insertion satisfies max-fanout bounds.
+- High-fanout buffer insertion satisfies max-fanout bounds. **First version
+  implemented for gate/DFF sinks.**
 - Depth balancing inserts a minimal or near-minimal number of buffers.
 - Cone optimization satisfies hard constraints before minimizing gate count.
 - Optional Yosys/ABC adapters are used only behind verification guards.

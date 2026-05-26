@@ -19,6 +19,7 @@ SUPPORTED_OPS = {
     "remove_dangling",
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
+    "insert_buffers_for_fanout",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -192,6 +193,17 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         target = target or _extract_after_keyword(text, "for") or _extract_after_keyword(text, "target")
         if target:
             return {"op": "replace_or_with_nand_not", "args": {"cone_target": target}}
+
+    if (
+        any(word in low for word in ("insert", "add", "build"))
+        and ("buffer" in low or "buffers" in low)
+        and ("fanout" in low or "fan-out" in low)
+    ):
+        net = _extract_after_keyword(text, "net") or _extract_after_keyword(text, "signal")
+        net = net or _extract_after_keyword(text, "on") or _extract_after_keyword(text, "for")
+        max_fanout = _extract_limit_int(text)
+        if net and max_fanout is not None:
+            return {"op": "insert_buffers_for_fanout", "args": {"net": net, "max_fanout": max_fanout}}
 
     return None
 

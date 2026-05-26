@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from eda.design import DFF, Design, Gate
+from eda.verify import check_fanout
 from runtime.dispatcher import dispatch_plan
 from runtime.state import CurrentState
 
@@ -112,6 +113,21 @@ class DispatcherTest(unittest.TestCase):
 
         self.assertEqual(state.design.gates["U_buf"].type, "buf")
         self.assertEqual(state.design.gates["U_buf"].inputs, ["a"])
+
+    def test_dispatcher_inserts_fanout_buffers_with_post_check(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src"}, outputs={f"y{i}" for i in range(5)})
+        for i in range(5):
+            state.design.add_gate(Gate(name=f"U{i}", type="buf", inputs=["src"], output=f"y{i}"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "insert_buffers_for_fanout", "args": {"net": "src", "max_fanout": 2}},
+        )
+
+        self.assertIn("Inserted", body)
+        self.assertIn("Final max fanout", body)
+        self.assertTrue(check_fanout(state.design, 2)["ok"])
 
     def test_multi_step_transform_plan_operates_on_evolving_state(self) -> None:
         state = CurrentState()

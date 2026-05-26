@@ -36,6 +36,7 @@ Common mappings:
 - Remove dangling or unused gates/nets -> remove_dangling with {}.
 - Replace inverter followed by buffer -> replace_inv_buf_with_inv with {}.
 - Replace OR gates in cone T with NAND/NOT -> replace_or_with_nand_not with {"cone_target": "T"}.
+- Insert buffers on high-fanout net X so fanout <= N -> insert_buffers_for_fanout with {"net": "X", "max_fanout": N}.
 - Maximum logic depth from input A to output B -> max_depth with {"src": "A", "dst": "B"}.
 - Find a path from A to B -> find_path with {"src": "A", "dst": "B"}.
 - Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.
