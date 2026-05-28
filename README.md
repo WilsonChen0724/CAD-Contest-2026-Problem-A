@@ -1,4 +1,4 @@
-# CADA1070 v0.3.0
+# CADA1070 v0.3.1
 
 This repository is an ICCAD Contest Problem A style prototype for
 LLM-assisted netlist exploration and transformation.
@@ -8,10 +8,13 @@ into a restricted Tool API plan, validates the plan, executes deterministic EDA
 backend operations on the current gate-level Verilog design state, and prints
 contest-style response blocks.
 
-The LLM never edits Verilog directly. It may only produce JSON tool calls that
-pass `agent/plan_checker.py` and are executed through `runtime/dispatcher.py`.
+The LLM never edits Verilog directly. In LLM mode it must call one OpenAI
+function tool from gent/tool_schema.py (un_design_io_plan, un_analysis_plan,
+un_transform_plan, or un_verify_plan). The returned tool-call arguments
+are normalized into the project Tool API plan, checked by gent/plan_checker.py,
+and then executed through untime/dispatcher.py.
 The broader target API is documented in `docs/tool_spec.md`; this README marks
-which parts are implemented in v0.3.0.
+which parts are implemented in v0.3.1.
 
 ## Architecture
 
@@ -37,7 +40,7 @@ Yosys-backed Verilog parser/writer + Design IR + EDA backend
 stdout response + testcase log + optional output netlist
 ```
 
-## What v0.3.0 Supports
+## What v0.3.1 Supports
 
 ### Planner modes
 
@@ -51,13 +54,14 @@ python main.py -config config.example.yaml -planner hybrid
 
 - `rule`: deterministic keyword/rule planner. This is the default and needs no
   API key.
-- `llm`: sends each request to the OpenAI Responses API and validates the
-  returned JSON tool plan.
+- llm: sends each request to the OpenAI Responses API with four domain
+  function tools and validates the returned tool-call plan.
 - `hybrid`: tries the deterministic planner first, then falls back to the LLM
   only when the rule planner returns `unsupported`.
 
-The LLM path includes one repair retry when the model returns invalid JSON or a
-checker-rejected tool plan.
+The LLM path includes one repair retry when the model returns an invalid tool
+call or a checker-rejected plan. Raw OpenAI tool calls are logged to stderr as
+pretty-printed [llm-tool-call] JSON blocks, so contest stdout remains clean.
 
 ### Implemented Tool API operations
 
@@ -93,7 +97,7 @@ saved gate lists with arguments such as `targets_from`.
 
 ### Verilog frontend and backend
 
-v0.3.0 moves the parser/writer path to a Yosys-backed flow:
+The parser/writer path uses a Yosys-backed flow:
 
 - `parser/verilog_parser.py` reads one flattened top module through Yosys JSON.
 - Primitive instances are temporarily rewritten as private wrapper cells so
@@ -234,6 +238,43 @@ Expected behavior:
   buffers, replaces them with AND gates, reports max depth, and writes
   `output/test8_out.v`.
 
+## Release Testcase Runner
+
+The bundled unit and smoke tests still use the small `tests/` fixtures by
+default. To run the larger `A_release testcase_0510` prompt folders through the
+same stdin/stdout contest loop, use:
+
+```bash
+python scripts/run_release_testcases.py --ensure-yosys
+```
+
+Run one case:
+
+```bash
+python scripts/run_release_testcases.py --case test01 --ensure-yosys
+```
+
+Use the LLM or hybrid planner:
+
+```bash
+python scripts/run_release_testcases.py --planner hybrid --ensure-yosys
+```
+
+The runner executes each `testcase/testNN/prompt.txt` with `main.py` using the
+release directory as the working directory, so prompt paths such as
+`testcase/test01/test01.v` resolve naturally. Per-case stdout/stderr logs are
+written under `A_release testcase_0510/runner_output/`.
+
+During development, unsupported responses are counted but do not fail the run.
+After the remaining backend tools are implemented, enable stricter regression
+behavior with:
+
+```bash
+python scripts/run_release_testcases.py --ensure-yosys --fail-on-unsupported --fail-on-error
+```
+
+For a fuller setup and testing walkthrough for teammates, see `docs/testing_guide.md`.
+
 ## Run Tests
 
 ```bash
@@ -273,7 +314,7 @@ design state remains the project `Design` IR.
 The pure Python backend still owns the IR, graph traversal, response behavior,
 and Tool API safety boundary.
 
-## Known Limits in v0.3.0
+## Known Limits in v0.3.1
 
 - The dispatcher exposes the implemented operation list above, while
   `docs/tool_spec.md` still describes a broader contest target.
@@ -348,6 +389,59 @@ and Tool API safety boundary.
 See `docs/work_division.md` for the detailed milestone-based ownership plan.
 
 ## Version Notes
+
+### v0.3.1 - Formal checks and guarded optimization tools (2026-05-28)
+
+This version extends the v0.3.0 Yosys-backed baseline with a wider dispatcher
+surface, formal verification helpers, and first-pass optimization transforms.
+
+1. More Tool API operations are production-wired
+
+   The checker, rule planner, prompt, and dispatcher now cover additional
+   analysis, transformation, optimization, and verification tools:
+
+   - `all_paths_pass_through`
+   - `report_outputs_by_cone_size`
+   - `same_clock_domain`
+   - `remove_dangling`
+   - `replace_inv_buf_with_inv`
+   - `replace_or_with_nand_not`
+   - `insert_buffers_for_fanout`
+   - `balance_depth_with_buffers`
+   - `optimize_cone`
+   - `check_equivalence`
+   - `check_property`
+
+2. Combinational formal verification
+
+   `eda/verify.py` now supports expression equivalence checks and Boolean
+   property checks over combinational cones. The preferred backend is
+   `z3-solver`; small checks can fall back to brute-force enumeration.
+
+3. Transactional transformation safety
+
+   Function-preserving dispatcher transforms now run on copied design state and
+   commit only after connectivity and equivalence checks pass. This protects the
+   active testcase design from failed rewrites.
+
+4. New structural rewrites
+
+   v0.3.1 turns earlier transformation stubs into implemented operations:
+   dangling-logic removal, inverter-buffer chain collapse, and OR-to-NAND/NOT
+   cone rewriting.
+
+5. First optimization support
+
+   High-fanout buffer insertion, endpoint depth balancing, and local cone
+   optimization are now available. These are conservative structural helpers:
+   they preserve function, check hard constraints after rewriting, and avoid
+   physical timing claims.
+
+6. Regression coverage
+
+   Tests were added for the expanded rule planner mappings, plan checker
+   schemas, dispatcher transactions, formal verification checks, fanout buffer
+   insertion, depth balancing, and cone optimization.
 
 ### v0.3.0 - Yosys-backed frontend and planner hardening (2026-05-25)
 

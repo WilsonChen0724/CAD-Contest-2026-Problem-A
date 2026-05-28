@@ -133,7 +133,7 @@ def _plan_design_io(text: str, low: str) -> dict[str, Any] | None:
     if ".v" not in low:
         return None
 
-    path = _extract_quoted_path(text) or _extract_verilog_path(text)
+    path = _extract_quoted_path(text) or _extract_directory_file_path(text) or _extract_verilog_path(text)
     if path is None:
         return _unsupported("A Verilog file path was mentioned but no .v path could be extracted.")
 
@@ -386,6 +386,22 @@ def _extract_quoted_path(text: str) -> str | None:
 def _extract_verilog_path(text: str) -> str | None:
     match = re.search(r"([A-Za-z0-9_./\\:\-]+\.v)", text, flags=re.I)
     return match.group(1) if match else None
+
+
+def _extract_directory_file_path(text: str) -> str | None:
+    file_match = re.search(r"\bfile\s+['\"]?([A-Za-z0-9_.\-]+\.v)['\"]?", text, flags=re.I)
+    dir_match = re.search(
+        r"\bdirectory\s+['\"]?([A-Za-z0-9_./\\:\- ]+?)['\"]?(?:[.?!]|$)",
+        text,
+        flags=re.I,
+    )
+    if not file_match or not dir_match:
+        return None
+
+    directory = dir_match.group(1).strip().rstrip("/\\")
+    filename = file_match.group(1)
+    separator = "\\" if "\\" in directory else "/"
+    return f"{directory}{separator}{filename}"
 
 
 def _extract_name_pattern(text: str) -> str | None:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agent.tool_schema import TOOL_ALLOWED_OPS
+
 
 class PlanValidationError(ValueError):
     """Raised when an LLM plan is not safe to dispatch."""
@@ -93,6 +95,42 @@ def parse_plan_json(raw_plan: str) -> dict[str, Any]:
         ) from exc
 
     return validate_plan(plan)
+
+
+def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
+    """
+    Validate arguments returned by one OpenAI domain tool call.
+
+    The OpenAI schema keeps output structurally stable, but this function is the
+    local safety boundary: it checks the called tool name, rejects operations
+    outside that tool's category, and then reuses the per-op plan validation.
+    """
+    if tool_name not in TOOL_ALLOWED_OPS:
+        raise PlanValidationError(f"Unexpected OpenAI tool call '{tool_name}'.")
+    if not isinstance(tool_args, dict):
+        raise PlanValidationError(f"{tool_name}.arguments must be a JSON object.")
+
+    unknown_keys = set(tool_args) - {"steps"}
+    if unknown_keys:
+        names = ", ".join(sorted(unknown_keys))
+        raise PlanValidationError(f"{tool_name}.arguments has unknown field(s): {names}")
+
+    steps = tool_args.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise PlanValidationError(f"{tool_name}.arguments.steps must be a non-empty list.")
+
+    allowed_ops = TOOL_ALLOWED_OPS[tool_name]
+    for index, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            raise PlanValidationError(f"{tool_name}.steps[{index}] must be a JSON object.")
+        op = step.get("op")
+        if op not in allowed_ops:
+            raise PlanValidationError(
+                f"Operation '{op}' is not allowed in OpenAI tool '{tool_name}'."
+            )
+
+    normalized_steps = [_normalize_tool_step(step) for step in steps]
+    return validate_plan({"steps": normalized_steps})
 
 
 def validate_plan(plan: Any) -> dict[str, Any]:
@@ -214,3 +252,10 @@ def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
     if unknown:
         names = ", ".join(sorted(unknown))
         raise PlanValidationError(f"Unknown field(s) in plan: {names}")
+
+
+def _normalize_tool_step(step: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(step)
+    if normalized.get("save_as") is None:
+        normalized.pop("save_as", None)
+    return normalized

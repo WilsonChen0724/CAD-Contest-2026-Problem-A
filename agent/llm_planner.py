@@ -32,14 +32,16 @@ def plan_with_llm(
     attempts = max_retries + 1
 
     for attempt in range(attempts):
-        raw_plan = llm_call(prompt, request_for_model, config)
+        raw_plan: str | None = None
         try:
+            raw_plan = llm_call(prompt, request_for_model, config)
             return parse_plan_json(raw_plan)
         except PlanValidationError as exc:
             last_error = exc
             if attempt >= max_retries:
                 break
-            request_for_model = _build_repair_request(user_request, raw_plan, exc)
+            rejected_output = raw_plan if raw_plan is not None else "<invalid OpenAI tool call>"
+            request_for_model = _build_repair_request(user_request, rejected_output, exc)
 
     raise PlanValidationError(
         "LLM planner returned an invalid tool plan after retry. "

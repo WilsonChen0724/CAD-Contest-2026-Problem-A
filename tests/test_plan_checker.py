@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from agent.plan_checker import PlanValidationError, format_plan_error, parse_plan_json, validate_plan
+from agent.plan_checker import (
+    PlanValidationError,
+    format_plan_error,
+    parse_plan_json,
+    validate_domain_tool_plan,
+    validate_plan,
+)
 
 
 class PlanCheckerTest(unittest.TestCase):
@@ -52,6 +58,42 @@ class PlanCheckerTest(unittest.TestCase):
         for plan in plans:
             with self.subTest(op=plan["op"]):
                 self.assertEqual(validate_plan(plan), plan)
+
+    def test_accepts_valid_openai_domain_tool_plan(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {
+                        "op": "max_depth",
+                        "args": {"src": "in0", "dst": "out3"},
+                        "save_as": None,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "max_depth", "args": {"src": "in0", "dst": "out3"}}]},
+        )
+
+    def test_rejects_openai_domain_tool_with_wrong_category(self) -> None:
+        with self.assertRaises(PlanValidationError) as ctx:
+            validate_domain_tool_plan(
+                "run_analysis_plan",
+                {
+                    "steps": [
+                        {
+                            "op": "remove_dangling",
+                            "args": {},
+                            "save_as": None,
+                        }
+                    ]
+                },
+            )
+
+        self.assertIn("not allowed", str(ctx.exception))
 
 
 if __name__ == "__main__":
