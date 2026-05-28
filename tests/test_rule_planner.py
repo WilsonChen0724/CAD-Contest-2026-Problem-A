@@ -6,6 +6,14 @@ from agent.planner import plan_request
 
 
 class RulePlannerTest(unittest.TestCase):
+    def test_maps_release_style_read_design_path(self) -> None:
+        plan = plan_request(
+            "Please load the design from the file test01.v located in the directory testcase/test01/.",
+            None,
+        )
+
+        self.assertEqual(plan, {"op": "read_design", "args": {"path": "testcase/test01/test01.v"}})
+
     def test_maps_all_paths_pass_through(self) -> None:
         plan = plan_request("Does every path from A to B pass through C?", None)
 
