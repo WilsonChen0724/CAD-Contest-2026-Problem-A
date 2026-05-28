@@ -67,13 +67,24 @@ These operations are wired through both the plan checker and dispatcher:
 - `read_design`
 - `write_design`
 - `find_path`
+- `all_paths_pass_through`
 - `max_depth`
 - `logic_cone`
+- `report_outputs_by_cone_size`
 - `find_gates`
+- `same_clock_domain`
 - `replace_buffers_with_and`
+- `remove_dangling`
+- `replace_inv_buf_with_inv`
+- `replace_or_with_nand_not`
+- `insert_buffers_for_fanout`
+- `balance_depth_with_buffers`
+- `optimize_cone`
 - `check_connectivity`
 - `check_fanout`
 - `check_depth`
+- `check_equivalence`
+- `check_property`
 - `unsupported`
 
 Multi-step plans with a top-level `steps` array are supported. A step may use
@@ -107,29 +118,52 @@ The current backend includes:
 - fanout-bound checking,
 - depth-bound checking,
 - connectivity checking for missing and duplicate drivers.
+- combinational equivalence/property checking, using `z3-solver` when
+  installed and a small brute-force fallback otherwise.
+- transactional high-fanout buffer insertion guarded by connectivity,
+  equivalence, and final fanout-bound checks.
+- transactional endpoint depth balancing with inserted buffers, guarded by
+  connectivity, equivalence, and final depth-balance checks.
+- transactional cone optimization with local buffer/double-inverter
+  simplification, guarded by connectivity, equivalence, and optional depth
+  constraints.
 
-Additional analysis helpers exist in `eda/analysis.py` for fanout cones, primary
-output cone sizes, all-paths-through checks, and DFF relationship reports.
-Some of these are tested internally but are not yet exposed as dispatcher Tool
-API operations in v0.3.0.
+Additional analysis helpers exist in `eda/analysis.py` for fanout cones and
+related structural reports. Primary-output cone-size reports,
+all-paths-through checks, and same-clock-domain DFF checks are exposed through
+the dispatcher Tool API.
 
 ### Transformation
 
-The implemented transformation is:
+The implemented transformations are:
 
 - `replace_buffers_with_and`: selected one-input `buf` gates are changed to
   two-input `and` gates using the requested extra input net.
+- `remove_dangling`: gates, DFFs, and internal nets that do not contribute to
+  any primary output are removed.
+- `replace_inv_buf_with_inv`: safe inverter-buffer chains are collapsed into a
+  single inverter when the intermediate net has no other fanout.
+- `replace_or_with_nand_not`: 2-input OR gates in a requested cone are rewritten
+  as equivalent NAND/NOT logic.
 
-Transformation stubs for dangling removal, inverter-buffer collapsing, and OR
-to NAND/NOT rewriting are present in `eda/transform.py`, but they are not wired
-as production Tool API operations yet.
+Function-preserving transformations are transactional: they run on a copied
+design, pass connectivity checks, and must preserve common primary-output
+functions before the modified design is committed.
 
 ## Requirements
 
 - Python 3.10 or newer.
 - Yosys, either installed on `PATH` or installed locally under
   `third_party/yosys/oss-cad-suite`.
+- `z3-solver` is recommended for formal equivalence/property checks. Without
+  it, small formal checks fall back to brute-force enumeration.
 - Optional OpenAI API key for `-planner llm` or `-planner hybrid` fallback.
+
+Install Python dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
 
 Install or verify a local Yosys copy:
 
@@ -159,7 +193,7 @@ chmod +x cada1070_alpha
 On Windows PowerShell, run Python directly:
 
 ```powershell
-python .\main.py --ensure-yosys -config .\config.example.yaml < .\tests\smoke_input.txt
+Get-Content .\tests\smoke_input.txt | python .\main.py --ensure-yosys -config .\config.example.yaml
 ```
 
 Installer logs go to stderr so stdout can remain in the contest response
@@ -230,8 +264,9 @@ Open-source tools may be used behind deterministic adapters. The canonical
 design state remains the project `Design` IR.
 
 - Yosys is the current parser/writer syntax and normalization helper.
-- `networkx` and `z3-solver` remain recommended future helpers for graph and
-  formal tasks.
+- `networkx` remains a recommended future helper for graph tasks.
+- `z3-solver` is used for formal tasks when installed; otherwise small checks
+  fall back to brute-force enumeration.
 - Optional future optimization adapters may use Yosys or ABC, but any
   function-preserving transformation should verify before commit.
 
@@ -240,11 +275,27 @@ and Tool API safety boundary.
 
 ## Known Limits in v0.3.0
 
-- The dispatcher exposes only the implemented operation list above, even though
-  `docs/tool_spec.md` describes the broader contest target.
-- Formal equivalence and property checking are not implemented yet.
-- Fanout-buffer insertion, depth balancing, and cone optimization are not
+- The dispatcher exposes the implemented operation list above, while
+  `docs/tool_spec.md` still describes a broader contest target.
+- Formal checks are combinational-only in this version. Sequential
+  unrolling/property checking is not implemented yet.
+- Cone optimization is implemented as a first local simplification pass for
+  redundant buffers and double inverters. General Boolean resynthesis is not
   implemented yet.
+- Fanout-buffer insertion is implemented for gate/DFF sinks; primary-output
+  sinks remain directly tied to the original net and count against the root
+  fanout budget.
+- Depth balancing is implemented for independent gate-driven destination nets
+  by inserting buffer chains before the selected endpoints.
+- Depth balancing is a structural logic-depth helper, not a physical timing
+  optimizer. It is intended for requests that require path-depth alignment or
+  for preparing normalized cones before later optimization. It counts primitive
+  gates as depth stages and does not model Liberty delay, placement, routing,
+  slew, or clock skew.
+- Current depth balancing pads each endpoint independently. Future versions
+  should share buffers across common subtrees, support DFF-input/primary-output
+  endpoints when safe, and accept hard constraints such as max inserted buffers
+  or max final depth.
 - The writer emits a normalized flattened primitive style instead of preserving
   original formatting or comments.
 - Named-pin, library-specific sequential cells are future work beyond the
@@ -277,7 +328,7 @@ and Tool API safety boundary.
 
 - Fanout buffer insertion satisfies hard fanout bounds.
 - Depth balancing supports buffer insertion.
-- Cone optimization reduces gate count under hard constraints.
+- Cone optimization reduces simple redundant logic under hard constraints.
 - Optional Yosys/ABC adapters may be used behind verification guards.
 
 ### M4: Submission Hardening

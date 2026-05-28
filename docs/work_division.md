@@ -16,14 +16,75 @@ M0 skeleton is mostly complete:
 - Planner is currently rule-based and should be replaced or supplemented by an
   LLM planner.
 
+> v0.3.0 note: the main branch has moved beyond this original M0 snapshot.
+> The parser/writer path is now Yosys-backed, the LLM planner and plan checker
+> exist, max-depth and connectivity checks have been strengthened, and the
+> default smoke flow passes when Yosys is available.
+
 Known gaps:
 
-- Parser is regex-based and mostly scalar-only.
-- DFF parsing/writing is incomplete.
-- `max_depth` is not yet a true longest-path implementation.
-- Several transformation tools are placeholders.
-- Formal equivalence/property checking is not implemented.
-- Tool call validation is not strict enough yet.
+- Parser/writer behavior now depends on Yosys availability in the local or
+  evaluation environment.
+- The first batch of extra analysis helpers has been exposed through
+  `agent/plan_checker.py`, `agent/planner.py`, and `runtime/dispatcher.py`:
+  all-paths-through, primary-output cone-size reports, and same-clock-domain
+  DFF checks.
+- Core structural transformations are implemented and wired through the
+  dispatcher. Function-preserving transformations are now guarded by
+  connectivity and primary-output equivalence checks before commit.
+- Combinational equivalence/property checking is now implemented for the first
+  Tool API version. It uses `z3-solver` when installed and a small brute-force
+  fallback otherwise.
+- Function-preserving transformations are now automatically checked with
+  `check_design_equivalence` before commit.
+- M3 has started: `insert_buffers_for_fanout` is implemented as a transactional
+  buffer-tree transform guarded by connectivity, equivalence, and final fanout
+  checks. `balance_depth_with_buffers` is implemented for independent
+  gate-driven endpoints and is guarded by connectivity, equivalence, and final
+  depth-balance checks. `optimize_cone` is implemented as a first local
+  simplification pass for redundant buffers and double inverters.
+
+Depth-balancing rationale:
+
+- Equalizing combinational depth from one source to multiple destinations is a
+  useful primitive when a contest request asks for delay/path-depth alignment,
+  when downstream logic expects matched logic stages, or when a later optimizer
+  needs paths normalized before applying local rewrites.
+- The current implementation treats each primitive gate, including `buf`, as
+  one logic-depth stage. It preserves Boolean functionality but does not model
+  physical timing, cell delay, placement, routing, or clock skew.
+
+Depth-balancing limitations and improvement targets:
+
+- Current limit: only independent gate-driven destination nets are supported.
+  Primary inputs, DFF outputs, constants, and already-connected destination
+  pairs are rejected.
+- Current limit: the algorithm pads endpoints independently, so it cannot share
+  inserted buffers across common subtrees or optimize globally.
+- Current limit: it balances maximum combinational gate depth only; it does not
+  balance min/max timing windows, load, slew, or physical delay.
+- Improvement target: support shared-prefix buffer insertion for destinations
+  in the same fanout tree.
+- Improvement target: support balancing to DFF inputs and primary outputs by
+  redirecting sinks when safe.
+- Improvement target: add optional hard limits, such as max inserted buffers,
+  max final depth, or max fanout after depth balancing.
+- Improvement target: integrate ABC/Yosys or Liberty-aware timing estimates
+  behind the existing equivalence and structural verification guards.
+
+Cone-optimization limitations and improvement targets:
+
+- Current limit: `optimize_cone` only applies local function-preserving rules:
+  removing internal buffers and simplifying double inverters.
+- Current limit: it does not perform Boolean resynthesis, algebraic factoring,
+  technology mapping, or area/delay tradeoff search.
+- Current limit: `max_depth` is checked as a hard post-condition, but the
+  optimizer does not actively search alternative rewrites to satisfy a failing
+  depth bound.
+- Improvement target: add constant propagation and idempotent simplifications
+  such as `and(a, a) -> a` and `or(a, a) -> a`.
+- Improvement target: add an optional Yosys/ABC backend path for larger cones,
+  followed by the existing equivalence and structural guards.
 
 ## Person A: EDA Core / Parser / Graph
 
@@ -141,17 +202,21 @@ Done when:
 
 Done when:
 
-- Combinational cones can be encoded into Z3.
+- Combinational cones can be encoded into Z3. **Done for combinational gates.**
 - `check_equivalence` and `check_property` return counterexamples when false.
-- Function-preserving transformations are checked before commit.
+  **Done for the first Tool API version.**
+- Function-preserving transformations are checked before commit. **Done.**
 
 ### M3: Optimization
 
 Done when:
 
-- High-fanout buffer insertion satisfies max-fanout bounds.
-- Depth balancing inserts a minimal or near-minimal number of buffers.
+- High-fanout buffer insertion satisfies max-fanout bounds. **First version
+  implemented for gate/DFF sinks.**
+- Depth balancing inserts a minimal or near-minimal number of buffers. **First
+  version implemented for independent gate-driven destination nets.**
 - Cone optimization satisfies hard constraints before minimizing gate count.
+  **First local simplification version implemented.**
 - Optional Yosys/ABC adapters are used only behind verification guards.
 
 ### M4: Submission Hardening

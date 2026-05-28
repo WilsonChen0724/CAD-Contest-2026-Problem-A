@@ -46,6 +46,13 @@ class AnalysisTest(unittest.TestCase):
         design.add_gate(Gate(name="U_bypass", type="buf", inputs=["src"], output="dst"))
         self.assertFalse(all_paths_pass_through(design, "src", "dst", "U1"))
 
+    def test_all_paths_pass_through_supports_net_node(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="n1"))
+        design.add_gate(Gate(name="U2", type="buf", inputs=["n1"], output="dst"))
+
+        self.assertTrue(all_paths_pass_through(design, "src", "dst", "n1"))
+
     def test_fanout_cone_stops_at_dff_boundary(self) -> None:
         design = Design(module_name="top", inputs={"src", "clk"}, outputs={"out"})
         design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="n1"))

@@ -9,13 +9,24 @@ SUPPORTED_OPS = {
     "read_design",
     "write_design",
     "find_path",
+    "all_paths_pass_through",
     "max_depth",
     "logic_cone",
+    "report_outputs_by_cone_size",
     "find_gates",
+    "same_clock_domain",
     "replace_buffers_with_and",
+    "remove_dangling",
+    "replace_inv_buf_with_inv",
+    "replace_or_with_nand_not",
+    "insert_buffers_for_fanout",
+    "balance_depth_with_buffers",
+    "optimize_cone",
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalence",
+    "check_property",
 }
 
 _SIGNAL_RE = r"[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?"
@@ -164,6 +175,61 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
 
         return {"op": "replace_buffers_with_and", "args": args}
 
+    if "remove" in low and ("dangling" in low or "unused" in low):
+        return {"op": "remove_dangling", "args": {}}
+
+    if (
+        ("replace" in low or "collapse" in low or "merge" in low)
+        and ("inverter" in low or "inverters" in low or "inv" in low)
+        and ("buffer" in low or "buffers" in low or "buf" in low)
+    ):
+        return {"op": "replace_inv_buf_with_inv", "args": {}}
+
+    if (
+        "replace" in low
+        and _mentions_gate_type(low, "or")
+        and "nand" in low
+        and ("not" in low or "inverter" in low or "inverters" in low)
+    ):
+        target = _extract_after_keyword(text, "cone of") or _extract_after_keyword(text, "of")
+        target = target or _extract_after_keyword(text, "for") or _extract_after_keyword(text, "target")
+        if target:
+            return {"op": "replace_or_with_nand_not", "args": {"cone_target": target}}
+
+    if (
+        any(word in low for word in ("insert", "add", "build"))
+        and ("buffer" in low or "buffers" in low)
+        and ("fanout" in low or "fan-out" in low)
+    ):
+        net = _extract_after_keyword(text, "net") or _extract_after_keyword(text, "signal")
+        net = net or _extract_after_keyword(text, "on") or _extract_after_keyword(text, "for")
+        max_fanout = _extract_limit_int(text)
+        if net and max_fanout is not None:
+            return {"op": "insert_buffers_for_fanout", "args": {"net": net, "max_fanout": max_fanout}}
+
+    if "balance" in low and "depth" in low and ("buffer" in low or "buffers" in low):
+        src = _extract_after_keyword(text, "source") or _extract_after_keyword(text, "from")
+        dsts = _extract_destination_list(text)
+        if src and dsts:
+            return {
+                "op": "balance_depth_with_buffers",
+                "args": {"src": src, "dsts": dsts, "minimize_buffers": True},
+            }
+
+    if "optimize" in low and ("logic cone" in low or "cone" in low):
+        target = _extract_after_keyword(text, "cone of") or _extract_after_keyword(text, "of")
+        target = target or _extract_after_keyword(text, "target") or _extract_after_keyword(text, "for")
+        if target:
+            args: dict[str, Any] = {
+                "target": target,
+                "minimize_gate_count": "gate count" in low or "minimize" in low or "reduce" in low,
+            }
+            if "depth" in low:
+                max_allowed_depth = _extract_limit_int(text)
+                if max_allowed_depth is not None:
+                    args["max_depth"] = max_allowed_depth
+            return {"op": "optimize_cone", "args": args}
+
     return None
 
 
@@ -194,11 +260,33 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
             plan["save_as"] = "found_buffers"
         return plan
 
+    if (
+        ("primary output" in low or "primary outputs" in low or "outputs" in low)
+        and ("logic cone" in low or "fanin cone" in low or "fan-in cone" in low)
+        and any(word in low for word in ("more than", "greater than", "over", "larger than", "contains"))
+    ):
+        min_gates = _extract_limit_int(text)
+        if min_gates is not None:
+            return {"op": "report_outputs_by_cone_size", "args": {"min_gates": min_gates}}
+
+    if "clock domain" in low:
+        dff_pair = _extract_dff_pair(text)
+        if dff_pair:
+            dff_a, dff_b = dff_pair
+            return {"op": "same_clock_domain", "args": {"dff_a": dff_a, "dff_b": dff_b}}
+
     if "logic cone" in low or "fanin cone" in low or "fan-in cone" in low:
         target = _extract_after_keyword(text, "of") or _extract_after_keyword(text, "for")
         target = target or _extract_after_keyword(text, "target")
         if target:
             return {"op": "logic_cone", "args": {"target": target}}
+
+    if "every" in low and "path" in low and "from" in low and "to" in low and "through" in low:
+        endpoints = _extract_src_dst(text)
+        node = _extract_after_keyword(text, "through")
+        if endpoints and node:
+            src, dst = endpoints
+            return {"op": "all_paths_pass_through", "args": {"src": src, "dst": dst, "node": node}}
 
     if "maximum logic depth" in low or "max logic depth" in low or "max depth" in low:
         endpoints = _extract_src_dst(text)
@@ -241,6 +329,18 @@ def _plan_verification(text: str, low: str) -> dict[str, Any] | None:
 
     if "connectivity" in low or "connection" in low or "floating" in low or "driver" in low:
         return {"op": "check_connectivity", "args": {}}
+
+    if "equivalent" in low or "equivalence" in low:
+        equivalence = _extract_equivalence(text)
+        if equivalence:
+            expr, target = equivalence
+            return {"op": "check_equivalence", "args": {"expr": expr, "target": target}}
+
+    if "property" in low or "asserted only when" in low or "only when" in low:
+        prop = _extract_property(text)
+        if prop:
+            target, property_text = prop
+            return {"op": "check_property", "args": {"target": target, "property": property_text}}
 
     if "fanout" in low or "fan-out" in low:
         max_fanout = _extract_limit_int(text)
@@ -393,6 +493,116 @@ def _extract_avoid_list(text: str) -> list[str]:
         for token in (_clean_token(part) for part in re.split(r"[,\s]+", match.group(1)))
         if token and token.lower() not in {"and", "or"}
     ]
+
+
+def _extract_destination_list(text: str) -> list[str]:
+    patterns = [
+        rf"(?:dsts?|destinations?|outputs?)\s+((?:{_SIGNAL_RE}[\s,]*(?:and\s+)?){{1,}})",
+        rf"\bto\s+((?:{_SIGNAL_RE}[\s,]*(?:and\s+)?){{1,}})(?:\s+with|\s+using|\s+by|\s+so|\s*$|[.])",
+    ]
+    stop_words = {"and", "with", "using", "by", "so", "buffer", "buffers"}
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        tokens = [
+            token
+            for token in (_clean_token(part) for part in re.split(r"[,\s]+", match.group(1)))
+            if token and token.lower() not in stop_words
+        ]
+        if tokens:
+            return tokens
+    return []
+
+
+def _extract_dff_pair(text: str) -> tuple[str, str] | None:
+    tokens = re.findall(_SIGNAL_RE, text)
+    stop_words = {
+        "does",
+        "do",
+        "are",
+        "is",
+        "and",
+        "under",
+        "same",
+        "clock",
+        "domain",
+        "domains",
+        "flip",
+        "flop",
+        "flipflop",
+        "dff",
+        "dffs",
+    }
+    candidates = [
+        token
+        for token in tokens
+        if token.lower() not in stop_words and re.search(r"(?:^|_)d?ff|dff|\bff", token, flags=re.I)
+    ]
+    if len(candidates) >= 2:
+        return candidates[0], candidates[1]
+    return None
+
+
+def _extract_equivalence(text: str) -> tuple[str, str] | None:
+    quoted_expr = _extract_quoted_text(text)
+    target = _extract_after_keyword(text, "to") or _extract_after_keyword(text, "target")
+    if quoted_expr and target:
+        return quoted_expr, target
+
+    match = re.search(
+        rf"(?:is|whether|verify|check|such\s+that)\s*(.+?)\s+"
+        rf"(?:is\s+)?equivalent\s+to\s+(?:signal\s+|net\s+)?({_SIGNAL_RE})",
+        text,
+        flags=re.I,
+    )
+    if match:
+        expr = _normalize_boolean_expr(match.group(1))
+        return expr, match.group(2)
+
+    match = re.search(
+        rf"(?:is|whether|verify|check)\s+(?:signal\s+|net\s+)?({_SIGNAL_RE})\s+"
+        rf"(?:is\s+)?equivalent\s+to\s+(.+)",
+        text,
+        flags=re.I,
+    )
+    if match:
+        return _normalize_boolean_expr(match.group(2)), match.group(1)
+    return None
+
+
+def _extract_property(text: str) -> tuple[str, str] | None:
+    match = re.search(
+        rf"(?:for\s+)?(?:output\s+|signal\s+|net\s+)?({_SIGNAL_RE}).*?"
+        rf"asserted\s+only\s+when\s+(.+)",
+        text,
+        flags=re.I,
+    )
+    if match:
+        target = match.group(1)
+        condition = _normalize_boolean_expr(match.group(2))
+        return target, f"{target} -> ({condition})"
+
+    quoted = _extract_quoted_text(text)
+    target = _extract_after_keyword(text, "target") or _extract_after_keyword(text, "for")
+    if quoted and target:
+        return target, quoted
+    return None
+
+
+def _normalize_boolean_expr(text: str) -> str:
+    expr = text.strip().strip("?.")
+    expr = re.sub(r"^(?:whether|that)\s+", "", expr, flags=re.I)
+    expr = re.sub(rf"\b({_SIGNAL_RE})\s+is\s+1\b", r"\1", expr, flags=re.I)
+    expr = re.sub(rf"\b({_SIGNAL_RE})\s+is\s+0\b", r"!\1", expr, flags=re.I)
+    expr = re.sub(r"\bboth\b", "", expr, flags=re.I)
+    expr = re.sub(r"\band\b", "&", expr, flags=re.I)
+    expr = re.sub(r"\bor\b", "|", expr, flags=re.I)
+    expr = re.sub(r"\bnot\b", "!", expr, flags=re.I)
+    expr = re.sub(r"\bis\s+equivalent\s+to\b", "", expr, flags=re.I)
+    expr = expr.replace("&&", "&").replace("||", "|")
+    expr = re.sub(r"\s+", " ", expr)
+    return expr.strip()
 
 
 def _extract_int_after(text: str, keyword: str) -> int | None:

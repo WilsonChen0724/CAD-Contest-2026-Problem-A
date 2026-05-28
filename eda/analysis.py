@@ -28,6 +28,8 @@ def find_path(design: Design, src: str, dst: str, avoid: list[str] | None = None
 
     while q:
         node, path = q.popleft()
+        if node in avoid_set and node != src:
+            continue
         if node == dst:
             return path
 
@@ -44,6 +46,8 @@ def find_path(design: Design, src: str, dst: str, avoid: list[str] | None = None
             elif sink.startswith("GATE:"):
                 gate = design.gates[sink_name]
                 nxt = gate.output
+                if nxt in avoid_set:
+                    continue
                 if gate.name not in seen:
                     seen.add(gate.name)
                     q.append((nxt, path + [gate.name, nxt]))

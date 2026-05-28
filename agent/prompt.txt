@@ -33,12 +33,23 @@ Common mappings:
 - Write/output/save a .v file -> write_design with {"path": "..."}.
 - Find buffers named like _gc__ -> find_gates with {"gate_type": "buf", "name_contains": "_gc__"} and save_as "found_buffers".
 - Replace the found buffers with AND -> replace_buffers_with_and with {"targets_from": "found_buffers", "extra_input": "_gc_ctrl"}.
+- Remove dangling or unused gates/nets -> remove_dangling with {}.
+- Replace inverter followed by buffer -> replace_inv_buf_with_inv with {}.
+- Replace OR gates in cone T with NAND/NOT -> replace_or_with_nand_not with {"cone_target": "T"}.
+- Insert buffers on high-fanout net X so fanout <= N -> insert_buffers_for_fanout with {"net": "X", "max_fanout": N}.
+- Balance depths from source S to destinations A,B with buffers -> balance_depth_with_buffers with {"src": "S", "dsts": ["A", "B"], "minimize_buffers": true}.
+- Optimize logic cone of target T with max depth N and minimized gate count -> optimize_cone with {"target": "T", "max_depth": N, "minimize_gate_count": true}.
 - Maximum logic depth from input A to output B -> max_depth with {"src": "A", "dst": "B"}.
 - Find a path from A to B -> find_path with {"src": "A", "dst": "B"}.
+- Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.
 - Fanin cone of target T -> logic_cone with {"target": "T"}.
+- Report primary outputs whose logic cone contains more than N gates -> report_outputs_by_cone_size with {"min_gates": N}.
+- Check whether DFF A and DFF B are in the same clock domain -> same_clock_domain with {"dff_a": "A", "dff_b": "B"}.
 - Check connectivity -> check_connectivity with {}.
 - Check fanout <= N -> check_fanout with {"max_fanout": N}.
 - Check depth from A to B <= N -> check_depth with {"src": "A", "dst": "B", "max_depth": N}.
+- Check whether expression E is equivalent to target T -> check_equivalence with {"expr": "E", "target": "T"}.
+- Check whether target T satisfies property P -> check_property with {"target": "T", "property": "P"}.
 
 Important state conventions:
 - If a previous find_gates result should be reused, reference it with {"targets_from": "found_buffers"}.

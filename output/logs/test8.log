@@ -2,20 +2,17 @@
 Acknowledged. Initialized testcase "test8". All subsequent responses will be recorded to output\logs\test8.log. Design state is empty and ready for commands.
 #END 1
 #RESPONSE 2
-Loaded gate-level Verilog from "tests\design\netlist\test8.v" successfully.
-- module=top, inputs=3, outputs=2, wires=8, gates=4, dffs=0
+Error: Verilog parse error in tests\design\netlist\test8.v: ERROR: GetShortPathName() failed.
 #END 2
 #RESPONSE 3
-Matched gates: 1
-1. U_gc__buf0
+Error: No design has been loaded yet.
 #END 3
 #RESPONSE 4
-Replaced 1 buffer(s) with AND gate(s): ['U_gc__buf0']
+Error: No design has been loaded yet.
 #END 4
 #RESPONSE 5
-The maximum logic depth from "in0" to "out3" is 2.
-Example path: in0 -> U2 -> n_in0_n -> U3 -> out3
+Error: No design has been loaded yet.
 #END 5
 #RESPONSE 6
-Wrote the modified netlist to "output\test8_out.v" successfully.
+Error: No design has been loaded yet.
 #END 6
