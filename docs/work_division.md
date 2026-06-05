@@ -4,6 +4,13 @@ This file replaces the original Day1-only division with a milestone-based plan.
 The team should still keep ownership boundaries clear so Person A, B, and C can
 work in parallel.
 
+Related planning documents:
+
+- `docs/current_progress_and_next_features.md` summarizes current capability,
+  testcase coverage gaps, and the next implementation priorities.
+- `docs/implementation_alternatives.md` records alternative implementation
+  approaches for optimization, renaming, reconnect, and equivalence scope.
+
 ## Current Status
 
 M0 skeleton is mostly complete:
@@ -85,6 +92,13 @@ Cone-optimization limitations and improvement targets:
   such as `and(a, a) -> a` and `or(a, a) -> a`.
 - Improvement target: add an optional Yosys/ABC backend path for larger cones,
   followed by the existing equivalence and structural guards.
+
+Equivalence scope:
+
+- Current equivalence checks are combinational-only.
+- DFFs are treated as sequential boundaries.
+- Multi-cycle sequential equivalence is intentionally out of scope for the next
+  phase unless testcase requirements change.
 
 ## Person A: EDA Core / Parser / Graph
 
@@ -168,6 +182,8 @@ Primary responsibilities:
   merge, OR-to-NAND/NOT, fanout buffer insertion, and depth balancing.
 - Integrate Z3-based equivalence/property checks.
 - Optionally experiment with Yosys/ABC optimization adapters.
+- Next priority: implement `rename_net`, original-snapshot equivalence, and
+  constant propagation before riskier pin reconnect or full resynthesis tasks.
 
 Milestone targets:
 
