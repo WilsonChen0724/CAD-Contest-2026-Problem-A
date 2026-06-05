@@ -8,6 +8,7 @@ from eda.graph import rebuild_graph
 from eda.analysis import max_depth
 from eda.transform import (
     balance_depth_with_buffers,
+    constant_propagation,
     insert_buffers_for_fanout,
     optimize_cone,
     remove_dangling,
@@ -160,6 +161,31 @@ class TransformTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "existing net"):
             rename_net(design, "a", "b")
+
+    def test_constant_propagation_simplifies_constants_and_preserves_function(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U_and", type="and", inputs=["a", "1'b1"], output="n_mid"))
+        design.add_gate(Gate(name="U_or", type="or", inputs=["n_mid", "1'b0"], output="y"))
+        before = deepcopy(design)
+
+        result = constant_propagation(design)
+
+        self.assertGreaterEqual(result["num_changed"], 1)
+        self.assertNotIn("U_and", design.gates)
+        self.assertNotIn("n_mid", design.wires)
+        self.assertEqual(design.gates["U_or"].type, "buf")
+        self.assertEqual(design.gates["U_or"].inputs, ["a"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_constant_propagation_rewrites_constant_primary_output_driver(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U_and", type="and", inputs=["a", "1'b0"], output="y"))
+
+        result = constant_propagation(design)
+
+        self.assertEqual(result["num_changed"], 1)
+        self.assertEqual(design.gates["U_and"].type, "buf")
+        self.assertEqual(design.gates["U_and"].inputs, ["1'b0"])
 
 
 if __name__ == "__main__":

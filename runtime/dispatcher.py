@@ -20,6 +20,7 @@ from eda.analysis import (
 )
 from eda.transform import (
     balance_depth_with_buffers,
+    constant_propagation,
     insert_buffers_for_fanout,
     optimize_cone,
     remove_dangling,
@@ -58,6 +59,7 @@ SUPPORTED_OPS = {
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
+    "constant_propagation",
     "rename_net",
     "check_connectivity",
     "check_fanout",
@@ -89,6 +91,7 @@ REQUIRED_ARGS = {
     "insert_buffers_for_fanout": ("net", "max_fanout"),
     "balance_depth_with_buffers": ("src", "dsts"),
     "optimize_cone": ("target",),
+    "constant_propagation": (),
     "rename_net": ("old_net", "new_net"),
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
@@ -364,6 +367,11 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             f'{result["initial_gate_count"]} -> {result["final_gate_count"]} gate(s), '
             f'depth {result["initial_depth"]} -> {result["final_depth"]}.'
         )
+
+    if op == "constant_propagation":
+        _require_design(state)
+        result = _run_transactional_transform(state, constant_propagation, verify_equivalence=True)
+        return f'Propagated constants through {result["num_changed"]} gate(s): {result["changed"]}'
 
     if op == "rename_net":
         _require_design(state)

@@ -22,6 +22,7 @@ from eda.graph import rebuild_graph
 # day 6: balance_depth_with_buffers
 # day 7: optimize_cone
 # day 8: safe net rename
+# day 9: constant propagation
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -283,6 +284,28 @@ def rename_net(design: Design, old_net: str, new_net: str) -> dict:
 
 
 @_rebuild_graph_after_transform
+def constant_propagation(design: Design) -> dict:
+    """Simplify primitive gates with constant or redundant inputs."""
+    changed: list[dict[str, Any]] = []
+    max_iterations = max(1, len(design.gates) + 1)
+
+    for _ in range(max_iterations):
+        rebuild_graph(design)
+        rewrite = None
+        for gate_name in sorted(design.gates):
+            rewrite = _simplify_constant_gate(design, gate_name)
+            if rewrite is not None:
+                changed.append(rewrite)
+                break
+        if rewrite is None:
+            break
+    else:
+        raise RuntimeError("constant_propagation did not converge.")
+
+    return {"changed": changed, "num_changed": len(changed)}
+
+
+@_rebuild_graph_after_transform
 def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict:
     """
     Insert a balanced buffer tree so the selected net's fanout stays bounded.
@@ -488,6 +511,190 @@ def _redirect_dff_input(dff: DFF, old_net: str, new_net: str) -> None:
         dff.clk = new_net
     if dff.rst == old_net:
         dff.rst = new_net
+
+
+def _simplify_constant_gate(design: Design, gate_name: str) -> dict[str, Any] | None:
+    gate = design.gates[gate_name]
+    original_type = gate.type
+    original_inputs = list(gate.inputs)
+    replacement = _constant_gate_replacement(gate)
+    if replacement is None:
+        return None
+
+    kind, value = replacement
+    if kind == "direct":
+        action = _replace_gate_output_with_direct_signal(design, gate_name, value)
+    elif kind == "inverted":
+        action = _replace_gate_output_with_inverter(design, gate_name, value)
+    elif kind == "rewrite":
+        new_type, inputs = value
+        gate.type = new_type
+        gate.inputs = inputs
+        action = "rewritten_gate"
+    else:
+        raise ValueError(f"Unknown constant propagation replacement: {kind}")
+    if action == "unchanged_output_driver":
+        return None
+
+    return {
+        "gate": gate_name,
+        "old_type": original_type,
+        "old_inputs": original_inputs,
+        "replacement": replacement,
+        "action": action,
+    }
+
+
+def _constant_gate_replacement(gate: Gate) -> tuple[str, Any] | None:
+    inputs = list(gate.inputs)
+    if gate.type == "buf" and len(inputs) == 1:
+        if is_constant(inputs[0]):
+            return ("direct", _constant_value(inputs[0]))
+        return None
+    if gate.type == "not" and len(inputs) == 1:
+        if is_constant(inputs[0]):
+            return ("direct", _bool_constant(not _constant_bool(inputs[0])))
+        return None
+    if gate.type in {"and", "nand"}:
+        return _and_like_replacement(gate)
+    if gate.type in {"or", "nor"}:
+        return _or_like_replacement(gate)
+    if gate.type in {"xor", "xnor"}:
+        return _xor_like_replacement(gate)
+    return None
+
+
+def _and_like_replacement(gate: Gate) -> tuple[str, Any] | None:
+    is_nand = gate.type == "nand"
+    inputs = _unique_preserving_order(gate.inputs)
+    if any(_is_const_false(net) for net in inputs):
+        return ("direct", _bool_constant(is_nand))
+
+    reduced = [net for net in inputs if not _is_const_true(net)]
+    if not reduced:
+        return ("direct", _bool_constant(not is_nand))
+    if len(reduced) == 1:
+        return ("inverted" if is_nand else "direct", reduced[0])
+    if reduced != gate.inputs:
+        return ("rewrite", ("nand" if is_nand else "and", reduced))
+    return None
+
+
+def _or_like_replacement(gate: Gate) -> tuple[str, Any] | None:
+    is_nor = gate.type == "nor"
+    inputs = _unique_preserving_order(gate.inputs)
+    if any(_is_const_true(net) for net in inputs):
+        return ("direct", _bool_constant(not is_nor))
+
+    reduced = [net for net in inputs if not _is_const_false(net)]
+    if not reduced:
+        return ("direct", _bool_constant(is_nor))
+    if len(reduced) == 1:
+        return ("inverted" if is_nor else "direct", reduced[0])
+    if reduced != gate.inputs:
+        return ("rewrite", ("nor" if is_nor else "or", reduced))
+    return None
+
+
+def _xor_like_replacement(gate: Gate) -> tuple[str, Any] | None:
+    parity = 0
+    counts: dict[str, int] = {}
+    ordered: list[str] = []
+    for net in gate.inputs:
+        if _is_const_true(net):
+            parity ^= 1
+        elif _is_const_false(net):
+            continue
+        elif is_constant(net):
+            return None
+        else:
+            if net not in counts:
+                ordered.append(net)
+            counts[net] = counts.get(net, 0) + 1
+
+    reduced = [net for net in ordered if counts[net] % 2 == 1]
+    inverted = (gate.type == "xnor") ^ bool(parity)
+    if not reduced:
+        return ("direct", _bool_constant(inverted))
+    if len(reduced) == 1:
+        return ("inverted" if inverted else "direct", reduced[0])
+
+    new_type = "xnor" if inverted else "xor"
+    if new_type != gate.type or reduced != gate.inputs:
+        return ("rewrite", (new_type, reduced))
+    return None
+
+
+def _replace_gate_output_with_direct_signal(design: Design, gate_name: str, replacement_net: str) -> str:
+    gate = design.gates[gate_name]
+    output_net = gate.output
+    if _must_keep_output_driver(design, output_net):
+        if gate.type == "buf" and gate.inputs == [replacement_net]:
+            return "unchanged_output_driver"
+        gate.type = "buf"
+        gate.inputs = [replacement_net]
+        _add_reference_wire_if_needed(design, replacement_net)
+        return "rewritten_output_driver"
+
+    for sink in list(design.fanouts.get(output_net, [])):
+        _redirect_sink(design, sink, old_net=output_net, new_net=replacement_net)
+    del design.gates[gate_name]
+    _discard_internal_wire(design, output_net)
+    return "removed_gate"
+
+
+def _replace_gate_output_with_inverter(design: Design, gate_name: str, input_net: str) -> str:
+    gate = design.gates[gate_name]
+    gate.type = "not"
+    gate.inputs = [input_net]
+    _add_reference_wire_if_needed(design, input_net)
+    return "rewritten_as_inverter"
+
+
+def _must_keep_output_driver(design: Design, output_net: str) -> bool:
+    return output_net in design.outputs or any(
+        sink.startswith("PO:") for sink in design.fanouts.get(output_net, [])
+    )
+
+
+def _add_reference_wire_if_needed(design: Design, net: str) -> None:
+    if not is_constant(net) and net not in design.inputs and net not in design.outputs:
+        design.wires.add(net)
+
+
+def _unique_preserving_order(items: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _constant_value(net: str) -> str:
+    return _bool_constant(_constant_bool(net))
+
+
+def _constant_bool(net: str) -> bool:
+    if net in {"1'b1", "1"}:
+        return True
+    if net in {"1'b0", "0"}:
+        return False
+    raise ValueError(f"Unsupported constant for propagation: {net}")
+
+
+def _is_const_true(net: str) -> bool:
+    return net in {"1'b1", "1"}
+
+
+def _is_const_false(net: str) -> bool:
+    return net in {"1'b0", "0"}
+
+
+def _bool_constant(value: bool) -> str:
+    return "1'b1" if value else "1'b0"
 
 
 def _max_fanout(design: Design) -> int:

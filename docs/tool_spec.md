@@ -496,6 +496,35 @@ Rules:
 - Commit only after connectivity and combinational equivalence checks pass.
 - This is a net rename operation, not a net merge or arbitrary pin reconnect.
 
+### constant_propagation
+
+Simplify gates with constant or redundant inputs while preserving functional
+equivalence.
+
+Input:
+
+```json
+{
+  "op": "constant_propagation",
+  "args": {}
+}
+```
+
+Current supported simplifications:
+
+- AND/OR/NAND/NOR with `1'b0`, `1'b1`, `0`, or `1` inputs.
+- NOT/BUF driven by constants.
+- Duplicate inputs for idempotent gates, such as `and(a, a) -> a`.
+- XOR/XNOR constant folding and duplicate-pair cancellation.
+
+Rules:
+
+- Commit only after connectivity and combinational equivalence checks pass.
+- Internal simplified outputs may be reconnected to the replacement net or
+  constant.
+- Primary-output drivers are preserved by rewriting the driving gate to a
+  `buf` or `not` when needed.
+
 ## 4. Verification Tools
 
 ### check_connectivity

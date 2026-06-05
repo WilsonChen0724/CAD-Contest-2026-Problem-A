@@ -84,6 +84,10 @@ Important gap:
 Implemented first version:
 
 - `rename_net`: safely rename one net and update structural references.
+- `constant_propagation`: simplify gates with constant or redundant inputs
+  under connectivity and equivalence guards. Backend and deterministic planner
+  support are implemented first; OpenAI `tool_schema.py` exposure is pending
+  team approval.
 - `replace_buffers_with_and`: selected function-changing buffer-to-AND rewrite.
 - `remove_dangling`: remove logic not contributing to primary outputs.
 - `replace_inv_buf_with_inv`: collapse inverter-buffer chains.
@@ -97,7 +101,6 @@ Implemented first version:
 Important gaps:
 
 - Rename operation for gates.
-- Constant propagation.
 - Boolean equation derivation.
 - Complete technology mapping, such as XOR-to-NAND, XNOR-to-NOR, full NAND/NOT
   remap, and full AND/NOT remap.
@@ -175,7 +178,8 @@ Not yet covered enough:
 - `rename_gate`
   - Rename an instance while preserving all connectivity.
 - `constant_propagation`
-  - Simplify AND/OR/NAND/NOR gates with constant inputs.
+  - Extend the first implementation with larger cleanup passes when needed,
+    such as simplifying newly dangling logic after propagation.
 - `derive_boolean_equation`
   - Pretty-print a target net's Boolean equation in terms of primary inputs.
 
@@ -201,5 +205,8 @@ Not yet covered enough:
 - Keep all function-preserving transformations transactional.
 - Continue using connectivity, equivalence, and explicit constraint checks
   before committing transformed designs.
+- Do not update `agent/tool_schema.py` immediately for newly implemented
+  backend operations. Record the pending schema exposure in docs first, then
+  update the OpenAI tool schema only after team review.
 - Keep equivalence combinational-only until there is a clear requirement for
   multi-cycle sequential reasoning.

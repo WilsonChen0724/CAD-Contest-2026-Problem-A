@@ -120,6 +120,19 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(state.design.gates["U1"].inputs, ["renamed_mid"])
         self.assertNotIn("n_mid", state.design.wires)
 
+    def test_dispatcher_propagates_constants_transactionally(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_and", type="and", inputs=["a", "1'b1"], output="n_mid"))
+        state.design.add_gate(Gate(name="U_or", type="or", inputs=["n_mid", "1'b0"], output="y"))
+
+        body = dispatch_plan(state, {"op": "constant_propagation", "args": {}})
+
+        self.assertIn("Propagated constants", body)
+        self.assertNotIn("U_and", state.design.gates)
+        self.assertEqual(state.design.gates["U_or"].type, "buf")
+        self.assertEqual(state.design.gates["U_or"].inputs, ["a"])
+
     def test_dispatcher_runs_new_transformations(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})

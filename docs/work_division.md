@@ -115,6 +115,8 @@ Current merge-ready Person C changes:
 - `rename_net` updates declarations and all structural references through a
   shared net-reference helper and commits only after connectivity and
   combinational equivalence checks pass.
+- `constant_propagation` simplifies constant and redundant gate inputs under
+  connectivity and combinational equivalence guards.
 - `check_equivalent_to_original` compares the current design against the
   snapshot captured by `read_design`.
 - The release testcase runner now reports progress, response-count mismatch,
@@ -141,7 +143,8 @@ Post-merge ownership:
 - Person B should stabilize planner/schema coverage for the new and upcoming
   tools, especially prompt variants for gate-instance fanout, immediate
   successors, rename requests, fanout cones, cone-local counts, and
-  original-netlist equivalence.
+  original-netlist equivalence. New backend operations should be recorded in
+  docs first; `agent/tool_schema.py` should be updated only after team review.
 - Person C should continue transformation and verification work after the
   merge, starting with `constant_propagation`, `rename_gate`, and guarded
   `reconnect_gate_input`.
@@ -216,7 +219,7 @@ Next concrete tasks:
   and output cone ranking once Person A exposes those backend tools.
 - Keep `agent/tool_schema.py`, `agent/plan_checker.py`, `agent/planner.py`,
   `agent/prompt.txt`, and `docs/tool_spec.md` synchronized whenever a backend
-  operation is added.
+  operation is approved for LLM exposure.
 - Add LLM regression coverage for rename variants and original-equivalence
   variants such as "last loaded from disk" and "still equivalent to original".
 
@@ -260,8 +263,6 @@ Next concrete tasks:
 
 - Commit the gate-instance fanout fix before merging to main.
 - Keep generated release outputs out of Git.
-- Implement `constant_propagation` as a transactional transform guarded by
-  connectivity and equivalence.
 - Implement `rename_gate` for instance identifier changes.
 - Implement guarded `reconnect_gate_input` after shared reference-update
   utilities are stable.
