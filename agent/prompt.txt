@@ -52,6 +52,7 @@ Common mappings:
 - Optimize logic cone of target T with max depth N and minimized gate count -> optimize_cone with {"target": "T", "max_depth": N, "minimize_gate_count": true}.
 - Maximum logic depth from input A to output B -> max_depth with {"src": "A", "dst": "B"}.
 - Find a path from A to B -> find_path with {"src": "A", "dst": "B"}.
+- Find a path from A to B that avoids or does not traverse C -> find_path with {"src": "A", "dst": "B", "avoid": ["C"]}.
 - Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.
 - Fanin cone of target T -> logic_cone with {"target": "T"}.
 - Report primary outputs whose logic cone contains more than N gates -> report_outputs_by_cone_size with {"min_gates": N}.

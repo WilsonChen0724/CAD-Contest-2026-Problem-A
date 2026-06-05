@@ -3,33 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 
-# Schema design note:
-#
-# The current OpenAI domain tools intentionally use a generic
-# `args: object` schema for each step. This keeps tool-schema maintenance light
-# while backend operations are still changing: adding or editing an EDA op only
-# requires updating the op lists here plus the hard validation rules in
-# `agent/plan_checker.py`.
-#
-# Tradeoff:
-# - Generic args object:
-#   - Faster to iterate and easier to keep in sync during development.
-#   - OpenAI validates the selected domain tool and op enum, but op-specific
-#     mistakes such as `{"op": "max_depth", "args": {"path": "x.v"}}` are
-#     caught later by the local plan checker.
-# - Per-op `anyOf` variants:
-#   - More stable for the LLM because each op carries its exact required and
-#     optional args schema.
-#   - Higher maintenance cost because every backend op needs a matching schema
-#     variant, and schema/docs/checker/dispatcher must stay synchronized.
-#
-# Recommended path:
-# keep this generic schema during rapid tool development; once the operation
-# set stabilizes before submission, tighten each domain tool into per-op
-# `anyOf` variants. In both versions, `plan_checker.py` remains the required
-# local safety boundary.
-
-
 IO_OPS = {
     "begin_testcase",
     "read_design",
@@ -97,6 +70,73 @@ OP_DESCRIPTIONS = {
     "unsupported": "Use only when the request cannot be mapped to any supported EDA operation.",
 }
 
+_STRING = {"type": "string"}
+_STRING_ARRAY = {"type": "array", "items": _STRING}
+_INT = {"type": "integer"}
+_BOOL = {"type": "boolean"}
+_NULLABLE_STRING = {"type": ["string", "null"]}
+
+
+def _args_schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+OP_ARG_SCHEMAS: dict[str, dict[str, Any]] = {
+    "begin_testcase": _args_schema({"case_name": _STRING}, ["case_name"]),
+    "read_design": _args_schema({"path": _STRING}, ["path"]),
+    "write_design": _args_schema({"path": _STRING}, ["path"]),
+    "find_path": _args_schema(
+        {
+            "src": _STRING,
+            "dst": _STRING,
+            "avoid": {
+                **_STRING_ARRAY,
+                "description": "Optional gate or net names to avoid. Use this exact field name; do not use avoid_nodes.",
+            },
+        },
+        ["src", "dst"],
+    ),
+    "all_paths_pass_through": _args_schema(
+        {"src": _STRING, "dst": _STRING, "node": _STRING},
+        ["src", "dst", "node"],
+    ),
+    "max_depth": _args_schema({"src": _STRING, "dst": _STRING}, ["src", "dst"]),
+    "logic_cone": _args_schema({"target": _STRING}, ["target"]),
+    "report_outputs_by_cone_size": _args_schema({"min_gates": _INT}, ["min_gates"]),
+    "find_gates": _args_schema({"gate_type": _NULLABLE_STRING, "name_contains": _NULLABLE_STRING}, []),
+    "same_clock_domain": _args_schema({"dff_a": _STRING, "dff_b": _STRING}, ["dff_a", "dff_b"]),
+    "replace_buffers_with_and": _args_schema(
+        {"targets": _STRING_ARRAY, "targets_from": _STRING, "extra_input": _STRING},
+        ["extra_input"],
+    ),
+    "remove_dangling": _args_schema({}, []),
+    "replace_inv_buf_with_inv": _args_schema({}, []),
+    "replace_or_with_nand_not": _args_schema({"cone_target": _STRING}, ["cone_target"]),
+    "insert_buffers_for_fanout": _args_schema({"net": _STRING, "max_fanout": _INT}, ["net", "max_fanout"]),
+    "balance_depth_with_buffers": _args_schema(
+        {"src": _STRING, "dsts": _STRING_ARRAY, "minimize_buffers": _BOOL},
+        ["src", "dsts"],
+    ),
+    "optimize_cone": _args_schema(
+        {"target": _STRING, "max_depth": _INT, "minimize_gate_count": _BOOL},
+        ["target"],
+    ),
+    "check_connectivity": _args_schema({}, []),
+    "check_fanout": _args_schema({"max_fanout": _INT}, ["max_fanout"]),
+    "check_depth": _args_schema(
+        {"src": _STRING, "dst": _STRING, "max_depth": _INT},
+        ["src", "dst", "max_depth"],
+    ),
+    "check_equivalence": _args_schema({"expr": _STRING, "target": _STRING}, ["expr", "target"]),
+    "check_property": _args_schema({"target": _STRING, "property": _STRING}, ["target", "property"]),
+    "unsupported": _args_schema({"reason": _STRING}, ["reason"]),
+}
+
 
 def openai_domain_tools() -> list[dict[str, Any]]:
     return [
@@ -128,8 +168,6 @@ def _tool(name: str, description: str, ops: list[str]) -> dict[str, Any]:
         "type": "function",
         "name": name,
         "description": description,
-        # Keep this non-strict until each operation has its own exact args
-        # schema. The local plan checker remains the hard safety boundary.
         "strict": False,
         "parameters": {
             "type": "object",
@@ -139,7 +177,7 @@ def _tool(name: str, description: str, ops: list[str]) -> dict[str, Any]:
                     "type": "array",
                     "description": "One or more backend EDA operations to execute in order.",
                     "minItems": 1,
-                    "items": _step_schema(ops),
+                    "items": {"anyOf": [_step_schema(op) for op in ops]},
                 }
             },
             "required": ["steps"],
@@ -147,21 +185,17 @@ def _tool(name: str, description: str, ops: list[str]) -> dict[str, Any]:
     }
 
 
-def _step_schema(ops: list[str]) -> dict[str, Any]:
+def _step_schema(op: str) -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "op": {
                 "type": "string",
-                "enum": ops,
-                "description": _operation_descriptions(ops),
+                "enum": [op],
+                "description": OP_DESCRIPTIONS[op],
             },
-            "args": {
-                "type": "object",
-                "description": "Arguments for the selected operation. Preserve gate, signal, and file names exactly as written by the user.",
-                "additionalProperties": True,
-            },
+            "args": OP_ARG_SCHEMAS[op],
             "save_as": {
                 "type": ["string", "null"],
                 "description": "Optional key for saving this step result for later steps. Use null when not needed.",
@@ -169,9 +203,3 @@ def _step_schema(ops: list[str]) -> dict[str, Any]:
         },
         "required": ["op", "args", "save_as"],
     }
-
-
-def _operation_descriptions(ops: list[str]) -> str:
-    return "Available operations: " + " ".join(
-        f"{op}: {OP_DESCRIPTIONS[op]}" for op in ops
-    )
