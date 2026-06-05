@@ -11,7 +11,9 @@ from pathlib import Path
 class CaseResult:
     name: str
     returncode: int
+    prompts: int
     responses: int
+    missing_responses: int
     unsupported: int
     errors: int
     output_path: Path
@@ -58,12 +60,23 @@ def main() -> int:
     parser.add_argument(
         "--fail-on-error",
         action="store_true",
-        help="Return nonzero if any response contains an Error line.",
+        help="Return nonzero if any response contains an error/config-failure marker.",
+    )
+    parser.add_argument(
+        "--fail-on-response-mismatch",
+        action="store_true",
+        help="Return nonzero if the number of #RESPONSE blocks does not match prompt lines.",
     )
     parser.add_argument(
         "--stop-on-fail",
         action="store_true",
         help="Stop after the first testcase with a failing return code or flagged response.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="Timeout in seconds for each testcase subprocess.",
     )
     args = parser.parse_args()
 
@@ -84,6 +97,7 @@ def main() -> int:
 
     results: list[CaseResult] = []
     for case_dir in case_dirs:
+        print(f"Running {case_dir.name}...", flush=True)
         result = _run_case(
             repo_root=repo_root,
             release_dir=release_dir,
@@ -92,14 +106,28 @@ def main() -> int:
             planner=args.planner,
             config=args.config,
             ensure_yosys=args.ensure_yosys,
+            timeout=args.timeout,
         )
         results.append(result)
         _print_case_summary(result)
-        if args.stop_on_fail and _is_failure(result, args.fail_on_unsupported, args.fail_on_error):
+        if args.stop_on_fail and _is_failure(
+            result,
+            args.fail_on_unsupported,
+            args.fail_on_error,
+            args.fail_on_response_mismatch,
+        ):
             break
 
     _print_total_summary(results)
-    return 1 if any(_is_failure(r, args.fail_on_unsupported, args.fail_on_error) for r in results) else 0
+    return 1 if any(
+        _is_failure(
+            r,
+            args.fail_on_unsupported,
+            args.fail_on_error,
+            args.fail_on_response_mismatch,
+        )
+        for r in results
+    ) else 0
 
 
 def _select_cases(testcase_root: Path, selected: list[str]) -> list[Path]:
@@ -119,11 +147,14 @@ def _run_case(
     planner: str,
     config: str,
     ensure_yosys: bool,
+    timeout: float,
 ) -> CaseResult:
     prompt_path = case_dir / "prompt.txt"
     if not prompt_path.exists():
         raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
 
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+    prompt_count = _count_prompt_lines(prompt_text)
     command = [
         sys.executable,
         str(repo_root / "main.py"),
@@ -135,43 +166,69 @@ def _run_case(
     if ensure_yosys:
         command.append("--ensure-yosys")
 
-    completed = subprocess.run(
-        command,
-        cwd=release_dir,
-        input=prompt_path.read_text(encoding="utf-8"),
-        text=True,
-        capture_output=True,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=release_dir,
+            input=prompt_text,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+        stdout = completed.stdout
+        stderr = completed.stderr
+        returncode = completed.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        stderr = (
+            f"{stderr}\nTimeoutExpired: testcase exceeded {timeout:.1f} seconds."
+        ).strip()
+        returncode = 124
 
     out_path = result_root / f"{case_dir.name}.stdout.txt"
     err_path = result_root / f"{case_dir.name}.stderr.txt"
-    out_path.write_text(completed.stdout, encoding="utf-8")
-    err_path.write_text(completed.stderr, encoding="utf-8")
+    out_path.write_text(stdout, encoding="utf-8")
+    err_path.write_text(stderr, encoding="utf-8")
 
     return CaseResult(
         name=case_dir.name,
-        returncode=completed.returncode,
-        responses=completed.stdout.count("#RESPONSE"),
-        unsupported=completed.stdout.count("could not map"),
-        errors=completed.stdout.count("Error:") + completed.stdout.count("Tool call rejected"),
+        returncode=returncode,
+        prompts=prompt_count,
+        responses=stdout.count("#RESPONSE"),
+        missing_responses=max(0, prompt_count - stdout.count("#RESPONSE")),
+        unsupported=stdout.count("could not map"),
+        errors=_count_error_markers(stdout, stderr),
         output_path=out_path,
         stderr_path=err_path,
     )
 
 
-def _is_failure(result: CaseResult, fail_on_unsupported: bool, fail_on_error: bool) -> bool:
+def _is_failure(
+    result: CaseResult,
+    fail_on_unsupported: bool,
+    fail_on_error: bool,
+    fail_on_response_mismatch: bool,
+) -> bool:
     if result.returncode != 0:
         return True
     if fail_on_unsupported and result.unsupported:
         return True
     if fail_on_error and result.errors:
         return True
+    if fail_on_response_mismatch and result.responses != result.prompts:
+        return True
     return False
 
 
 def _print_case_summary(result: CaseResult) -> None:
     print(
-        f"{result.name}: rc={result.returncode}, responses={result.responses}, "
+        f"{result.name}: rc={result.returncode}, prompts={result.prompts}, "
+        f"responses={result.responses}, missing={result.missing_responses}, "
         f"unsupported={result.unsupported}, errors={result.errors}"
     )
 
@@ -179,11 +236,33 @@ def _print_case_summary(result: CaseResult) -> None:
 def _print_total_summary(results: list[CaseResult]) -> None:
     print("")
     print(f"Ran {len(results)} release testcase(s).")
+    print(f"Prompts: {sum(item.prompts for item in results)}")
     print(f"Responses: {sum(item.responses for item in results)}")
+    print(f"Missing responses: {sum(item.missing_responses for item in results)}")
     print(f"Unsupported responses: {sum(item.unsupported for item in results)}")
     print(f"Error responses: {sum(item.errors for item in results)}")
     if results:
         print(f"Detailed outputs: {results[0].output_path.parent}")
+
+
+def _count_prompt_lines(prompt_text: str) -> int:
+    return sum(1 for line in prompt_text.splitlines() if line.strip())
+
+
+def _count_error_markers(stdout: str, stderr: str) -> int:
+    text = f"{stdout}\n{stderr}"
+    markers = [
+        "Error:",
+        "Tool call rejected",
+        "LLM planner is not configured",
+        "Traceback",
+        "TimeoutExpired",
+        "No design has been loaded",
+        "FileNotFoundError",
+        "RuntimeError",
+        "ValueError",
+    ]
+    return sum(text.count(marker) for marker in markers)
 
 
 if __name__ == "__main__":
