@@ -9,6 +9,7 @@ from parser.verilog_parser import parse_verilog
 from parser.verilog_writer import write_verilog
 from eda.analysis import (
     all_paths_pass_through,
+    dff_relationships,
     direct_fanout,
     find_gates,
     find_path,
@@ -21,13 +22,19 @@ from eda.analysis import (
 from eda.transform import (
     balance_depth_with_buffers,
     constant_propagation,
+    insert_buffers_for_all_high_fanout,
     insert_buffers_for_fanout,
+    merge_equivalent_gates,
     optimize_cone,
+    optimize_design_depth,
     remove_dangling,
+    rename_gate,
     rename_net,
+    replace_and_not_with_nand,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
     replace_or_with_nand_not,
+    replace_xnor_nor_with_basic_gates,
 )
 from eda.verify import (
     check_connectivity,
@@ -51,15 +58,22 @@ SUPPORTED_OPS = {
     "report_fanout",
     "report_gate_connections",
     "report_outputs_by_cone_size",
+    "report_register_paths",
     "same_clock_domain",
     "replace_buffers_with_and",
     "remove_dangling",
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
     "insert_buffers_for_fanout",
+    "insert_buffers_for_all_high_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
     "constant_propagation",
+    "optimize_design_depth",
+    "replace_xnor_nor_with_basic_gates",
+    "replace_and_not_with_nand",
+    "merge_equivalent_gates",
+    "rename_gate",
     "rename_net",
     "check_connectivity",
     "check_fanout",
@@ -83,15 +97,22 @@ REQUIRED_ARGS = {
     "report_fanout": ("net",),
     "report_gate_connections": ("gate",),
     "report_outputs_by_cone_size": ("min_gates",),
+    "report_register_paths": (),
     "same_clock_domain": ("dff_a", "dff_b"),
     "replace_buffers_with_and": ("extra_input",),
     "remove_dangling": (),
     "replace_inv_buf_with_inv": (),
     "replace_or_with_nand_not": ("cone_target",),
     "insert_buffers_for_fanout": ("net", "max_fanout"),
+    "insert_buffers_for_all_high_fanout": ("max_fanout",),
     "balance_depth_with_buffers": ("src", "dsts"),
     "optimize_cone": ("target",),
     "constant_propagation": (),
+    "optimize_design_depth": (),
+    "replace_xnor_nor_with_basic_gates": (),
+    "replace_and_not_with_nand": (),
+    "merge_equivalent_gates": (),
+    "rename_gate": ("old_name", "new_name"),
     "rename_net": ("old_net", "new_net"),
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
@@ -101,7 +122,6 @@ REQUIRED_ARGS = {
     "check_property": ("target", "property"),
     "unsupported": ("reason",),
 }
-
 
 def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     """Execute a single tool call or a multi-step plan."""
@@ -249,6 +269,10 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             lines.append(f"- {output}: {num_gates} gates")
         return "\n".join(lines)
 
+    if op == "report_register_paths":
+        _require_design(state)
+        return _format_register_paths(dff_relationships(state.design))
+
     if op == "same_clock_domain":
         _require_design(state)
         dff_a = state.design.dffs.get(args["dff_a"])
@@ -329,6 +353,22 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             f'"{args["net"]}". Final max fanout is {result["final_max_fanout"]}.'
         )
 
+    if op == "insert_buffers_for_all_high_fanout":
+        _require_design(state)
+        result = _run_transactional_transform(
+            state,
+            insert_buffers_for_all_high_fanout,
+            args["max_fanout"],
+            verify_equivalence=True,
+            max_fanout=args["max_fanout"],
+        )
+        return (
+            f'Inserted {result["num_inserted_buffers"]} buffer(s) across '
+            f'{result["num_changed_nets"]} high-fanout net(s). '
+            f'Final max fanout is {result["final_max_fanout"]}. '
+            f'Skipped: {result["skipped"]}'
+        )
+
     if op == "balance_depth_with_buffers":
         _require_design(state)
         dsts = args["dsts"]
@@ -373,6 +413,51 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         result = _run_transactional_transform(state, constant_propagation, verify_equivalence=True)
         return f'Propagated constants through {result["num_changed"]} gate(s): {result["changed"]}'
 
+    if op == "optimize_design_depth":
+        _require_design(state)
+        max_allowed_depth = args.get("max_depth")
+        if max_allowed_depth is not None and not isinstance(max_allowed_depth, int):
+            raise ValueError('Tool call rejected: "max_depth" must be an integer when provided.')
+        result = _run_transactional_transform(
+            state,
+            optimize_design_depth,
+            max_depth=max_allowed_depth,
+            verify_equivalence=True,
+        )
+        return (
+            f'Optimized design depth: gates {result["initial_gate_count"]} -> '
+            f'{result["final_gate_count"]}, depth {result["initial_depth"]} -> '
+            f'{result["final_depth"]}, changed outputs {result["num_changed_outputs"]}.'
+        )
+
+    if op == "replace_xnor_nor_with_basic_gates":
+        _require_design(state)
+        result = _run_transactional_transform(state, replace_xnor_nor_with_basic_gates, verify_equivalence=True)
+        return f'Remapped {result["num_changed"]} XNOR/NOR gate(s): {result["changed"]}'
+
+    if op == "replace_and_not_with_nand":
+        _require_design(state)
+        result = _run_transactional_transform(state, replace_and_not_with_nand, verify_equivalence=True)
+        return f'Remapped {result["num_changed"]} AND/NOT gate(s) into NAND logic: {result["changed"]}'
+
+    if op == "merge_equivalent_gates":
+        _require_design(state)
+        result = _run_transactional_transform(state, merge_equivalent_gates, verify_equivalence=True)
+        return f'Merged {result["num_merged"]} structurally equivalent gate(s): {result["changed"]}'
+
+    if op == "rename_gate":
+        _require_design(state)
+        result = _run_transactional_transform(
+            state,
+            rename_gate,
+            args["old_name"],
+            args["new_name"],
+            verify_equivalence=True,
+        )
+        return (
+            f'Renamed {result["kind"]} instance "{result["old_name"]}" '
+            f'to "{result["new_name"]}" without changing connectivity.'
+        )
     if op == "rename_net":
         _require_design(state)
         result = _run_transactional_transform(
@@ -461,7 +546,9 @@ def _run_transactional_transform(
     original = state.design
     candidate = deepcopy(original)
     result = transform(candidate, *args, **kwargs)
-    connectivity = check_connectivity(candidate)
+    original_connectivity = check_connectivity(original)
+    candidate_connectivity = check_connectivity(candidate)
+    connectivity = _connectivity_regression(original_connectivity, candidate_connectivity)
     if not connectivity.get("ok", False):
         raise RuntimeError(f"Transformation rejected: connectivity check failed: {connectivity}")
     if verify_equivalence:
@@ -485,6 +572,34 @@ def _run_transactional_transform(
     state.design = candidate
     return result
 
+
+def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Return only connectivity problems introduced by a candidate transform."""
+    before_missing = set(before.get("missing_drivers", []))
+    after_missing = set(after.get("missing_drivers", []))
+    new_missing = sorted(after_missing - before_missing)
+
+    before_duplicates = {
+        net: sorted(drivers)
+        for net, drivers in (before.get("duplicate_drivers") or {}).items()
+    }
+    after_duplicates = {
+        net: sorted(drivers)
+        for net, drivers in (after.get("duplicate_drivers") or {}).items()
+    }
+    new_duplicates = {
+        net: drivers
+        for net, drivers in sorted(after_duplicates.items())
+        if net not in before_duplicates or drivers != before_duplicates[net]
+    }
+
+    return {
+        "ok": not new_missing and not new_duplicates,
+        "missing_drivers": sorted(after_missing),
+        "duplicate_drivers": after_duplicates,
+        "new_missing_drivers": new_missing,
+        "new_duplicate_drivers": new_duplicates,
+    }
 
 def _resolve_read_path(path: str) -> Path:
     """Validate and return the input Verilog path."""
@@ -567,6 +682,20 @@ def _format_gate_connections(result: dict[str, Any]) -> str:
             lines.append(f'- {sink["sink"]}')
     return "\n".join(lines)
 
+
+def _format_register_paths(result: dict[str, Any]) -> str:
+    lines = [f'Register path report: {result["num_dffs"]} DFF(s).']
+    lines.append(f'Clock domains: {result["clock_domains"]}')
+    lines.append(f'DFF-to-DFF paths: {len(result["dff_to_dff"])}')
+    for item in result["dff_to_dff"]:
+        lines.append(f'- {item["src_dff"]} -> {item["dst_dff"]}')
+    lines.append(f'PI-to-DFF paths: {len(result["pi_to_dff"])}')
+    for item in result["pi_to_dff"]:
+        lines.append(f'- {item["src_input"]} -> {item["dst_dff"]}')
+    lines.append(f'DFF-to-primary-output paths: {len(result["dff_to_primary_output"])}')
+    for item in result["dff_to_primary_output"]:
+        lines.append(f'- {item["src_dff"]} -> {item["dst_output"]}')
+    return "\n".join(lines)
 
 def _format_equivalence_result(expr: str, target: str, result: dict[str, Any]) -> str:
     if result.get("ok"):

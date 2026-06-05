@@ -12,7 +12,6 @@ from agent.llm_planner import plan_with_llm
 from agent.plan_checker import (
     PlanValidationError,
     format_plan_error,
-    is_unsupported_plan,
     validate_plan,
 )
 from agent.planner import plan_request
@@ -26,14 +25,15 @@ def main() -> int:
     """Run the stdin-driven contest request loop."""
     parser = argparse.ArgumentParser()
     parser.add_argument("-config", dest="config", required=False)
-    # planner_mode: rule, llm, hybrid
-    # rule: deterministic planner; llm: direct LLM planner; hybrid: rule first, LLM fallback
     parser.add_argument(
         "-planner",
         "--planner",
-        choices=("rule", "llm", "hybrid"),
-        default="rule",
-        help="rule: deterministic planner; llm: direct LLM planner; hybrid: rule first, LLM fallback",
+        choices=("rule", "llm_openai", "llm_claude", "llm_both"),
+        default="llm_both",
+        help=(
+            "rule: deterministic planner for local debugging; llm_openai: OpenAI planner; "
+            "llm_claude: Claude planner; llm_both: OpenAI first, Claude fallback"
+        ),
     )
     parser.add_argument(
         "--ensure-yosys",
@@ -80,16 +80,44 @@ def _make_plan(request: str, state: CurrentState, config: dict, prompt: str, pla
     if planner_mode == "rule":
         return validate_plan(plan_request(request, state))
 
-    if planner_mode == "llm":
-        return plan_with_llm(prompt, request, config)
+    if planner_mode == "llm_openai":
+        return plan_with_llm(prompt, request, _with_provider(config, "openai"))
 
-    rule_plan = validate_plan(plan_request(request, state))
-    if not is_unsupported_plan(rule_plan):
-        return rule_plan
+    if planner_mode == "llm_claude":
+        return plan_with_llm(prompt, request, _with_provider(config, "anthropic"))
 
-    # Hybrid mode keeps the fast deterministic rules, then asks the LLM only
-    # when the rule-based planner explicitly cannot map the request.
-    return plan_with_llm(prompt, request, config)
+    if planner_mode == "llm_both":
+        try:
+            return plan_with_llm(prompt, request, _with_provider(config, "openai"))
+        except (LLMNotConfiguredError, LLMAPIError, PlanValidationError) as openai_error:
+            print(f"OpenAI planner failed; falling back to Claude: {openai_error}", file=sys.stderr)
+            return plan_with_llm(prompt, request, _with_provider(config, "anthropic"))
+
+    raise PlanValidationError(f"Unknown planner mode: {planner_mode}")
+
+
+def _with_provider(config: dict, provider: str) -> dict:
+    updated = dict(config)
+    if "raw" in updated:
+        raw = str(updated.get("raw", ""))
+        updated["raw"] = _replace_provider(raw, provider)
+    else:
+        updated["provider"] = provider
+    return updated
+
+
+def _replace_provider(raw: str, provider: str) -> str:
+    lines = []
+    replaced = False
+    for line in raw.splitlines():
+        if line.strip().startswith("provider:"):
+            lines.append(f'provider: "{provider}"')
+            replaced = True
+        else:
+            lines.append(line)
+    if not replaced:
+        lines.insert(0, f'provider: "{provider}"')
+    return "\n".join(lines)
 
 
 def _load_prompt() -> str:

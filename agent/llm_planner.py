@@ -40,12 +40,25 @@ def plan_with_llm(
             last_error = exc
             if attempt >= max_retries:
                 break
-            rejected_output = raw_plan if raw_plan is not None else "<invalid OpenAI tool call>"
-            request_for_model = _build_repair_request(user_request, rejected_output, exc)
+            if raw_plan is None:
+                request_for_model = _build_retry_request_after_missing_tool_call(user_request, exc)
+            else:
+                request_for_model = _build_repair_request(user_request, raw_plan, exc)
 
     raise PlanValidationError(
         "LLM planner returned an invalid tool plan after retry. "
         f"Last checker error: {last_error}"
+    )
+
+
+def _build_retry_request_after_missing_tool_call(original_request: str, error: Exception) -> str:
+    """Build the retry prompt when the provider timed out or returned no tool call."""
+    return (
+        "The previous provider call did not return a usable EDA domain tool call.\n"
+        "Retry the original request and return exactly one valid domain tool call.\n"
+        "Do not include Markdown or explanation.\n\n"
+        f"Original user request:\n{original_request}\n\n"
+        f"Provider/checker error:\n{error}"
     )
 
 
