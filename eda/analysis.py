@@ -4,6 +4,8 @@ from collections import deque
 from eda.design import Design
 from eda.graph import rebuild_graph
 
+_GATE_COUNT_ORDER = ["and", "or", "not", "nand", "nor", "xor", "xnor", "buf", "dff"]
+
 
 def find_gates(design: Design, gate_type: str | None = None, name_contains: str | None = None) -> list[str]:
     result = []
@@ -14,6 +16,63 @@ def find_gates(design: Design, gate_type: str | None = None, name_contains: str 
             continue
         result.append(name)
     return result
+
+
+def gate_counts(design: Design) -> dict:
+    """Count primitive gate instances by type, including DFF cells."""
+    counts = {gate_type: 0 for gate_type in _GATE_COUNT_ORDER}
+    for gate in design.gates.values():
+        counts.setdefault(gate.type, 0)
+        counts[gate.type] += 1
+    counts["dff"] = len(design.dffs)
+    return {
+        "counts": {gate_type: counts.get(gate_type, 0) for gate_type in _GATE_COUNT_ORDER},
+        "total": sum(counts.values()),
+    }
+
+
+def direct_fanout(design: Design, net: str) -> dict:
+    """Report direct loads driven by one net."""
+    rebuild_graph(design)
+    if net not in design.all_nets():
+        raise ValueError(f'Net not found: "{net}"')
+
+    sinks = design.fanouts.get(net, [])
+    sink_reports = [_describe_sink(design, net, sink) for sink in sinks]
+    unique_sinks = sorted({item["sink"] for item in sink_reports})
+    return {
+        "net": net,
+        "num_loads": len(sinks),
+        "num_unique_sinks": len(unique_sinks),
+        "sinks": sink_reports,
+    }
+
+
+def gate_connections(design: Design, gate_name: str) -> dict:
+    """Report one gate or DFF instance's pins plus direct output fanout."""
+    rebuild_graph(design)
+    if gate_name in design.gates:
+        gate = design.gates[gate_name]
+        return {
+            "instance": gate_name,
+            "kind": "gate",
+            "gate_type": gate.type,
+            "inputs": list(gate.inputs),
+            "output": gate.output,
+            "output_fanout": [_describe_sink(design, gate.output, sink) for sink in design.fanouts.get(gate.output, [])],
+        }
+    if gate_name in design.dffs:
+        dff = design.dffs[gate_name]
+        pins = {"D": dff.d, "Q": dff.q, "CLK": dff.clk, "RST": dff.rst}
+        return {
+            "instance": gate_name,
+            "kind": "dff",
+            "gate_type": "dff",
+            "pins": pins,
+            "output": dff.q,
+            "output_fanout": [_describe_sink(design, dff.q, sink) for sink in design.fanouts.get(dff.q, [])],
+        }
+    raise ValueError(f'Gate or DFF not found: "{gate_name}"')
 
 
 def find_path(design: Design, src: str, dst: str, avoid: list[str] | None = None) -> list[str]:
@@ -292,3 +351,31 @@ def _combinational_endpoints_from_net(design: Design, source: str) -> dict[str, 
                     stack.append(gate.output)
 
     return {"primary_outputs": primary_outputs, "dffs": dffs}
+
+
+def _describe_sink(design: Design, net: str, sink: str) -> dict:
+    kind, name = sink.split(":", 1)
+    if kind == "GATE":
+        gate = design.gates[name]
+        input_pins = [index for index, input_net in enumerate(gate.inputs) if input_net == net]
+        return {
+            "sink": sink,
+            "kind": "gate",
+            "name": name,
+            "gate_type": gate.type,
+            "input_pins": input_pins,
+            "output": gate.output,
+        }
+    if kind == "DFF":
+        dff = design.dffs[name]
+        pins = []
+        if dff.d == net:
+            pins.append("D")
+        if dff.clk == net:
+            pins.append("CLK")
+        if dff.rst == net:
+            pins.append("RST")
+        return {"sink": sink, "kind": "dff", "name": name, "pins": pins, "output": dff.q}
+    if kind == "PO":
+        return {"sink": sink, "kind": "primary_output", "name": name}
+    return {"sink": sink, "kind": kind.lower(), "name": name}

@@ -187,6 +187,54 @@ Input:
 
 Output should include gate names and the number of gates in the cone.
 
+### report_gate_counts
+
+Report total primitive instance counts by gate type.
+
+Input:
+
+```json
+{
+  "op": "report_gate_counts",
+  "args": {}
+}
+```
+
+Output includes AND/OR/NOT/NAND/NOR/XOR/XNOR/BUF/DFF counts and total gates.
+
+### report_fanout
+
+Report direct loads driven by one net.
+
+Input:
+
+```json
+{
+  "op": "report_fanout",
+  "args": {
+    "net": "n1"
+  }
+}
+```
+
+Output includes load count, unique sink count, gate/DFF/primary-output sinks,
+and consumed input pins when applicable.
+
+### report_gate_connections
+
+Report one gate or DFF instance's type, pin connections, and output fanout.
+
+Input:
+
+```json
+{
+  "op": "report_gate_connections",
+  "args": {
+    "gate": "U0"
+  }
+}
+```
+
 ### report_outputs_by_cone_size
 
 Report primary outputs whose logic cone contains more than a threshold number of

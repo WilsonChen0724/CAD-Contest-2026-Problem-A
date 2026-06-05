@@ -9,8 +9,11 @@ from parser.verilog_parser import parse_verilog
 from parser.verilog_writer import write_verilog
 from eda.analysis import (
     all_paths_pass_through,
+    direct_fanout,
     find_gates,
     find_path,
+    gate_connections,
+    gate_counts,
     logic_cone,
     max_depth,
     primary_output_cone_sizes,
@@ -42,6 +45,9 @@ SUPPORTED_OPS = {
     "all_paths_pass_through",
     "max_depth",
     "logic_cone",
+    "report_gate_counts",
+    "report_fanout",
+    "report_gate_connections",
     "report_outputs_by_cone_size",
     "same_clock_domain",
     "replace_buffers_with_and",
@@ -68,6 +74,9 @@ REQUIRED_ARGS = {
     "all_paths_pass_through": ("src", "dst", "node"),
     "max_depth": ("src", "dst"),
     "logic_cone": ("target",),
+    "report_gate_counts": (),
+    "report_fanout": ("net",),
+    "report_gate_connections": ("gate",),
     "report_outputs_by_cone_size": ("min_gates",),
     "same_clock_domain": ("dff_a", "dff_b"),
     "replace_buffers_with_and": ("extra_input",),
@@ -126,6 +135,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "read_design":
         path = _resolve_read_path(args["path"])
         state.design = parse_verilog(path)
+        state.original_design = deepcopy(state.design)
         state.design_path = path
         return f'Loaded gate-level Verilog from "{path}" successfully.\n- {state.design.summary()}'
 
@@ -202,6 +212,18 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if save_as:
             state.remember_result(save_as, gates, kind="gate_list")
         return f'Logic cone of "{args["target"]}" contains {len(gates)} gates:\n' + "\n".join(gates)
+
+    if op == "report_gate_counts":
+        _require_design(state)
+        return _format_gate_counts(gate_counts(state.design))
+
+    if op == "report_fanout":
+        _require_design(state)
+        return _format_fanout(direct_fanout(state.design, args["net"]))
+
+    if op == "report_gate_connections":
+        _require_design(state)
+        return _format_gate_connections(gate_connections(state.design, args["gate"]))
 
     if op == "report_outputs_by_cone_size":
         _require_design(state)
@@ -458,6 +480,58 @@ def _format_list_result(title: str, items: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _format_gate_counts(result: dict[str, Any]) -> str:
+    lines = ["Gate counts:"]
+    for gate_type, count in result["counts"].items():
+        lines.append(f"- {gate_type}: {count}")
+    lines.append(f'Total gates: {result["total"]}')
+    return "\n".join(lines)
+
+
+def _format_fanout(result: dict[str, Any]) -> str:
+    lines = [
+        f'Fanout of "{result["net"]}": '
+        f'{result["num_loads"]} load(s), {result["num_unique_sinks"]} unique sink(s).'
+    ]
+    for sink in result["sinks"]:
+        if sink["kind"] == "gate":
+            pins = ", ".join(str(pin) for pin in sink["input_pins"]) or "(none)"
+            lines.append(
+                f'- gate {sink["name"]} ({sink["gate_type"]}), input pin(s) {pins}, output {sink["output"]}'
+            )
+        elif sink["kind"] == "dff":
+            pins = ", ".join(sink["pins"]) or "(none)"
+            lines.append(f'- DFF {sink["name"]}, pin(s) {pins}, Q {sink["output"]}')
+        elif sink["kind"] == "primary_output":
+            lines.append(f'- primary output {sink["name"]}')
+        else:
+            lines.append(f'- {sink["sink"]}')
+    return "\n".join(lines)
+
+
+def _format_gate_connections(result: dict[str, Any]) -> str:
+    if result["kind"] == "gate":
+        inputs = ", ".join(result["inputs"]) or "(none)"
+        lines = [
+            f'Gate "{result["instance"]}": type={result["gate_type"]}, inputs=[{inputs}], output={result["output"]}.',
+            "Output fanout:",
+        ]
+    else:
+        pins = ", ".join(
+            f"{pin}={net}" for pin, net in result["pins"].items() if net is not None
+        )
+        lines = [
+            f'DFF "{result["instance"]}": {pins}.',
+            "Q fanout:",
+        ]
+    if not result["output_fanout"]:
+        lines.append("- none")
+    else:
+        for sink in result["output_fanout"]:
+            lines.append(f'- {sink["sink"]}')
+    return "\n".join(lines)
+
+
 def _format_equivalence_result(expr: str, target: str, result: dict[str, Any]) -> str:
     if result.get("ok"):
         return (
@@ -481,6 +555,21 @@ def _format_property_result(target: str, property_text: str, result: dict[str, A
         )
     lines = [
         f'Property does not hold for "{target}": {property_text}.',
+        _format_counterexample(result),
+    ]
+    if result.get("reason"):
+        lines.append(f'Reason: {result["reason"]}')
+    return "\n".join(line for line in lines if line)
+
+
+def _format_original_equivalence_result(result: dict[str, Any]) -> str:
+    if result.get("ok"):
+        return (
+            "Equivalent to original loaded netlist. "
+            f'Checked with {result.get("engine")} engine over combinational boundaries.'
+        )
+    lines = [
+        "Not equivalent to original loaded netlist.",
         _format_counterexample(result),
     ]
     if result.get("reason"):
