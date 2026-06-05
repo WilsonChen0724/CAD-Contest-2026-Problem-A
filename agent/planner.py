@@ -25,6 +25,7 @@ SUPPORTED_OPS = {
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
+    "constant_propagation",
     "rename_net",
     "check_connectivity",
     "check_fanout",
@@ -172,6 +173,16 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
     if rename_pair:
         old_net, new_net = rename_pair
         return {"op": "rename_net", "args": {"old_net": old_net, "new_net": new_net}}
+
+    if (
+        "constant propagation" in low
+        or "propagate constants" in low
+        or "propagate constant" in low
+        or ("simplify" in low and "constant" in low)
+        or "tied constant" in low
+        or "tied constants" in low
+    ):
+        return {"op": "constant_propagation", "args": {}}
 
     if "replace" in low and ("buffer" in low or "buffers" in low) and _mentions_gate_type(low, "and"):
         extra_input = _extract_extra_input(text) or "_gc_ctrl"

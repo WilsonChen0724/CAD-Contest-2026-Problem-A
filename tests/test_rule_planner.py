@@ -90,6 +90,11 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "rename_net", "args": {"old_net": "n_mid", "new_net": "renamed_mid"}})
 
+    def test_maps_constant_propagation(self) -> None:
+        plan = plan_request("Propagate constants and simplify gates with tied constant inputs.", None)
+
+        self.assertEqual(plan, {"op": "constant_propagation", "args": {}})
+
     def test_maps_original_equivalence_check(self) -> None:
         plan = plan_request("Verify the current design is equivalent to the original loaded netlist.", None)
 

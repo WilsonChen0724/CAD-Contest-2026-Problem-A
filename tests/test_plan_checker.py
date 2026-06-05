@@ -54,6 +54,7 @@ class PlanCheckerTest(unittest.TestCase):
             {"op": "insert_buffers_for_fanout", "args": {"net": "clk_en", "max_fanout": 8}},
             {"op": "balance_depth_with_buffers", "args": {"src": "A", "dsts": ["B", "C"]}},
             {"op": "optimize_cone", "args": {"target": "h", "max_depth": 5, "minimize_gate_count": True}},
+            {"op": "constant_propagation", "args": {}},
             {"op": "rename_net", "args": {"old_net": "n_old", "new_net": "n_new"}},
             {"op": "check_equivalent_to_original", "args": {}},
             {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
