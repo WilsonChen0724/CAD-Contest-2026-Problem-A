@@ -516,8 +516,10 @@ def _format_gate_counts(result: dict[str, Any]) -> str:
 
 def _format_fanout(result: dict[str, Any]) -> str:
     lines = [
-        f'Fanout of "{result["net"]}": '
-        f'{result["num_loads"]} load(s), {result["num_unique_sinks"]} unique sink(s).'
+        f'Fanout of {result["source_kind"]} "{result["source"]}" '
+        f'(net "{result["net"]}"): '
+        f'{result["num_loads"]} load(s), {result["num_unique_sinks"]} unique sink(s), '
+        f'{result["num_gate_sinks"]} driven gate(s).'
     ]
     for sink in result["sinks"]:
         if sink["kind"] == "gate":

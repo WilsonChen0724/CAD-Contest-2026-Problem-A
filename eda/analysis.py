@@ -32,18 +32,31 @@ def gate_counts(design: Design) -> dict:
 
 
 def direct_fanout(design: Design, net: str) -> dict:
-    """Report direct loads driven by one net."""
+    """Report direct loads driven by one net or one gate/DFF instance."""
     rebuild_graph(design)
-    if net not in design.all_nets():
-        raise ValueError(f'Net not found: "{net}"')
+    source = net
+    source_kind = "net"
+    if net in design.gates:
+        source_kind = "gate"
+        net = design.gates[net].output
+    elif net in design.dffs:
+        source_kind = "dff"
+        net = design.dffs[net].q
+    elif net not in design.all_nets():
+        raise ValueError(f'Net or instance not found: "{source}"')
 
     sinks = design.fanouts.get(net, [])
     sink_reports = [_describe_sink(design, net, sink) for sink in sinks]
     unique_sinks = sorted({item["sink"] for item in sink_reports})
     return {
+        "source": source,
+        "source_kind": source_kind,
         "net": net,
         "num_loads": len(sinks),
         "num_unique_sinks": len(unique_sinks),
+        "num_gate_sinks": sum(1 for item in sink_reports if item["kind"] == "gate"),
+        "num_dff_sinks": sum(1 for item in sink_reports if item["kind"] == "dff"),
+        "num_primary_output_sinks": sum(1 for item in sink_reports if item["kind"] == "primary_output"),
         "sinks": sink_reports,
     }
 

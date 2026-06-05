@@ -77,12 +77,16 @@ class DispatcherTest(unittest.TestCase):
 
         counts = dispatch_plan(state, {"op": "report_gate_counts", "args": {}})
         fanout = dispatch_plan(state, {"op": "report_fanout", "args": {"net": "n1"}})
+        gate_fanout = dispatch_plan(state, {"op": "report_fanout", "args": {"net": "U0"}})
         connections = dispatch_plan(state, {"op": "report_gate_connections", "args": {"gate": "U0"}})
 
         self.assertIn("- and: 1", counts)
         self.assertIn("- buf: 1", counts)
         self.assertIn("- dff: 1", counts)
-        self.assertIn('Fanout of "n1": 2 load(s)', fanout)
+        self.assertIn('Fanout of net "n1"', fanout)
+        self.assertIn("2 load(s)", fanout)
+        self.assertIn('Fanout of gate "U0"', gate_fanout)
+        self.assertIn("2 load(s)", gate_fanout)
         self.assertIn("U1", fanout)
         self.assertIn("FF0", fanout)
         self.assertIn('Gate "U0": type=and', connections)
