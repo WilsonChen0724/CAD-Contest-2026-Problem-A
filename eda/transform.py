@@ -21,6 +21,7 @@ from eda.graph import rebuild_graph
 # day 5: insert_buffers_for_fanout
 # day 6: balance_depth_with_buffers
 # day 7: optimize_cone
+# day 8: safe net rename
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -193,6 +194,92 @@ def replace_or_with_nand_not(design: Design, cone_target: str) -> dict:
         )
 
     return {"changed": changed, "cone_target": cone_target, "num_changed": len(changed)}
+
+
+@_rebuild_graph_after_transform
+def replace_net_references(design: Design, old_net: str, new_net: str) -> dict:
+    """
+    Replace every structural reference to one net name.
+
+    This helper updates declarations plus primitive/DFF pins. It does not check
+    for name collisions, so user-facing transforms should usually call
+    rename_net() instead.
+    """
+    if is_constant(old_net) or is_constant(new_net):
+        raise ValueError("Constant values cannot be renamed.")
+    if old_net == new_net:
+        return {"old_net": old_net, "new_net": new_net, "num_references": 0, "locations": []}
+    if old_net not in design.all_nets():
+        raise ValueError(f'Net not found: "{old_net}"')
+
+    locations: list[str] = []
+    old_was_input = old_net in design.inputs
+    old_was_output = old_net in design.outputs
+    old_was_wire = old_net in design.wires
+
+    if old_was_input:
+        design.inputs.remove(old_net)
+        design.inputs.add(new_net)
+        locations.append("input")
+    if old_was_output:
+        design.outputs.remove(old_net)
+        design.outputs.add(new_net)
+        locations.append("output")
+    if old_was_wire:
+        design.wires.remove(old_net)
+        design.wires.add(new_net)
+        locations.append("wire")
+
+    for gate in design.gates.values():
+        for index, input_net in enumerate(gate.inputs):
+            if input_net == old_net:
+                gate.inputs[index] = new_net
+                locations.append(f"{gate.name}.input[{index}]")
+        if gate.output == old_net:
+            gate.output = new_net
+            locations.append(f"{gate.name}.output")
+
+    for dff in design.dffs.values():
+        if dff.d == old_net:
+            dff.d = new_net
+            locations.append(f"{dff.name}.D")
+        if dff.q == old_net:
+            dff.q = new_net
+            locations.append(f"{dff.name}.Q")
+        if dff.clk == old_net:
+            dff.clk = new_net
+            locations.append(f"{dff.name}.CLK")
+        if dff.rst == old_net:
+            dff.rst = new_net
+            locations.append(f"{dff.name}.RST")
+
+    if _referenced_as_internal_net(design, new_net):
+        design.wires.add(new_net)
+    if not old_was_input and not old_was_output:
+        design.wires.discard(old_net)
+
+    return {
+        "old_net": old_net,
+        "new_net": new_net,
+        "num_references": len(locations),
+        "locations": locations,
+    }
+
+
+@_rebuild_graph_after_transform
+def rename_net(design: Design, old_net: str, new_net: str) -> dict:
+    """Rename one net without allowing collisions with existing nets."""
+    if is_constant(old_net) or is_constant(new_net):
+        raise ValueError("Constant values cannot be renamed.")
+    if old_net == new_net:
+        return {"old_net": old_net, "new_net": new_net, "num_references": 0, "locations": []}
+    if old_net not in design.all_nets():
+        raise ValueError(f'Net not found: "{old_net}"')
+    if new_net in design.all_nets():
+        raise ValueError(f'Cannot rename "{old_net}" to existing net "{new_net}".')
+    if new_net in design.gates or new_net in design.dffs:
+        raise ValueError(f'Cannot rename "{old_net}" to existing instance name "{new_net}".')
+    return replace_net_references(design, old_net, new_net)
 
 
 @_rebuild_graph_after_transform
@@ -551,6 +638,18 @@ def _remove_internal_buffer_in_cone(design: Design, cone_gates: set[str]) -> dic
 def _discard_internal_wire(design: Design, net: str) -> None:
     if net not in design.inputs and net not in design.outputs:
         design.wires.discard(net)
+
+
+def _referenced_as_internal_net(design: Design, net: str) -> bool:
+    if net in design.inputs or net in design.outputs or is_constant(net):
+        return False
+    for gate in design.gates.values():
+        if gate.output == net or net in gate.inputs:
+            return True
+    for dff in design.dffs.values():
+        if net in {dff.d, dff.q, dff.clk, dff.rst}:
+            return True
+    return False
 
 
 def _cone_max_depth(design: Design, target: str) -> int:

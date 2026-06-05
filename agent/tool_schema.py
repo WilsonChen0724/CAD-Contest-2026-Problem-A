@@ -42,6 +42,9 @@ ANALYSIS_OPS = {
     "all_paths_pass_through",
     "max_depth",
     "logic_cone",
+    "report_gate_counts",
+    "report_fanout",
+    "report_gate_connections",
     "report_outputs_by_cone_size",
     "same_clock_domain",
 }
@@ -54,12 +57,14 @@ TRANSFORM_OPS = {
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
+    "rename_net",
 }
 
 VERIFY_OPS = {
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalent_to_original",
     "check_equivalence",
     "check_property",
 }
@@ -80,6 +85,9 @@ OP_DESCRIPTIONS = {
     "all_paths_pass_through": "Check whether every combinational path from src to dst passes through one node.",
     "max_depth": "Compute maximum combinational gate depth from src to dst.",
     "logic_cone": "Report the transitive fanin cone of a target net or primary output.",
+    "report_gate_counts": "Report total gate counts broken down by primitive gate type.",
+    "report_fanout": "Report direct loads driven by one net.",
+    "report_gate_connections": "Report one gate or DFF instance's type, pins, and output fanout.",
     "report_outputs_by_cone_size": "Report primary outputs whose fanin cones exceed a gate-count threshold.",
     "same_clock_domain": "Check whether two DFF instances use the same clock net.",
     "replace_buffers_with_and": "Replace selected BUF gates with equivalent two-input AND gates using an extra control input.",
@@ -89,9 +97,11 @@ OP_DESCRIPTIONS = {
     "insert_buffers_for_fanout": "Insert buffers on a net so driven gate fanout is at most max_fanout.",
     "balance_depth_with_buffers": "Insert buffers to equalize logic depths from one source to several destinations.",
     "optimize_cone": "Run conservative local cone optimization under optional depth and gate-count constraints.",
+    "rename_net": "Rename a net safely by updating declarations and all structural references.",
     "check_connectivity": "Check missing drivers, duplicate drivers, and connectivity consistency.",
     "check_fanout": "Check whether all fanouts are within a maximum fanout bound.",
     "check_depth": "Check whether src-to-dst combinational depth is within a maximum bound.",
+    "check_equivalent_to_original": "Check whether the current design is equivalent to the original loaded netlist.",
     "check_equivalence": "Check whether a Boolean expression is equivalent to a target signal.",
     "check_property": "Check whether a Boolean property holds for a target signal.",
     "unsupported": "Use only when the request cannot be mapped to any supported EDA operation.",

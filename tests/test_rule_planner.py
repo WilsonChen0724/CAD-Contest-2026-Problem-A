@@ -29,6 +29,20 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "same_clock_domain", "args": {"dff_a": "FF0", "dff_b": "FF1"}})
 
+    def test_maps_structural_reports(self) -> None:
+        self.assertEqual(
+            plan_request("Report the total number of gates broken down by type.", None),
+            {"op": "report_gate_counts", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("Report the fanout of net n1.", None),
+            {"op": "report_fanout", "args": {"net": "n1"}},
+        )
+        self.assertEqual(
+            plan_request("Report the gate type and pin connections of gate U0.", None),
+            {"op": "report_gate_connections", "args": {"gate": "U0"}},
+        )
+
     def test_maps_remove_dangling(self) -> None:
         plan = plan_request("Remove any dangling gates and nets.", None)
 
@@ -70,6 +84,16 @@ class RulePlannerTest(unittest.TestCase):
             plan,
             {"op": "optimize_cone", "args": {"target": "h", "minimize_gate_count": True, "max_depth": 5}},
         )
+
+    def test_maps_rename_net(self) -> None:
+        plan = plan_request("Rename internal signal n_mid to renamed_mid.", None)
+
+        self.assertEqual(plan, {"op": "rename_net", "args": {"old_net": "n_mid", "new_net": "renamed_mid"}})
+
+    def test_maps_original_equivalence_check(self) -> None:
+        plan = plan_request("Verify the current design is equivalent to the original loaded netlist.", None)
+
+        self.assertEqual(plan, {"op": "check_equivalent_to_original", "args": {}})
 
     def test_maps_equivalence_check(self) -> None:
         plan = plan_request("Check whether (a & b) is equivalent to z.", None)

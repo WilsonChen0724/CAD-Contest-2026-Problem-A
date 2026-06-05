@@ -4,6 +4,13 @@ This file replaces the original Day1-only division with a milestone-based plan.
 The team should still keep ownership boundaries clear so Person A, B, and C can
 work in parallel.
 
+Related planning documents:
+
+- `docs/current_progress_and_next_features.md` summarizes current capability,
+  testcase coverage gaps, and the next implementation priorities.
+- `docs/implementation_alternatives.md` records alternative implementation
+  approaches for optimization, renaming, reconnect, and equivalence scope.
+
 ## Current Status
 
 M0 skeleton is mostly complete:
@@ -86,6 +93,59 @@ Cone-optimization limitations and improvement targets:
 - Improvement target: add an optional Yosys/ABC backend path for larger cones,
   followed by the existing equivalence and structural guards.
 
+Equivalence scope:
+
+- Current equivalence checks are combinational-only.
+- DFFs are treated as sequential boundaries.
+- Multi-cycle sequential equivalence is intentionally out of scope for the next
+  phase unless testcase requirements change.
+
+## Merge-To-Main Handoff Status
+
+This section records the ownership split before merging the current
+`C_M3_optimization` work back to `main`.
+
+Current merge-ready Person C changes:
+
+- Structural report tools are wired through the Tool API:
+  `report_gate_counts`, `report_fanout`, and `report_gate_connections`.
+- `report_fanout` now accepts both net names and gate/DFF instance names, so
+  prompts such as "number of gates driven by g0" can resolve `g0` as a gate
+  instance and report the fanout of its output net.
+- `rename_net` updates declarations and all structural references through a
+  shared net-reference helper and commits only after connectivity and
+  combinational equivalence checks pass.
+- `check_equivalent_to_original` compares the current design against the
+  snapshot captured by `read_design`.
+- The release testcase runner now reports progress, response-count mismatch,
+  unsupported responses, error markers, and per-case timeouts.
+
+Do not merge generated testcase artifacts:
+
+- `A_release testcase_0510/runner_output/`
+- `A_release testcase_0510/test*_out.v`
+
+Current known blocker outside Person C:
+
+- Release testcases from `test31` onward contain named-pin DFF instances such
+  as `dff g906(.RN(n1), .SN(1'b1), .CK(n0), .D(n3238), .Q(n14[0]));`.
+  The parser currently handles positional DFFs, so these cases fail at
+  `read_design` before analysis, transformation, or verification tools can run.
+  This is a Person A parser task.
+
+Post-merge ownership:
+
+- Person A should first add named-pin DFF parser support, then expose missing
+  graph-analysis tools such as full path enumeration, fanout cone reports,
+  cone-local gate type counts, and output cone ranking.
+- Person B should stabilize planner/schema coverage for the new and upcoming
+  tools, especially prompt variants for gate-instance fanout, immediate
+  successors, rename requests, fanout cones, cone-local counts, and
+  original-netlist equivalence.
+- Person C should continue transformation and verification work after the
+  merge, starting with `constant_propagation`, `rename_gate`, and guarded
+  `reconnect_gate_input`.
+
 ## Person A: EDA Core / Parser / Graph
 
 Owner files:
@@ -107,6 +167,19 @@ Primary responsibilities:
 - Implement graph algorithms for path, avoid-path, all-paths-through, logic
   cone, cone size, and true maximum depth.
 - Keep DFFs as sequential boundaries for combinational analysis.
+
+Next concrete tasks:
+
+- Add parser support for named-pin DFF cells with `Q`, `D`, `CK`/`CLK`, and
+  optional reset/set pins such as `RN`, `SN`, `RST`, or `RESET`.
+- Add parser regression tests for named-pin DFFs before running `test31` and
+  later release cases.
+- Expose `fanout_cone` as a dispatcher/tool-schema operation after parser
+  loading is stable.
+- Implement bounded `all_paths` enumeration so "complete enumeration of paths"
+  prompts do not keep returning only one example path.
+- Add cone-local reports: gate type counts inside a cone, shared gates between
+  two fanin cones, and largest/deepest output cone ranking.
 
 Milestone targets:
 
@@ -134,6 +207,18 @@ Primary responsibilities:
 - Add one repair pass for invalid LLM output.
 - Write prompt examples for PDF-style requests.
 - Add planner tests for paraphrases and multi-step requests.
+
+Next concrete tasks:
+
+- Update planner tests for gate-instance fanout phrases, such as "number of
+  gates driven by g0" and "immediate successors of gate g0".
+- Add mappings for `fanout_cone`, bounded `all_paths`, cone-local gate counts,
+  and output cone ranking once Person A exposes those backend tools.
+- Keep `agent/tool_schema.py`, `agent/plan_checker.py`, `agent/planner.py`,
+  `agent/prompt.txt`, and `docs/tool_spec.md` synchronized whenever a backend
+  operation is added.
+- Add LLM regression coverage for rename variants and original-equivalence
+  variants such as "last loaded from disk" and "still equivalent to original".
 
 Milestone targets:
 
@@ -168,6 +253,18 @@ Primary responsibilities:
   merge, OR-to-NAND/NOT, fanout buffer insertion, and depth balancing.
 - Integrate Z3-based equivalence/property checks.
 - Optionally experiment with Yosys/ABC optimization adapters.
+- Next priority: implement `rename_net`, original-snapshot equivalence, and
+  constant propagation before riskier pin reconnect or full resynthesis tasks.
+
+Next concrete tasks:
+
+- Commit the gate-instance fanout fix before merging to main.
+- Keep generated release outputs out of Git.
+- Implement `constant_propagation` as a transactional transform guarded by
+  connectivity and equivalence.
+- Implement `rename_gate` for instance identifier changes.
+- Implement guarded `reconnect_gate_input` after shared reference-update
+  utilities are stable.
 
 Milestone targets:
 

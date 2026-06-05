@@ -11,6 +11,7 @@ from eda.transform import (
     insert_buffers_for_fanout,
     optimize_cone,
     remove_dangling,
+    rename_net,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
     replace_or_with_nand_not,
@@ -136,6 +137,29 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(set(design.gates), {"U_and"})
         self.assertEqual(design.gates["U_and"].inputs, ["a", "b"])
         self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_rename_net_updates_references_and_preserves_function(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["n_mid"], output="y"))
+        before = deepcopy(design)
+
+        result = rename_net(design, "n_mid", "renamed_mid")
+
+        self.assertEqual(result["old_net"], "n_mid")
+        self.assertEqual(result["new_net"], "renamed_mid")
+        self.assertNotIn("n_mid", design.wires)
+        self.assertIn("renamed_mid", design.wires)
+        self.assertEqual(design.gates["U0"].output, "renamed_mid")
+        self.assertEqual(design.gates["U1"].inputs, ["renamed_mid"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_rename_net_rejects_existing_net_collision(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="and", inputs=["a", "b"], output="y"))
+
+        with self.assertRaisesRegex(ValueError, "existing net"):
+            rename_net(design, "a", "b")
 
 
 if __name__ == "__main__":

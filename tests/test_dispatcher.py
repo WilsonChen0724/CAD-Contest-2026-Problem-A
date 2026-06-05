@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
@@ -66,6 +67,58 @@ class DispatcherTest(unittest.TestCase):
 
         self.assertIn("Yes", same)
         self.assertIn("No", different)
+
+    def test_dispatcher_reports_structural_gate_data(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b", "clk"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="and", inputs=["a", "b"], output="n1"))
+        state.design.add_gate(Gate(name="U1", type="buf", inputs=["n1"], output="y"))
+        state.design.add_dff(DFF(name="FF0", d="n1", q="q0", clk="clk"))
+
+        counts = dispatch_plan(state, {"op": "report_gate_counts", "args": {}})
+        fanout = dispatch_plan(state, {"op": "report_fanout", "args": {"net": "n1"}})
+        gate_fanout = dispatch_plan(state, {"op": "report_fanout", "args": {"net": "U0"}})
+        connections = dispatch_plan(state, {"op": "report_gate_connections", "args": {"gate": "U0"}})
+
+        self.assertIn("- and: 1", counts)
+        self.assertIn("- buf: 1", counts)
+        self.assertIn("- dff: 1", counts)
+        self.assertIn('Fanout of net "n1"', fanout)
+        self.assertIn("2 load(s)", fanout)
+        self.assertIn('Fanout of gate "U0"', gate_fanout)
+        self.assertIn("2 load(s)", gate_fanout)
+        self.assertIn("U1", fanout)
+        self.assertIn("FF0", fanout)
+        self.assertIn('Gate "U0": type=and', connections)
+        self.assertIn("GATE:U1", connections)
+
+    def test_dispatcher_checks_current_design_against_original_snapshot(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="and", inputs=["a", "b"], output="y"))
+        state.original_design = deepcopy(state.design)
+
+        equivalent = dispatch_plan(state, {"op": "check_equivalent_to_original", "args": {}})
+        state.design.gates["U0"].type = "or"
+        not_equivalent = dispatch_plan(state, {"op": "check_equivalent_to_original", "args": {}})
+
+        self.assertIn("Equivalent to original loaded netlist", equivalent)
+        self.assertIn("Not equivalent to original loaded netlist", not_equivalent)
+
+    def test_dispatcher_renames_net_transactionally(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))
+        state.design.add_gate(Gate(name="U1", type="not", inputs=["n_mid"], output="y"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "rename_net", "args": {"old_net": "n_mid", "new_net": "renamed_mid"}},
+        )
+
+        self.assertIn('Renamed net "n_mid" to "renamed_mid"', body)
+        self.assertEqual(state.design.gates["U1"].inputs, ["renamed_mid"])
+        self.assertNotIn("n_mid", state.design.wires)
 
     def test_dispatcher_runs_new_transformations(self) -> None:
         state = CurrentState()

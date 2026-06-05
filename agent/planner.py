@@ -12,6 +12,9 @@ SUPPORTED_OPS = {
     "all_paths_pass_through",
     "max_depth",
     "logic_cone",
+    "report_gate_counts",
+    "report_fanout",
+    "report_gate_connections",
     "report_outputs_by_cone_size",
     "find_gates",
     "same_clock_domain",
@@ -22,9 +25,11 @@ SUPPORTED_OPS = {
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
+    "rename_net",
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalent_to_original",
     "check_equivalence",
     "check_property",
 }
@@ -163,6 +168,11 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         either explicit targets or targets_from="found_buffers". Returns None
         when no supported transformation rule matches.
     """
+    rename_pair = _extract_rename_net_pair(text, low)
+    if rename_pair:
+        old_net, new_net = rename_pair
+        return {"op": "rename_net", "args": {"old_net": old_net, "new_net": new_net}}
+
     if "replace" in low and ("buffer" in low or "buffers" in low) and _mentions_gate_type(low, "and"):
         extra_input = _extract_extra_input(text) or "_gc_ctrl"
         targets = _extract_instance_list(text)
@@ -249,6 +259,29 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
         One of the supported analysis plans: find_gates, logic_cone, max_depth,
         or find_path. Returns None when this is not an analysis request.
     """
+    if (
+        ("count" in low or "number" in low or "how many" in low)
+        and ("gate" in low or "gates" in low or "cell" in low or "cells" in low)
+    ):
+        return {"op": "report_gate_counts", "args": {}}
+
+    if "fanout" in low or "fan-out" in low or "driven by" in low or "loads of" in low:
+        net = _extract_after_keyword(text, "fanout of") or _extract_after_keyword(text, "fan-out of")
+        net = net or _extract_after_keyword(text, "loads of")
+        net = net or _extract_after_keyword(text, "net") or _extract_after_keyword(text, "signal")
+        net = net or _extract_after_keyword(text, "driven by")
+        if net:
+            return {"op": "report_fanout", "args": {"net": net}}
+
+    if (
+        ("connection" in low or "connections" in low or "pin" in low or "pins" in low)
+        and ("gate" in low or "instance" in low or "dff" in low)
+    ):
+        gate = _extract_connection_instance(text) or _extract_after_keyword(text, "instance")
+        gate = gate or _extract_after_keyword(text, "dff") or _extract_after_keyword(text, "of")
+        if gate:
+            return {"op": "report_gate_connections", "args": {"gate": gate}}
+
     if ("buffer" in low or "buffers" in low or "gate" in low or "gates" in low) and "find" in low:
         gate_type = _extract_gate_type(low)
         name_contains = _extract_name_pattern(text)
@@ -329,6 +362,12 @@ def _plan_verification(text: str, low: str) -> dict[str, Any] | None:
 
     if "connectivity" in low or "connection" in low or "floating" in low or "driver" in low:
         return {"op": "check_connectivity", "args": {}}
+
+    if (
+        ("equivalent" in low or "equivalence" in low)
+        and ("original" in low or "loaded netlist" in low or "loaded design" in low or "last loaded" in low)
+    ):
+        return {"op": "check_equivalent_to_original", "args": {}}
 
     if "equivalent" in low or "equivalence" in low:
         equivalence = _extract_equivalence(text)
@@ -603,6 +642,37 @@ def _extract_property(text: str) -> tuple[str, str] | None:
     target = _extract_after_keyword(text, "target") or _extract_after_keyword(text, "for")
     if quoted and target:
         return target, quoted
+    return None
+
+
+def _extract_connection_instance(text: str) -> str | None:
+    patterns = [
+        rf"\bof\s+(?:gate|instance|dff)\s+({_SIGNAL_RE})",
+        rf"\b(?:gate|instance|dff)\s+({_SIGNAL_RE})\b",
+    ]
+    ignored = {"type", "pin", "pins", "connection", "connections"}
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match and match.group(1).lower() not in ignored:
+            return match.group(1)
+    return None
+
+
+def _extract_rename_net_pair(text: str, low: str) -> tuple[str, str] | None:
+    if not any(word in low for word in ("rename", "renaming")) and "update name" not in low:
+        return None
+    if not any(word in low for word in ("net", "wire", "signal")):
+        return None
+
+    patterns = [
+        rf"(?:rename|renaming)\s+(?:internal\s+)?(?:net|wire|signal)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
+        rf"(?:rename|renaming)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
+        rf"update\s+name\s+of\s+(?:internal\s+)?(?:net|wire|signal)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return match.group(1), match.group(2)
     return None
 
 

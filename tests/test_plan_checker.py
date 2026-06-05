@@ -44,6 +44,9 @@ class PlanCheckerTest(unittest.TestCase):
         plans = [
             {"op": "all_paths_pass_through", "args": {"src": "A", "dst": "B", "node": "C"}},
             {"op": "report_outputs_by_cone_size", "args": {"min_gates": 100}},
+            {"op": "report_gate_counts", "args": {}},
+            {"op": "report_fanout", "args": {"net": "n1"}},
+            {"op": "report_gate_connections", "args": {"gate": "U0"}},
             {"op": "same_clock_domain", "args": {"dff_a": "FF0", "dff_b": "FF1"}},
             {"op": "remove_dangling", "args": {}},
             {"op": "replace_inv_buf_with_inv", "args": {}},
@@ -51,6 +54,8 @@ class PlanCheckerTest(unittest.TestCase):
             {"op": "insert_buffers_for_fanout", "args": {"net": "clk_en", "max_fanout": 8}},
             {"op": "balance_depth_with_buffers", "args": {"src": "A", "dsts": ["B", "C"]}},
             {"op": "optimize_cone", "args": {"target": "h", "max_depth": 5, "minimize_gate_count": True}},
+            {"op": "rename_net", "args": {"old_net": "n_old", "new_net": "n_new"}},
+            {"op": "check_equivalent_to_original", "args": {}},
             {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
             {"op": "check_property", "args": {"target": "done", "property": "done -> req"}},
         ]
