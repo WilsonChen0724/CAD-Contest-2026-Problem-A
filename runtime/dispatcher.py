@@ -23,6 +23,7 @@ from eda.transform import (
     insert_buffers_for_fanout,
     optimize_cone,
     remove_dangling,
+    rename_net,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
     replace_or_with_nand_not,
@@ -57,9 +58,11 @@ SUPPORTED_OPS = {
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
+    "rename_net",
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalent_to_original",
     "check_equivalence",
     "check_property",
     "unsupported",
@@ -86,9 +89,11 @@ REQUIRED_ARGS = {
     "insert_buffers_for_fanout": ("net", "max_fanout"),
     "balance_depth_with_buffers": ("src", "dsts"),
     "optimize_cone": ("target",),
+    "rename_net": ("old_net", "new_net"),
     "check_connectivity": (),
     "check_fanout": ("max_fanout",),
     "check_depth": ("src", "dst", "max_depth"),
+    "check_equivalent_to_original": (),
     "check_equivalence": ("expr", "target"),
     "check_property": ("target", "property"),
     "unsupported": ("reason",),
@@ -360,6 +365,20 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             f'depth {result["initial_depth"]} -> {result["final_depth"]}.'
         )
 
+    if op == "rename_net":
+        _require_design(state)
+        result = _run_transactional_transform(
+            state,
+            rename_net,
+            args["old_net"],
+            args["new_net"],
+            verify_equivalence=True,
+        )
+        return (
+            f'Renamed net "{result["old_net"]}" to "{result["new_net"]}" '
+            f'across {result["num_references"]} reference(s).'
+        )
+
     if op == "check_connectivity":
         _require_design(state)
         return str(check_connectivity(state.design))
@@ -371,6 +390,13 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "check_depth":
         _require_design(state)
         return str(check_depth(state.design, args["src"], args["dst"], args["max_depth"]))
+
+    if op == "check_equivalent_to_original":
+        _require_design(state)
+        if state.original_design is None:
+            raise RuntimeError("No original design snapshot is available. Load a design with read_design first.")
+        result = check_design_equivalence(state.original_design, state.design)
+        return _format_original_equivalence_result(result)
 
     if op == "check_equivalence":
         _require_design(state)

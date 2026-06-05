@@ -13,6 +13,7 @@ class CurrentState:
     testcase: str | None = None
     response_id: int = 1
     design: Design | None = None
+    original_design: Design | None = None
     design_path: Path | None = None
     previous_results: dict[str, Any] = field(default_factory = dict)
     log_path: Path | None = None
@@ -24,6 +25,7 @@ class CurrentState:
         self.testcase = case_name
         self.response_id = 1
         self.design = None
+        self.original_design = None
         self.design_path = None
         self.previous_results.clear()
 

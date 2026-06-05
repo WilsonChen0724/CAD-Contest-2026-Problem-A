@@ -57,12 +57,14 @@ TRANSFORM_OPS = {
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
+    "rename_net",
 }
 
 VERIFY_OPS = {
     "check_connectivity",
     "check_fanout",
     "check_depth",
+    "check_equivalent_to_original",
     "check_equivalence",
     "check_property",
 }
@@ -95,9 +97,11 @@ OP_DESCRIPTIONS = {
     "insert_buffers_for_fanout": "Insert buffers on a net so driven gate fanout is at most max_fanout.",
     "balance_depth_with_buffers": "Insert buffers to equalize logic depths from one source to several destinations.",
     "optimize_cone": "Run conservative local cone optimization under optional depth and gate-count constraints.",
+    "rename_net": "Rename a net safely by updating declarations and all structural references.",
     "check_connectivity": "Check missing drivers, duplicate drivers, and connectivity consistency.",
     "check_fanout": "Check whether all fanouts are within a maximum fanout bound.",
     "check_depth": "Check whether src-to-dst combinational depth is within a maximum bound.",
+    "check_equivalent_to_original": "Check whether the current design is equivalent to the original loaded netlist.",
     "check_equivalence": "Check whether a Boolean expression is equivalent to a target signal.",
     "check_property": "Check whether a Boolean property holds for a target signal.",
     "unsupported": "Use only when the request cannot be mapped to any supported EDA operation.",

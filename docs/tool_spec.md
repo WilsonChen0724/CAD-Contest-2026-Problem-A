@@ -472,6 +472,30 @@ Rules:
 - First implementation performs local simplification only: redundant internal
   buffer removal and double-inverter simplification.
 
+### rename_net
+
+Safely rename one net by updating declarations and all structural references.
+
+Input:
+
+```json
+{
+  "op": "rename_net",
+  "args": {
+    "old_net": "n_mid",
+    "new_net": "renamed_mid"
+  }
+}
+```
+
+Rules:
+
+- Reject constants, missing nets, existing net-name collisions, and instance-name
+  collisions.
+- Update PI/PO/wire declarations, gate inputs/outputs, and DFF D/Q/CLK/RST pins.
+- Commit only after connectivity and combinational equivalence checks pass.
+- This is a net rename operation, not a net merge or arbitrary pin reconnect.
+
 ## 4. Verification Tools
 
 ### check_connectivity
@@ -518,6 +542,26 @@ Input:
   }
 }
 ```
+
+### check_equivalent_to_original
+
+Check whether the current design is equivalent to the original loaded netlist
+snapshot captured by `read_design`.
+
+Input:
+
+```json
+{
+  "op": "check_equivalent_to_original",
+  "args": {}
+}
+```
+
+Rules:
+
+- Scope is combinational-only.
+- DFFs are treated as boundaries.
+- Multi-cycle sequential equivalence is intentionally out of scope for now.
 
 ### check_equivalence
 
