@@ -21,11 +21,18 @@ Current limitation:
 
 - Parser/writer behavior depends on Yosys availability. Windows environments
   may hit Yosys path issues such as `GetShortPathName() failed`.
+- Release testcases from `test31` onward include named-pin DFF instances such
+  as `.RN`, `.SN`, `.CK`, `.D`, and `.Q`. The current parser support for these
+  named-pin DFF cells is still pending, so these cases fail at `read_design`
+  before backend tools can run.
 
 ### Analysis Tasks
 
 Implemented or partially implemented:
 
+- Gate-count report by primitive type.
+- Direct fanout reporting for both nets and gate/DFF instances.
+- Gate/DFF connection reports with pin connections and output fanout.
 - Single path search and avoid-path checks.
 - Maximum combinational gate-depth calculation.
 - Fanin cone collection.
@@ -37,9 +44,11 @@ Implemented or partially implemented:
 Important gaps:
 
 - Complete path enumeration, not only one example path.
-- Direct fanout reporting and immediate successor reporting as explicit Tool
-  API operations.
-- Gate-count report by type.
+- Transitive fanout cone reporting is implemented as a helper but is not yet
+  exposed as a Tool API operation.
+- Cone-local gate type counts, such as "number of each gate type in the cone of
+  n8".
+- Output ranking queries, such as largest fanin cone or deepest fanin cone.
 - More complete structural reports, such as primary input/output widths,
   floating inputs, unconnected outputs, cut/articulation points, and
   register-to-register paths.
@@ -52,6 +61,8 @@ Implemented first version:
 - `check_property`: prove a Boolean property over a combinational cone.
 - `check_design_equivalence`: compare two `Design` objects on common primary
   outputs.
+- `check_equivalent_to_original`: compare the current design against the
+  snapshot captured by `read_design`.
 - Function-preserving transformations use transactional execution and
   equivalence guards before commit.
 
@@ -62,18 +73,17 @@ Scope decision:
 - Multi-cycle sequential equivalence is intentionally out of scope for the next
   implementation phase.
 
-Important gaps:
+Important gap:
 
-- Runtime does not yet store the original loaded design snapshot.
-- There is no Tool API operation yet for checking the current design against
-  the original loaded netlist.
 - There is no pre-transform snapshot query yet for prompts such as proving
-  equivalence to the pre-transformation netlist.
+  equivalence to the pre-transformation netlist other than the original loaded
+  design.
 
 ### Transformation And Optimization Tasks
 
 Implemented first version:
 
+- `rename_net`: safely rename one net and update structural references.
 - `replace_buffers_with_and`: selected function-changing buffer-to-AND rewrite.
 - `remove_dangling`: remove logic not contributing to primary outputs.
 - `replace_inv_buf_with_inv`: collapse inverter-buffer chains.
@@ -86,7 +96,7 @@ Implemented first version:
 
 Important gaps:
 
-- Rename operations for gates and nets.
+- Rename operation for gates.
 - Constant propagation.
 - Boolean equation derivation.
 - Complete technology mapping, such as XOR-to-NAND, XNOR-to-NOR, full NAND/NOT
@@ -102,6 +112,10 @@ exercise basic IO, analysis, formal checks, transformations, and optimization.
 Mostly covered or partially covered:
 
 - Basic testcase setup, design load, and design write.
+- Gate-count report by type.
+- Direct fanout and immediate successor reports for nets and gate instances.
+- Rename net.
+- Original-loaded-netlist equivalence checks.
 - Path existence and avoid-path questions.
 - Fanin cone and max-depth questions.
 - Combinational signal equivalence questions.
@@ -111,11 +125,11 @@ Mostly covered or partially covered:
 
 Not yet covered enough:
 
-- Gate-count report by type.
+- Named-pin DFF parsing for later release cases.
 - Complete enumeration of all paths.
-- Direct fanout and immediate successor reports.
-- Rename gate and rename net.
-- Original-loaded-netlist equivalence checks.
+- Transitive fanout cone reports.
+- Cone-local gate type counts.
+- Rename gate.
 - Constant propagation for gates with tied constants.
 - Boolean equation derivation.
 - Full technology mapping and resynthesis-style restructuring.
@@ -126,10 +140,26 @@ Not yet covered enough:
 
 ### P0: Highest Coverage And Foundation
 
+- `named_pin_dff_parser_support`
+  - Support named pins such as `Q`, `D`, `CK`/`CLK`, `RN`, `SN`, `RST`, and
+    `RESET`.
+  - Keep DFFs as combinational boundaries; no multi-cycle sequential reasoning
+    is required.
+- `fanout_cone`
+  - Expose existing helper as a Tool API operation for reachable-gate prompts.
+- `all_paths`
+  - Enumerate combinational paths with practical limits to avoid path explosion.
+- cone-local structural reports
+  - Count gate types inside a target cone.
+  - Rank outputs by fanin cone size or depth.
+
+### Recently Completed P0 Items
+
 - `report_gate_counts`
   - Count all gates and DFFs, broken down by gate type.
 - `report_fanout`
-  - Report direct driven gates or DFF pins for a given net.
+  - Report direct driven gates or DFF pins for a given net, gate instance, or
+    DFF instance.
 - `report_gate_connections`
   - Report gate type, output net, input pins, and immediate successors.
 - `rename_net`
@@ -142,9 +172,6 @@ Not yet covered enough:
 
 ### P1: Common Testcase Requests
 
-- `all_paths`
-  - Enumerate all combinational paths between a source and destination with
-    practical limits to avoid path explosion.
 - `rename_gate`
   - Rename an instance while preserving all connectivity.
 - `constant_propagation`

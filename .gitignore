@@ -9,6 +9,8 @@ __pycache__/
 output/
 result/
 results/
+A_release testcase_0510/runner_output/
+A_release testcase_0510/test*_out.v
 third_party/yosys/oss-cad-suite/
 third_party/yosys/*.zip
 third_party/yosys/*.exe
