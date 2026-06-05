@@ -20,6 +20,7 @@ _DFF_RE = re.compile(
     r"^(dff[A-Za-z0-9_$]*)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)$",
     re.S | re.I,
 )
+_NAMED_PIN_RE = re.compile(r"^\s*\.([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)\s*$", re.S)
 _MODULE_RE = re.compile(r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\(", re.S)
 _WRAPPER_PREFIX = "__cada_"
 
@@ -156,9 +157,7 @@ def _rewrite_primitives_as_wrappers(text: str) -> tuple[str, set[tuple[str, int]
 
         if dff_match:
             _, inst_name, pin_text = dff_match.groups()
-            pins = _split_pin_list(pin_text)
-            if len(pins) not in {3, 4}:
-                raise ValueError(f"DFF {inst_name} expects q, d, clk[, rst]")
+            pins = _normalize_dff_pins(inst_name, pin_text)
             wrapper_type = _dff_wrapper_name(len(pins))
             wrappers.add(("dff", len(pins)))
             statements.append(_replace_statement(raw_statement, f"{wrapper_type} {inst_name}({', '.join(pins)})"))
@@ -176,10 +175,80 @@ def _replace_statement(original: str, replacement: str) -> str:
 
 
 def _split_pin_list(pin_text: str) -> list[str]:
-    pins = [pin.strip() for pin in pin_text.replace("\n", " ").split(",")]
+    pins: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(pin_text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("Instance pin list has unmatched ')'")
+        elif char == "," and depth == 0:
+            pins.append(pin_text[start:index].strip())
+            start = index + 1
+    if depth != 0:
+        raise ValueError("Instance pin list has unmatched '('")
+    pins.append(pin_text[start:].strip())
     if not pins or any(not pin for pin in pins):
         raise ValueError("Instance contains an empty pin")
     return pins
+
+
+def _normalize_dff_pins(inst_name: str, pin_text: str) -> list[str]:
+    pins = _split_pin_list(pin_text)
+    if not _looks_like_named_pins(pins):
+        if len(pins) not in {3, 4}:
+            raise ValueError(f"DFF {inst_name} expects q, d, clk[, rst]")
+        return pins
+
+    named = _parse_named_pin_list(inst_name, pins)
+    required = {"Q", "D", "CK"}
+    missing = sorted(required - set(named))
+    if missing:
+        raise ValueError(f"DFF {inst_name} is missing named pin(s): {', '.join(missing)}")
+
+    normalized = [named["Q"], named["D"], named["CK"]]
+    reset = _select_dff_reset(named)
+    if reset is not None:
+        normalized.append(reset)
+    return normalized
+
+
+def _looks_like_named_pins(pins: list[str]) -> bool:
+    return any(pin.lstrip().startswith(".") for pin in pins)
+
+
+def _parse_named_pin_list(inst_name: str, pins: list[str]) -> dict[str, str]:
+    named: dict[str, str] = {}
+    for pin in pins:
+        match = _NAMED_PIN_RE.match(pin)
+        if not match:
+            raise ValueError(f"DFF {inst_name} mixes named and positional pins")
+        name = match.group(1).upper()
+        value = match.group(2).strip()
+        if not value:
+            raise ValueError(f"DFF {inst_name} named pin {name} is empty")
+        if name in named:
+            raise ValueError(f"DFF {inst_name} has duplicate named pin {name}")
+        named[name] = value
+    return named
+
+
+def _select_dff_reset(named: dict[str, str]) -> str | None:
+    for pin_name in ("RN", "SN", "RST", "RESET"):
+        value = named.get(pin_name)
+        if value is not None and not _is_inactive_dff_control(pin_name, value):
+            return value
+    return None
+
+
+def _is_inactive_dff_control(pin_name: str, value: str) -> bool:
+    normalized = value.replace(" ", "").lower()
+    if pin_name in {"RN", "SN"}:
+        return normalized in {"1'b1", "1", "1'h1", "1'd1"}
+    return normalized in {"1'b0", "0", "1'h0", "1'd0"}
 
 
 def _build_wrapper_prelude(wrappers: set[tuple[str, int]]) -> str:
