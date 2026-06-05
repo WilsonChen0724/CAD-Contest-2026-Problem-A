@@ -39,6 +39,44 @@ endmodule
         self.assertIn("input [1:0] a;", written)
         self.assertIn("dff FF0(y, n[0], clk);", written)
 
+    def test_parser_supports_named_pin_dff_from_release_netlists(self) -> None:
+        source = """
+module top(clk, rst_n, d, y);
+input clk, rst_n, d;
+output y;
+dff g0(.RN(rst_n), .SN(1'b1), .CK(clk), .D(d), .Q(y));
+endmodule
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            in_path = Path(tmp) / "named_dff.v"
+            in_path.write_text(source, encoding="utf-8")
+
+            design = parse_verilog(in_path)
+
+        self.assertEqual(design.dffs["g0"].q, "y")
+        self.assertEqual(design.dffs["g0"].d, "d")
+        self.assertEqual(design.dffs["g0"].clk, "clk")
+        self.assertEqual(design.dffs["g0"].rst, "rst_n")
+
+    def test_parser_ignores_inactive_named_dff_controls(self) -> None:
+        source = """
+module top(clk, d, y);
+input clk, d;
+output y;
+dff g0(.RN(1'b1), .SN(1'b1), .CK(clk), .D(d), .Q(y));
+endmodule
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            in_path = Path(tmp) / "named_dff_no_reset.v"
+            in_path.write_text(source, encoding="utf-8")
+
+            design = parse_verilog(in_path)
+
+        self.assertEqual(design.dffs["g0"].q, "y")
+        self.assertEqual(design.dffs["g0"].d, "d")
+        self.assertEqual(design.dffs["g0"].clk, "clk")
+        self.assertIsNone(design.dffs["g0"].rst)
+
     def test_parser_error_message_includes_source_location(self) -> None:
         source = """
 module top(a, y);
