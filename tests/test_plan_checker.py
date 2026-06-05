@@ -56,6 +56,7 @@ class PlanCheckerTest(unittest.TestCase):
             {"op": "optimize_cone", "args": {"target": "h", "max_depth": 5, "minimize_gate_count": True}},
             {"op": "constant_propagation", "args": {}},
             {"op": "rename_net", "args": {"old_net": "n_old", "new_net": "n_new"}},
+            {"op": "rename_gate", "args": {"old_name": "g0", "new_name": "renamed_gate"}},
             {"op": "check_equivalent_to_original", "args": {}},
             {"op": "check_equivalence", "args": {"expr": "a & b", "target": "z"}},
             {"op": "check_property", "args": {"target": "done", "property": "done -> req"}},
@@ -65,7 +66,41 @@ class PlanCheckerTest(unittest.TestCase):
             with self.subTest(op=plan["op"]):
                 self.assertEqual(validate_plan(plan), plan)
 
-    def test_accepts_valid_openai_domain_tool_plan(self) -> None:
+    def test_accepts_null_save_as_in_plain_plan(self) -> None:
+        plan = {"op": "logic_cone", "args": {"target": "y"}, "save_as": None}
+
+        self.assertEqual(validate_plan(plan), plan)
+
+    def test_rejects_bool_where_integer_is_required(self) -> None:
+        with self.assertRaisesRegex(PlanValidationError, "wrong type"):
+            validate_plan({"op": "check_fanout", "args": {"max_fanout": True}})
+
+    def test_rejects_empty_required_string_args(self) -> None:
+        invalid_plans = [
+            {"op": "insert_buffers_for_fanout", "args": {"net": "", "max_fanout": 4}},
+            {"op": "optimize_cone", "args": {"target": "   "}},
+            {"op": "balance_depth_with_buffers", "args": {"src": "a", "dsts": [""]}},
+            {"op": "rename_gate", "args": {"old_name": "g0", "new_name": ""}},
+        ]
+
+        for plan in invalid_plans:
+            with self.subTest(op=plan["op"]):
+                with self.assertRaisesRegex(PlanValidationError, "empty"):
+                    validate_plan(plan)
+
+    def test_rejects_invalid_numeric_bounds(self) -> None:
+        invalid_plans = [
+            {"op": "report_outputs_by_cone_size", "args": {"min_gates": -1}},
+            {"op": "check_depth", "args": {"src": "a", "dst": "y", "max_depth": -1}},
+            {"op": "insert_buffers_for_fanout", "args": {"net": "n1", "max_fanout": 1}},
+        ]
+
+        for plan in invalid_plans:
+            with self.subTest(op=plan["op"]):
+                with self.assertRaises(PlanValidationError):
+                    validate_plan(plan)
+
+    def test_accepts_valid_provider_domain_tool_plan(self) -> None:
         plan = validate_domain_tool_plan(
             "run_analysis_plan",
             {
@@ -84,7 +119,7 @@ class PlanCheckerTest(unittest.TestCase):
             {"steps": [{"op": "max_depth", "args": {"src": "in0", "dst": "out3"}}]},
         )
 
-    def test_rejects_openai_domain_tool_with_wrong_category(self) -> None:
+    def test_rejects_provider_domain_tool_with_wrong_category(self) -> None:
         with self.assertRaises(PlanValidationError) as ctx:
             validate_domain_tool_plan(
                 "run_analysis_plan",

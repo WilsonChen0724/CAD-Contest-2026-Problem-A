@@ -120,6 +120,20 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(state.design.gates["U1"].inputs, ["renamed_mid"])
         self.assertNotIn("n_mid", state.design.wires)
 
+    def test_dispatcher_renames_gate_transactionally(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="y"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "rename_gate", "args": {"old_name": "U0", "new_name": "U_RENAMED"}},
+        )
+
+        self.assertIn('Renamed gate instance "U0" to "U_RENAMED"', body)
+        self.assertIn("U_RENAMED", state.design.gates)
+        self.assertNotIn("U0", state.design.gates)
+        self.assertEqual(state.design.gates["U_RENAMED"].name, "U_RENAMED")
     def test_dispatcher_propagates_constants_transactionally(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
@@ -132,6 +146,22 @@ class DispatcherTest(unittest.TestCase):
         self.assertNotIn("U_and", state.design.gates)
         self.assertEqual(state.design.gates["U_or"].type, "buf")
         self.assertEqual(state.design.gates["U_or"].inputs, ["a"])
+
+    def test_transform_allows_preexisting_connectivity_issues_without_new_regression(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))
+        state.design.add_gate(Gate(name="U1", type="not", inputs=["n_mid"], output="y"))
+        state.design.wires.add("preexisting_missing")
+
+        body = dispatch_plan(
+            state,
+            {"op": "rename_net", "args": {"old_net": "n_mid", "new_net": "renamed_mid"}},
+        )
+
+        self.assertIn('Renamed net "n_mid" to "renamed_mid"', body)
+        self.assertEqual(state.design.gates["U1"].inputs, ["renamed_mid"])
+        self.assertIn("preexisting_missing", state.design.wires)
 
     def test_dispatcher_runs_new_transformations(self) -> None:
         state = CurrentState()
