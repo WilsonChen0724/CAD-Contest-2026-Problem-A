@@ -311,6 +311,91 @@ def primary_output_cone_sizes(design: Design) -> dict[str, dict]:
     return report
 
 
+def shared_fanin_cone_gates(design: Design, target_a: str, target_b: str) -> dict:
+    """Report gates shared by the transitive fanin cones of two targets."""
+    cone_a = set(logic_cone(design, target_a))
+    cone_b = set(logic_cone(design, target_b))
+    shared = sorted(cone_a & cone_b)
+    return {
+        "target_a": target_a,
+        "target_b": target_b,
+        "num_shared_gates": len(shared),
+        "shared_gates": shared,
+    }
+
+
+def derive_boolean_equation(design: Design, target: str, max_terms: int = 200) -> dict:
+    """
+    Derive a structural Boolean expression for a target when tractable.
+
+    DFF Q pins and primary inputs are treated as symbolic boundaries. The
+    expansion is intentionally capped so release-sized cones cannot produce
+    enormous responses.
+    """
+    rebuild_graph(design)
+    remaining = {"terms": max_terms}
+    expression = _derive_expr(design, target, remaining, set())
+    return {
+        "target": target,
+        "expression": expression,
+        "truncated": remaining["terms"] <= 0,
+    }
+
+
+def max_depth_to_dff_d(design: Design) -> dict:
+    """Compute maximum combinational depth from any primary input to any DFF D pin."""
+    rebuild_graph(design)
+    prefix_depth = {net: 0 for net in design.inputs}
+    prefix_path: dict[str, list[str]] = {net: [net] for net in design.inputs}
+    _relax_forward_depths(design, prefix_depth, prefix_path)
+
+    best_depth = 0
+    best_dff = None
+    best_d_pin = None
+    best_path: list[str] = []
+    dff_depths: dict[str, int | None] = {}
+    for name, dff in sorted(design.dffs.items()):
+        depth = prefix_depth.get(dff.d)
+        dff_depths[name] = depth
+        if depth is not None and depth > best_depth:
+            best_depth = depth
+            best_dff = name
+            best_d_pin = dff.d
+            best_path = prefix_path.get(dff.d, [dff.d])
+
+    return {
+        "max_depth": best_depth,
+        "dff": best_dff,
+        "d_pin": best_d_pin,
+        "path": best_path,
+        "dff_depths": dff_depths,
+    }
+
+
+def outputs_depth_greater_than(design: Design, min_depth: int) -> dict:
+    """Report primary outputs whose maximum structural logic depth exceeds a threshold."""
+    rebuild_graph(design)
+    sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
+    prefix_depth = {net: 0 for net in sources}
+    prefix_path: dict[str, list[str]] = {net: [net] for net in sources}
+    _relax_forward_depths(design, prefix_depth, prefix_path)
+
+    matched = []
+    output_depths: dict[str, int | None] = {}
+    for output in sorted(design.outputs):
+        depth = prefix_depth.get(output)
+        output_depths[output] = depth
+        if depth is not None and depth > min_depth:
+            matched.append({"output": output, "depth": depth, "path": prefix_path.get(output, [output])})
+
+    return {
+        "min_depth": min_depth,
+        "num_outputs": len(matched),
+        "outputs": matched,
+        "output_depths": output_depths,
+    }
+
+
 def gate_on_max_depth_path(design: Design, gate_name: str) -> dict:
     """
     Check whether a gate lies on any global maximum combinational-depth path.
@@ -542,6 +627,43 @@ def _relax_reverse_depths(design: Design, suffix_depth: dict[str, int]) -> None:
         if not changed:
             return
     raise ValueError("Combinational loop detected while computing reverse depth.")
+
+
+def _derive_expr(design: Design, net: str, remaining: dict[str, int], visiting: set[str]) -> str:
+    if remaining["terms"] <= 0:
+        return f"{net} /* truncated */"
+    if net in visiting:
+        return f"{net} /* loop */"
+    if net in design.inputs or net in {"1'b0", "1'b1", "0", "1"}:
+        return net
+
+    driver = design.drivers.get(net)
+    if driver is None or not driver.startswith("GATE:"):
+        return net
+
+    visiting.add(net)
+    remaining["terms"] -= 1
+    gate = design.gates[driver.split(":", 1)[1]]
+    args = [_derive_expr(design, item, remaining, visiting) for item in gate.inputs]
+    visiting.remove(net)
+
+    if gate.type == "buf" and len(args) == 1:
+        return args[0]
+    if gate.type == "not" and len(args) == 1:
+        return f"!({args[0]})"
+    if gate.type == "and":
+        return "(" + " & ".join(args) + ")"
+    if gate.type == "or":
+        return "(" + " | ".join(args) + ")"
+    if gate.type == "nand":
+        return "!(" + " & ".join(args) + ")"
+    if gate.type == "nor":
+        return "!(" + " | ".join(args) + ")"
+    if gate.type == "xor":
+        return "(" + " ^ ".join(args) + ")"
+    if gate.type == "xnor":
+        return "!(" + " ^ ".join(args) + ")"
+    return net
 
 
 def _combinational_endpoints_from_net(design: Design, source: str) -> dict[str, set[str]]:

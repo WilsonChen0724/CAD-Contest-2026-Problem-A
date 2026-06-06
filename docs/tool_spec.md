@@ -307,6 +307,83 @@ Rules:
 - Endpoints are primary outputs and DFF D pins.
 - DFFs are still treated as sequential boundaries.
 
+### report_shared_fanin_cone_gates
+
+Report gates shared by two transitive fanin cones.
+
+Input:
+
+```json
+{
+  "op": "report_shared_fanin_cone_gates",
+  "args": {
+    "target_a": "n16",
+    "target_b": "n17"
+  }
+}
+```
+
+### derive_boolean_equation
+
+Derive a structural Boolean equation for a target when tractable.
+
+Input:
+
+```json
+{
+  "op": "derive_boolean_equation",
+  "args": {
+    "target": "n16"
+  }
+}
+```
+
+Rules:
+
+- Primary inputs and DFF Q pins are symbolic boundaries.
+- Large expressions may be truncated.
+
+### report_max_depth_to_dff_d
+
+Report the maximum combinational depth from any primary input to any DFF D pin.
+
+Input:
+
+```json
+{
+  "op": "report_max_depth_to_dff_d",
+  "args": {}
+}
+```
+
+### report_outputs_depth_greater_than
+
+Report primary outputs whose structural logic depth is greater than a threshold.
+
+Input:
+
+```json
+{
+  "op": "report_outputs_depth_greater_than",
+  "args": {
+    "min_depth": 4
+  }
+}
+```
+
+### report_last_transform_stats
+
+Report stats from the previous successful transform.
+
+Input:
+
+```json
+{
+  "op": "report_last_transform_stats",
+  "args": {}
+}
+```
+
 ### report_register_paths
 
 Report register-to-register paths through combinational logic.
@@ -463,6 +540,26 @@ Safety condition:
 - Intermediate net must have only the buffer as fanout.
 - The replacement must preserve the final output net value.
 
+### collapse_back_to_back_inverters
+
+Collapse safe NOT followed by NOT chains into direct wiring.
+
+Input:
+
+```json
+{
+  "op": "collapse_back_to_back_inverters",
+  "args": {}
+}
+```
+
+Rules:
+
+- The intermediate net between the two inverters must have only the second
+  inverter as fanout.
+- If the second inverter drives a primary output net, it is rewritten as a BUF
+  to preserve the output driver name.
+
 ### replace_or_with_nand_not
 
 Replace 2-input OR gates in a cone with NAND/NOT equivalent logic.
@@ -547,6 +644,27 @@ Rules:
 - Preserve logical functionality.
 - Report number of inserted buffers and final maximum fanout.
 - Commit only after connectivity, equivalence, and fanout-bound checks pass.
+
+### insert_dedicated_buffers_for_each_load
+
+Insert one dedicated BUF per current direct load of a net or signal.
+
+Input:
+
+```json
+{
+  "op": "insert_dedicated_buffers_for_each_load",
+  "args": {
+    "net": "n2"
+  }
+}
+```
+
+Rules:
+
+- Gate and DFF input sinks are redirected through dedicated buffer output nets.
+- Primary-output sinks are left direct in the current implementation.
+- Commit only after connectivity and combinational equivalence checks pass.
 
 ### balance_depth_with_buffers
 
@@ -721,6 +839,25 @@ Rules:
 - Scope is combinational-only.
 - DFFs are treated as boundaries.
 - Multi-cycle sequential equivalence is intentionally out of scope for now.
+
+### check_equivalent_to_last_transform_input
+
+Check whether the current design is equivalent to the design state immediately
+before the previous successful transform.
+
+Input:
+
+```json
+{
+  "op": "check_equivalent_to_last_transform_input",
+  "args": {}
+}
+```
+
+Rules:
+
+- Scope is combinational-only.
+- DFFs are treated as boundaries.
 
 ### check_equivalence
 

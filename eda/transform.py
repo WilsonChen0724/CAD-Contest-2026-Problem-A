@@ -393,7 +393,7 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
 
     def add_buffer(source_net: str) -> str:
         buffer_net = design.make_unique_wire_name(f"{net}_fanout_buf")
-        buffer_name = design.make_unique_gate_name(f"{net}_fanout_buf")
+        buffer_name = design.make_unique_gate_name(f"{net}_fanout_buf_gate")
         design.add_gate(Gate(name=buffer_name, type="buf", inputs=[source_net], output=buffer_net))
         inserted_buffers.append(buffer_name)
         inserted_nets.append(buffer_net)
@@ -427,6 +427,66 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
         "num_inserted_buffers": len(inserted_buffers),
         "final_max_fanout": _max_fanout(design),
     }
+
+
+@_rebuild_graph_after_transform
+def insert_dedicated_buffers_for_each_load(design: Design, net: str) -> dict:
+    """
+    Insert one BUF per current direct load of a net.
+
+    Gate and DFF input sinks are redirected through dedicated new buffer output
+    nets. Primary-output sinks are left direct because preserving a primary
+    output name while inserting a buffer requires replacing the existing driver,
+    which is a different transform.
+    """
+    rebuild_graph(design)
+    if net not in design.all_nets():
+        raise ValueError(f'Net not found: "{net}"')
+
+    original_sinks = list(design.fanouts.get(net, []))
+    inserted_buffers: list[str] = []
+    inserted_nets: list[str] = []
+    skipped_sinks: list[str] = []
+
+    for sink in original_sinks:
+        if sink.startswith("PO:"):
+            skipped_sinks.append(sink)
+            continue
+        buffer_net = design.make_unique_wire_name(f"{net}_dedicated_buf")
+        buffer_name = design.make_unique_gate_name(f"{net}_dedicated_buf_gate")
+        design.add_gate(Gate(name=buffer_name, type="buf", inputs=[net], output=buffer_net))
+        _redirect_sink(design, sink, old_net=net, new_net=buffer_net)
+        inserted_buffers.append(buffer_name)
+        inserted_nets.append(buffer_net)
+
+    rebuild_graph(design)
+    return {
+        "net": net,
+        "original_loads": len(original_sinks),
+        "inserted_buffers": inserted_buffers,
+        "inserted_nets": inserted_nets,
+        "skipped_sinks": skipped_sinks,
+        "num_inserted_buffers": len(inserted_buffers),
+        "final_direct_loads": len(design.fanouts.get(net, [])),
+    }
+
+
+@_rebuild_graph_after_transform
+def collapse_back_to_back_inverters(design: Design) -> dict:
+    """Collapse safe NOT->NOT chains by reconnecting downstream sinks."""
+    changed: list[dict[str, Any]] = []
+    max_iterations = max(1, len(design.gates) + 1)
+
+    for _ in range(max_iterations):
+        rebuild_graph(design)
+        rewrite = _collapse_one_back_to_back_inverter(design)
+        if rewrite is None:
+            break
+        changed.append(rewrite)
+    else:
+        raise RuntimeError("collapse_back_to_back_inverters did not converge.")
+
+    return {"changed": changed, "num_changed": len(changed)}
 
 
 @_rebuild_graph_after_transform
@@ -674,6 +734,54 @@ def merge_equivalent_gates(design: Design) -> dict:
             rebuild_graph(design)
 
     return {"changed": changed, "num_merged": len(changed)}
+
+
+def _collapse_one_back_to_back_inverter(design: Design) -> dict[str, Any] | None:
+    for second_name in sorted(list(design.gates)):
+        second = design.gates.get(second_name)
+        if second is None or second.type != "not" or len(second.inputs) != 1:
+            continue
+        mid_net = second.inputs[0]
+        driver = design.drivers.get(mid_net)
+        if not driver or not driver.startswith("GATE:"):
+            continue
+        first_name = driver.split(":", 1)[1]
+        first = design.gates.get(first_name)
+        if first is None or first.type != "not" or len(first.inputs) != 1:
+            continue
+        if design.fanouts.get(mid_net, []) != [f"GATE:{second_name}"]:
+            continue
+
+        source_net = first.inputs[0]
+        output_net = second.output
+        if output_net in design.outputs or any(sink.startswith("PO:") for sink in design.fanouts.get(output_net, [])):
+            second.type = "buf"
+            second.inputs = [source_net]
+            del design.gates[first_name]
+            _discard_internal_wire(design, mid_net)
+            return {
+                "rule": "back_to_back_inverter_to_output_buffer",
+                "removed_gates": [first_name],
+                "rewritten_gate": second_name,
+                "removed_nets": [mid_net],
+            }
+
+        for sink in list(design.fanouts.get(output_net, [])):
+            _redirect_sink(design, sink, old_net=output_net, new_net=source_net)
+        del design.gates[first_name]
+        del design.gates[second_name]
+        _discard_internal_wire(design, mid_net)
+        _discard_internal_wire(design, output_net)
+        return {
+            "rule": "remove_back_to_back_inverters",
+            "removed_gates": [first_name, second_name],
+            "redirected_net": output_net,
+            "replacement_net": source_net,
+            "removed_nets": [mid_net, output_net],
+        }
+    return None
+
+
 def _redirect_sink(design: Design, sink: str, old_net: str, new_net: str) -> None:
     kind, name = sink.split(":", 1)
     if kind == "GATE":

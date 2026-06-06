@@ -105,6 +105,19 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Equivalent to original loaded netlist", equivalent)
         self.assertIn("Not equivalent to original loaded netlist", not_equivalent)
 
+    def test_dispatcher_formats_constant_equivalence_as_yes_no(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"z"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="z"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "check_equivalence", "args": {"expr": "0", "target": "z"}},
+        )
+
+        self.assertIn('No. "z" is not always 0.', body)
+        self.assertIn("Counterexample:", body)
+
     def test_dispatcher_renames_net_transactionally(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})

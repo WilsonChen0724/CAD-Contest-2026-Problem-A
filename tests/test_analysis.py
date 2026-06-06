@@ -8,10 +8,14 @@ from eda.analysis import (
     dff_relationships,
     fanout_cone,
     gate_on_max_depth_path,
+    derive_boolean_equation,
     io_counts,
+    max_depth_to_dff_d,
     max_depth,
+    outputs_depth_greater_than,
     primary_output_cone_sizes,
     register_to_register_paths,
+    shared_fanin_cone_gates,
 )
 from eda.design import DFF, Design, Gate
 
@@ -133,6 +137,35 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(report["num_paths"], 1)
         self.assertEqual(report["paths"][0]["src_dff"], "FF0")
         self.assertEqual(report["paths"][0]["dst_dff"], "FF1")
+
+    def test_shared_fanin_cone_gates(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})
+        design.add_gate(Gate(name="U_shared", type="and", inputs=["a", "b"], output="n0"))
+        design.add_gate(Gate(name="U0", type="buf", inputs=["n0"], output="y0"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["n0"], output="y1"))
+
+        report = shared_fanin_cone_gates(design, "y0", "y1")
+
+        self.assertEqual(report["shared_gates"], ["U_shared"])
+
+    def test_derive_boolean_equation(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="nand", inputs=["a", "b"], output="y"))
+
+        report = derive_boolean_equation(design, "y")
+
+        self.assertEqual(report["expression"], "!(a & b)")
+
+    def test_max_depth_to_dff_d_and_output_depth_threshold(self) -> None:
+        design = Design(module_name="top", inputs={"a", "clk"}, outputs={"y0", "y1"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["n0"], output="d0"))
+        design.add_dff(DFF(name="FF0", d="d0", q="q0", clk="clk"))
+        design.add_gate(Gate(name="U2", type="buf", inputs=["q0"], output="y0"))
+        design.add_gate(Gate(name="U3", type="buf", inputs=["a"], output="y1"))
+
+        self.assertEqual(max_depth_to_dff_d(design)["max_depth"], 2)
+        self.assertEqual(outputs_depth_greater_than(design, 0)["num_outputs"], 2)
 
 
 if __name__ == "__main__":

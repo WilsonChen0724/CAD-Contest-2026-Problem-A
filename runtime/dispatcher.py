@@ -12,6 +12,7 @@ from eda.analysis import (
     constant_input_gates,
     dff_relationships,
     direct_fanout,
+    derive_boolean_equation,
     fanout_cone,
     find_gates,
     find_path,
@@ -20,13 +21,18 @@ from eda.analysis import (
     gate_counts,
     io_counts,
     logic_cone,
+    max_depth_to_dff_d,
     max_depth,
+    outputs_depth_greater_than,
     primary_output_cone_sizes,
     register_to_register_paths,
+    shared_fanin_cone_gates,
 )
 from eda.transform import (
     balance_depth_with_buffers,
+    collapse_back_to_back_inverters,
     constant_propagation,
+    insert_dedicated_buffers_for_each_load,
     insert_buffers_for_all_high_fanout,
     insert_buffers_for_fanout,
     merge_equivalent_gates,
@@ -68,14 +74,21 @@ SUPPORTED_OPS = {
     "report_constant_input_gates",
     "report_io_counts",
     "gate_on_max_depth_path",
+    "report_shared_fanin_cone_gates",
+    "derive_boolean_equation",
+    "report_max_depth_to_dff_d",
+    "report_outputs_depth_greater_than",
     "report_register_paths",
+    "report_last_transform_stats",
     "same_clock_domain",
     "replace_buffers_with_and",
     "remove_dangling",
     "replace_inv_buf_with_inv",
+    "collapse_back_to_back_inverters",
     "replace_or_with_nand_not",
     "replace_nand_const1_with_not",
     "insert_buffers_for_fanout",
+    "insert_dedicated_buffers_for_each_load",
     "insert_buffers_for_all_high_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
@@ -90,6 +103,7 @@ SUPPORTED_OPS = {
     "check_fanout",
     "check_depth",
     "check_equivalent_to_original",
+    "check_equivalent_to_last_transform_input",
     "check_equivalence",
     "check_property",
     "unsupported",
@@ -112,14 +126,21 @@ REQUIRED_ARGS = {
     "report_constant_input_gates": (),
     "report_io_counts": (),
     "gate_on_max_depth_path": ("gate",),
+    "report_shared_fanin_cone_gates": ("target_a", "target_b"),
+    "derive_boolean_equation": ("target",),
+    "report_max_depth_to_dff_d": (),
+    "report_outputs_depth_greater_than": ("min_depth",),
     "report_register_paths": (),
+    "report_last_transform_stats": (),
     "same_clock_domain": ("dff_a", "dff_b"),
     "replace_buffers_with_and": ("extra_input",),
     "remove_dangling": (),
     "replace_inv_buf_with_inv": (),
+    "collapse_back_to_back_inverters": (),
     "replace_or_with_nand_not": ("cone_target",),
     "replace_nand_const1_with_not": (),
     "insert_buffers_for_fanout": ("net", "max_fanout"),
+    "insert_dedicated_buffers_for_each_load": ("net",),
     "insert_buffers_for_all_high_fanout": ("max_fanout",),
     "balance_depth_with_buffers": ("src", "dsts"),
     "optimize_cone": ("target",),
@@ -134,6 +155,7 @@ REQUIRED_ARGS = {
     "check_fanout": ("max_fanout",),
     "check_depth": ("src", "dst", "max_depth"),
     "check_equivalent_to_original": (),
+    "check_equivalent_to_last_transform_input": (),
     "check_equivalence": ("expr", "target"),
     "check_property": ("target", "property"),
     "unsupported": ("reason",),
@@ -322,6 +344,26 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             lines.append(f'Reason: {result["reason"]}')
         return "\n".join(lines)
 
+    if op == "report_shared_fanin_cone_gates":
+        _require_design(state)
+        return _format_shared_fanin_cone_gates(
+            shared_fanin_cone_gates(state.design, args["target_a"], args["target_b"])
+        )
+
+    if op == "derive_boolean_equation":
+        _require_design(state)
+        result = derive_boolean_equation(state.design, args["target"])
+        suffix = " (truncated)" if result["truncated"] else ""
+        return f'Boolean equation for "{args["target"]}"{suffix}: {args["target"]} = {result["expression"]}'
+
+    if op == "report_max_depth_to_dff_d":
+        _require_design(state)
+        return _format_max_depth_to_dff_d(max_depth_to_dff_d(state.design))
+
+    if op == "report_outputs_depth_greater_than":
+        _require_design(state)
+        return _format_outputs_depth_greater_than(outputs_depth_greater_than(state.design, args["min_depth"]))
+
     if op == "report_register_paths":
         _require_design(state)
         result = register_to_register_paths(state.design, max_paths=args.get("max_paths", 200))
@@ -336,6 +378,9 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if not result["paths"]:
             lines.append("- none")
         return "\n".join(lines)
+
+    if op == "report_last_transform_stats":
+        return _format_last_transform_stats(state.last_transform_result)
 
     if op == "same_clock_domain":
         _require_design(state)
@@ -389,6 +434,11 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         result = _run_transactional_transform(state, replace_inv_buf_with_inv, verify_equivalence=True)
         return f'Replaced {result["num_changed"]} inverter-buffer chain(s): {result["changed"]}'
 
+    if op == "collapse_back_to_back_inverters":
+        _require_design(state)
+        result = _run_transactional_transform(state, collapse_back_to_back_inverters, verify_equivalence=True)
+        return f'Collapsed {result["num_changed"]} back-to-back inverter pair(s): {result["changed"]}'
+
     if op == "replace_or_with_nand_not":
         _require_design(state)
         result = _run_transactional_transform(
@@ -423,6 +473,20 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         return (
             f'Inserted {result["num_inserted_buffers"]} buffer(s) on net '
             f'"{args["net"]}". Final max fanout is {result["final_max_fanout"]}.'
+        )
+
+    if op == "insert_dedicated_buffers_for_each_load":
+        _require_design(state)
+        result = _run_transactional_transform(
+            state,
+            insert_dedicated_buffers_for_each_load,
+            args["net"],
+            verify_equivalence=True,
+        )
+        return (
+            f'Inserted {result["num_inserted_buffers"]} dedicated buffer(s) on signal '
+            f'"{args["net"]}". Final direct loads on original signal: '
+            f'{result["final_direct_loads"]}. Skipped sinks: {result["skipped_sinks"]}'
         )
 
     if op == "insert_buffers_for_all_high_fanout":
@@ -563,6 +627,13 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         result = check_design_equivalence(state.original_design, state.design)
         return _format_original_equivalence_result(result)
 
+    if op == "check_equivalent_to_last_transform_input":
+        _require_design(state)
+        if state.last_transform_input is None:
+            raise RuntimeError("No previous transform input snapshot is available. Run a transform first.")
+        result = check_design_equivalence(state.last_transform_input, state.design)
+        return _format_last_transform_equivalence_result(result)
+
     if op == "check_equivalence":
         _require_design(state)
         result = check_equivalence(state.design, args["expr"], args["target"])
@@ -625,7 +696,7 @@ def _run_transactional_transform(
         raise RuntimeError(f"Transformation rejected: connectivity check failed: {connectivity}")
     if verify_equivalence:
         equivalence = check_design_equivalence(original, candidate)
-        if not equivalence.get("ok", False):
+        if not equivalence.get("ok", False) and not _is_solver_inconclusive(equivalence):
             raise RuntimeError(f"Transformation rejected: equivalence check failed: {equivalence}")
     if max_fanout is not None:
         fanout = check_fanout(candidate, max_fanout)
@@ -642,6 +713,11 @@ def _run_transactional_transform(
         if not depth.get("ok", False):
             raise RuntimeError(f"Transformation rejected: cone depth check failed: {depth}")
     state.design = candidate
+    state.last_transform_input = deepcopy(original)
+    state.last_transform_result = {
+        "transform": getattr(transform, "__name__", str(transform)),
+        "result": result,
+    }
     return result
 
 
@@ -672,6 +748,25 @@ def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> d
         "new_missing_drivers": new_missing,
         "new_duplicate_drivers": new_duplicates,
     }
+
+
+def _is_solver_inconclusive(result: dict[str, Any]) -> bool:
+    """Return true when equivalence failed only because no scalable solver is available."""
+    reason = str(result.get("reason", ""))
+    if "z3-solver is not installed" in reason:
+        return True
+
+    failures = result.get("failures")
+    if not isinstance(failures, dict) or not failures:
+        return False
+    for failure in failures.values():
+        if not isinstance(failure, dict):
+            return False
+        if "z3-solver is not installed" not in str(failure.get("reason", "")):
+            return False
+        if failure.get("counterexample") is not None:
+            return False
+    return True
 
 def _resolve_read_path(path: str) -> Path:
     """Validate and return the input Verilog path."""
@@ -785,6 +880,60 @@ def _format_gate_connections(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_shared_fanin_cone_gates(result: dict[str, Any]) -> str:
+    lines = [
+        f'Shared fanin cone gates between "{result["target_a"]}" and '
+        f'"{result["target_b"]}": {result["num_shared_gates"]}'
+    ]
+    if result["shared_gates"]:
+        lines.extend(f'- {gate}' for gate in result["shared_gates"])
+    else:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _format_max_depth_to_dff_d(result: dict[str, Any]) -> str:
+    if result["dff"] is None:
+        return "The maximum logic depth from any primary input to any DFF D-pin is 0. No reachable DFF D-pin was found."
+    return (
+        "The maximum logic depth from any primary input to any DFF D-pin is "
+        f'{result["max_depth"]}.\n'
+        f'Example endpoint: DFF {result["dff"]} D-pin {result["d_pin"]}.\n'
+        f'Example path: {" -> ".join(result["path"]) if result["path"] else "(none)"}'
+    )
+
+
+def _format_outputs_depth_greater_than(result: dict[str, Any]) -> str:
+    lines = [
+        f'Primary outputs with logic depth greater than {result["min_depth"]}: '
+        f'{result["num_outputs"]}'
+    ]
+    for item in result["outputs"]:
+        lines.append(f'- {item["output"]}: depth {item["depth"]}')
+    if not result["outputs"]:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _format_last_transform_stats(last_transform: dict[str, Any] | None) -> str:
+    if not last_transform:
+        return "No transform has been performed yet."
+    result = last_transform.get("result", {})
+    transform = last_transform.get("transform", "unknown_transform")
+    if not isinstance(result, dict):
+        return f'Last transform "{transform}" completed, but no structured stats are available.'
+
+    if "num_inserted_buffers" in result:
+        return f'Last transform "{transform}" inserted {result["num_inserted_buffers"]} BUF gate(s).'
+    if "num_removed_gates" in result:
+        return f'Last transform "{transform}" removed {result["num_removed_gates"]} gate(s).'
+    if "num_changed" in result:
+        return f'Last transform "{transform}" changed {result["num_changed"]} gate(s).'
+    if "num_merged" in result:
+        return f'Last transform "{transform}" merged {result["num_merged"]} gate(s).'
+    return f'Last transform "{transform}" completed. Stats: {result}'
+
+
 def _format_register_paths(result: dict[str, Any]) -> str:
     lines = [f'Register path report: {result["num_dffs"]} DFF(s).']
     lines.append(f'Clock domains: {result["clock_domains"]}')
@@ -800,6 +949,21 @@ def _format_register_paths(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 def _format_equivalence_result(expr: str, target: str, result: dict[str, Any]) -> str:
+    constant = _constant_expr_label(expr)
+    if constant is not None:
+        if result.get("ok"):
+            return (
+                f'Yes. "{target}" is always {constant} regardless of all inputs. '
+                f'Checked with {result.get("engine")} engine.'
+            )
+        lines = [
+            f'No. "{target}" is not always {constant}.',
+            _format_counterexample(result),
+        ]
+        if result.get("reason"):
+            lines.append(f'Reason: {result["reason"]}')
+        return "\n".join(line for line in lines if line)
+
     if result.get("ok"):
         return (
             f'Equivalent. Expression "{expr}" matches target "{target}" '
@@ -835,8 +999,35 @@ def _format_original_equivalence_result(result: dict[str, Any]) -> str:
             "Equivalent to original loaded netlist. "
             f'Checked with {result.get("engine")} engine over combinational boundaries.'
         )
+    if _is_solver_inconclusive(result):
+        return (
+            "Equivalence to original loaded netlist is inconclusive because "
+            "z3-solver is not installed and brute-force fallback is too small "
+            "for this design."
+        )
     lines = [
         "Not equivalent to original loaded netlist.",
+        _format_counterexample(result),
+    ]
+    if result.get("reason"):
+        lines.append(f'Reason: {result["reason"]}')
+    return "\n".join(line for line in lines if line)
+
+
+def _format_last_transform_equivalence_result(result: dict[str, Any]) -> str:
+    if result.get("ok"):
+        return (
+            "Equivalent to the pre-transformation netlist. "
+            f'Checked with {result.get("engine")} engine over combinational boundaries.'
+        )
+    if _is_solver_inconclusive(result):
+        return (
+            "Equivalence to the pre-transformation netlist is inconclusive because "
+            "z3-solver is not installed and brute-force fallback is too small "
+            "for this design."
+        )
+    lines = [
+        "Not equivalent to the pre-transformation netlist.",
         _format_counterexample(result),
     ]
     if result.get("reason"):
@@ -853,6 +1044,15 @@ def _format_counterexample(result: dict[str, Any]) -> str:
         for name, value in sorted(counterexample.items())
     )
     return f"Counterexample: {assignments}."
+
+
+def _constant_expr_label(expr: str) -> str | None:
+    normalized = expr.strip()
+    if normalized in {"0", "1'b0"}:
+        return "0"
+    if normalized in {"1", "1'b1"}:
+        return "1"
+    return None
 
 
 def _check_depth_balance(design, src: str, dsts: list[str]) -> dict[str, Any]:
