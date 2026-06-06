@@ -239,7 +239,7 @@ format.
 provider: "openai"
 openai:
   api_key: "<YOUR_API_KEY>"
-  model: "gpt-4.1-mini"
+  model: "gpt-4o-mini"
 anthropic:
   api_key: "<YOUR_API_KEY>"
   model: "claude-haiku-4-5-20251001"
@@ -297,6 +297,8 @@ The runner executes each `testcase/testNN/prompt.txt` with `main.py` using the
 release directory as the working directory, so prompt paths such as
 `testcase/test01/test01.v` resolve naturally. Per-case stdout/stderr logs are
 written under `A_release testcase_0510/runner_output/<planner>/`, so `llm_openai`, `llm_claude`, and `rule` runs do not overwrite each other. In the release runner, `--planner llm_both` runs `llm_openai` and `llm_claude` separately and records both provider outputs. Generated `testNN_out.v` files are also copied into the matching planner output folder when present.
+
+The release runner mirrors the contest timeout policy: begin/read/write basic responses use 60 seconds; all other responses use 300 seconds. Use `--basic-timeout` or `--timeout` to override those local test limits.
 
 During development, unsupported responses are counted but do not fail the run.
 After the remaining backend tools are implemented, enable stricter regression

@@ -146,6 +146,29 @@ Backend rule:
   avoids `node`.
 - Otherwise return `ok: true`.
 
+### report_all_paths
+
+List bounded combinational paths from `src` to `dst`.
+
+Input:
+
+```json
+{
+  "op": "report_all_paths",
+  "args": {
+    "src": "in0",
+    "dst": "out3",
+    "max_paths": 200
+  }
+}
+```
+
+Rules:
+
+- `max_paths` is optional and defaults to 200.
+- The path enumeration must not cross DFF boundaries.
+- If the bound is reached, report that enumeration was truncated.
+
 ### max_depth
 
 Compute maximum combinational gate depth from `src` to `dst`.
@@ -201,6 +224,26 @@ Input:
 ```
 
 Output includes AND/OR/NOT/NAND/NOR/XOR/XNOR/BUF/DFF counts and total gates.
+
+### report_gate_type_count
+
+Report the current count for one primitive gate type or DFF cell type.
+
+Input:
+
+```json
+{
+  "op": "report_gate_type_count",
+  "args": {
+    "gate_type": "not"
+  }
+}
+```
+
+Rules:
+
+- `gate_type` should be one of `and`, `or`, `not`, `nand`, `nor`, `xor`, `xnor`, `buf`, or `dff`.
+- Use this for direct questions like current NOT gate count.
 
 ### report_fanout
 
@@ -719,6 +762,38 @@ Rules:
 - Equivalence must be checked before commit when functionality must be preserved.
 - First implementation performs local simplification only: redundant internal
   buffer removal and double-inverter simplification.
+
+### optimize_design_depth
+
+Run full-design structural depth optimization using Yosys/ABC when available.
+If Yosys/ABC cannot run, the backend falls back to conservative local cone
+cleanup so the command remains safe to execute in restricted environments.
+
+Input:
+
+```json
+{
+  "op": "optimize_design_depth",
+  "args": {
+    "max_depth": 5
+  }
+}
+```
+
+Arguments:
+
+- `max_depth` is optional. When provided, the backend asks ABC to optimize toward
+  that delay/depth target and reports whether the final structural depth met it.
+
+Rules:
+
+- Treat DFF Q pins and primary inputs as combinational sources.
+- Treat DFF D pins and primary outputs as combinational sinks.
+- Preserve DFF boundaries while optimizing combinational logic between them.
+- Return initial/final gate counts, initial/final depth, selected engine, and
+  whether the requested target depth was met.
+- The dispatcher runs this as a transactional transform; failed runs do not
+  modify the current design state.
 
 ### rename_net
 

@@ -1,4 +1,4 @@
-﻿# Release Testcase TODO Cheat Sheet
+# Release Testcase TODO Cheat Sheet
 
 This note tracks capabilities observed while running the A_release testcase_0510 suite.
 The alpha-test goal is to maximize supported, non-error responses across the 40 release
@@ -20,15 +20,14 @@ testcases before widening into lower-priority optimization features.
 - Basic IO: `begin_testcase`, `read_design`, `write_design`.
 - Core reports: `report_gate_counts`, `report_fanout`, `report_gate_connections`.
 - C_M3 reports now exposed to LLM schema: `report_io_counts`, `report_fanout_cone`, `report_constant_input_gates`, `gate_on_max_depth_path`.
-- Test31 reports now implemented: `report_shared_fanin_cone_gates`, `derive_boolean_equation`, `report_max_depth_to_dff_d`, and `report_outputs_depth_greater_than`.
+- Test31 reports now implemented: `report_shared_fanin_cone_gates`, `derive_boolean_equation`, `report_max_depth_to_dff_d`, `report_outputs_depth_greater_than`, `report_all_paths`, and `report_gate_type_count`.
 - Sequential boundary reports: `same_clock_domain`, capped `report_register_paths`.
 - Transform tools now exposed to LLM schema: `rename_net`, `rename_gate`, `constant_propagation`, `replace_nand_const1_with_not`, `insert_buffers_for_all_high_fanout`, `insert_dedicated_buffers_for_each_load`, `collapse_back_to_back_inverters`, `optimize_design_depth`, `replace_xnor_nor_with_basic_gates`, `replace_and_not_with_nand`, and `merge_equivalent_gates`.
 - Verification: connectivity/fanout/depth checks and combinational equivalence to original loaded snapshot.
 
 ## P0 Remaining Analysis / Report Tools
 
-- `report_all_paths`: list all combinational paths between a source and destination, not only one path.
-- `report_gate_type_count`: answer direct count questions such as current NOT gate count.
+- None currently identified after adding `report_all_paths` and `report_gate_type_count`. Re-run LLM release cases to discover any remaining P0 report gaps.
 
 ## P1 Remaining Analysis / Report Tools
 
@@ -38,7 +37,7 @@ testcases before widening into lower-priority optimization features.
 ## P0/P1 Remaining Transform Tools
 
 - Improve or extend `constant_propagation` and rewrite transforms so responses report how many gates were eliminated or inserted.
-- Add transform history/stat queries, for example:
+- Improve transform history/stat queries beyond the current generic before/after delta, for example more domain-specific wording for:
   - how many BUF gates were added by the previous buffer insertion,
   - how many dangling gates were removed,
   - how many NAND gates were eliminated by constant propagation.

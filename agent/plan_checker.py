@@ -16,9 +16,11 @@ SUPPORTED_OPS = {
     "write_design",
     "find_path",
     "all_paths_pass_through",
+    "report_all_paths",
     "max_depth",
     "logic_cone",
     "report_gate_counts",
+    "report_gate_type_count",
     "report_fanout",
     "report_highest_fanout_primary_input",
     "report_gate_connections",
@@ -70,9 +72,11 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "write_design": {"path": str},
     "find_path": {"src": str, "dst": str},
     "all_paths_pass_through": {"src": str, "dst": str, "node": str},
+    "report_all_paths": {"src": str, "dst": str},
     "max_depth": {"src": str, "dst": str},
     "logic_cone": {"target": str},
     "report_gate_counts": {},
+    "report_gate_type_count": {"gate_type": str},
     "report_fanout": {"net": str},
     "report_highest_fanout_primary_input": {},
     "report_gate_connections": {"gate": str},
@@ -120,6 +124,9 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
 
 _OPTIONAL_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "find_path": {"avoid": list},
+    "report_all_paths": {"max_paths": int},
+    "report_gate_type_connections": {"max_items": int},
+    "report_dffs_by_clock": {"max_items": int},
     "find_gates": {"gate_type": (str, type(None)), "name_contains": (str, type(None))},
     "report_constant_input_gates": {"gate_type": (str, type(None))},
     "report_register_paths": {"max_paths": int},
@@ -340,6 +347,14 @@ def _validate_numeric_bounds(op: str, args: dict[str, Any]) -> None:
 
     if op in {"insert_buffers_for_fanout", "insert_buffers_for_all_high_fanout"} and args["max_fanout"] < 2:
         raise PlanValidationError(f"Operation '{op}' argument 'max_fanout' must be at least 2.")
+    positive_optional_args = {
+        "report_all_paths": ("max_paths",),
+        "report_gate_type_connections": ("max_items",),
+        "report_dffs_by_clock": ("max_items",),
+    }
+    for key in positive_optional_args.get(op, ()):
+        if key in args and args[key] < 1:
+            raise PlanValidationError(f"Operation '{op}' argument '{key}' must be at least 1.")
 
 def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
     unknown = set(obj) - allowed

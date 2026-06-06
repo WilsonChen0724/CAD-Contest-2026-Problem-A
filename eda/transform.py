@@ -3,11 +3,18 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from math import ceil
 from functools import wraps
+from pathlib import Path
+import re
+import tempfile
 from typing import Any, TypeVar
 
 from eda.analysis import find_path, logic_cone, max_depth, primary_output_cone_sizes
 from eda.design import DFF, Design, Gate, is_constant
 from eda.graph import rebuild_graph
+from eda.verify import check_connectivity
+from parser.verilog_parser import _dff_wrapper_name, parse_verilog
+from parser.verilog_writer import write_verilog
+from parser.yosys_tools import quote_yosys_path, run_yosys_script
 
 # todo
 # 1. make_unique_wire_name()
@@ -311,7 +318,7 @@ def rename_gate(design: Design, old_name: str, new_name: str) -> dict:
         return {"old_name": old_name, "new_name": new_name, "kind": "dff"}
     raise ValueError(f'Instance not found: "{old_name}"')
 @_rebuild_graph_after_transform
-def constant_propagation(design: Design) -> dict:
+def constant_propagation(design: Design, max_changes: int | None = None) -> dict:
     """Simplify primitive gates with constant or redundant inputs."""
     changed: list[dict[str, Any]] = []
     max_iterations = max(1, len(design.gates) + 1)
@@ -323,13 +330,15 @@ def constant_propagation(design: Design) -> dict:
             rewrite = _simplify_constant_gate(design, gate_name)
             if rewrite is not None:
                 changed.append(rewrite)
+                if max_changes is not None and len(changed) >= max_changes:
+                    return {"changed": changed, "num_changed": len(changed), "bounded": True, "max_changes": max_changes}
                 break
         if rewrite is None:
             break
     else:
         raise RuntimeError("constant_propagation did not converge.")
 
-    return {"changed": changed, "num_changed": len(changed)}
+    return {"changed": changed, "num_changed": len(changed), "bounded": False}
 
 
 @_rebuild_graph_after_transform
@@ -655,34 +664,28 @@ def optimize_design_depth(
     max_depth: int | None = None,
     max_outputs: int | None = None,
 ) -> dict:
-    """Run conservative cone optimization on each primary output, largest cones first."""
+    """Run Yosys/ABC-backed full-design depth optimization, with a local fallback."""
     if max_depth is not None and max_depth < 0:
         raise ValueError("optimize_design_depth requires max_depth >= 0 when provided.")
+    if max_outputs is not None and max_outputs < 1:
+        raise ValueError("optimize_design_depth requires max_outputs >= 1 when provided.")
 
-    reports = primary_output_cone_sizes(design)
-    outputs = [name for name, _ in sorted(reports.items(), key=lambda item: item[1]["num_gates"], reverse=True)]
-    selected_outputs = outputs[:max_outputs] if max_outputs is not None else outputs
-    changed: list[dict[str, Any]] = []
-    initial_gate_count = len(design.gates)
-    initial_depth = _design_max_depth(design)
+    should_skip_full_yosys = max_outputs is None and (
+        len(design.gates) > 2000 or any("__fanout_buf_" in net for net in design.all_nets())
+    )
+    if should_skip_full_yosys:
+        result = _optimize_design_depth_locally(design, max_depth=max_depth, max_outputs=max_outputs)
+        result["engine"] = "local_fallback"
+        result["fallback_reason"] = "Skipped full-design Yosys/ABC for a large or fanout-buffered design."
+        return result
 
-    for output in selected_outputs:
-        result = optimize_cone(design, output, max_depth=max_depth, minimize_gate_count=True)
-        if result.get("num_changed", 0):
-            changed.append(result)
-
-    return {
-        "max_depth": max_depth,
-        "max_outputs": max_outputs,
-        "attempted_outputs": selected_outputs,
-        "skipped_outputs": outputs[len(selected_outputs):],
-        "initial_gate_count": initial_gate_count,
-        "final_gate_count": len(design.gates),
-        "initial_depth": initial_depth,
-        "final_depth": _design_max_depth(design),
-        "changed": changed,
-        "num_changed_outputs": len(changed),
-    }
+    try:
+        return _optimize_design_depth_with_yosys_abc(design, max_depth=max_depth)
+    except Exception as exc:
+        result = _optimize_design_depth_locally(design, max_depth=max_depth, max_outputs=max_outputs)
+        result["engine"] = "local_fallback"
+        result["fallback_reason"] = str(exc)
+        return result
 
 
 @_rebuild_graph_after_transform
@@ -1183,15 +1186,322 @@ def _referenced_as_internal_net(design: Design, net: str) -> bool:
     return False
 
 
+def _optimize_design_depth_with_yosys_abc(design: Design, max_depth: int | None = None) -> dict:
+    initial_gate_count = len(design.gates)
+    initial_depth = _design_max_depth(design)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        raw_input = tmp_dir / "input.v"
+        yosys_input = tmp_dir / "input_for_abc.v"
+        optimized_output = tmp_dir / "optimized.v"
+        write_verilog(design, raw_input)
+        _write_yosys_abc_input(raw_input, yosys_input)
+
+        script = _build_yosys_abc_depth_script(
+            input_path=yosys_input,
+            output_path=optimized_output,
+            top_module=design.module_name,
+            max_depth=max_depth,
+            use_delay_target=max_depth is not None,
+        )
+        completed = run_yosys_script(script, cwd=tmp_dir)
+        if completed.returncode != 0 and max_depth is not None:
+            script = _build_yosys_abc_depth_script(
+                input_path=yosys_input,
+                output_path=optimized_output,
+                top_module=design.module_name,
+                max_depth=max_depth,
+                use_delay_target=False,
+            )
+            completed = run_yosys_script(script, cwd=tmp_dir)
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or "unknown Yosys/ABC error").strip()
+            raise RuntimeError(message)
+        if not optimized_output.exists():
+            raise RuntimeError("Yosys/ABC did not produce an optimized Verilog file.")
+
+        optimized = parse_verilog(optimized_output)
+        _prune_unreferenced_wires(optimized)
+        connectivity = check_connectivity(optimized)
+        if not connectivity.get("ok"):
+            raise RuntimeError(f"Yosys/ABC optimized design failed connectivity check: {connectivity}")
+
+    final_depth = _design_max_depth(optimized)
+    final_gate_count = len(optimized.gates)
+    if final_depth > initial_depth:
+        raise RuntimeError(
+            "Yosys/ABC candidate increased structural depth "
+            f"from {initial_depth} to {final_depth}."
+        )
+    if max_depth is None and final_depth == initial_depth and final_gate_count > initial_gate_count:
+        raise RuntimeError(
+            "Yosys/ABC candidate did not reduce structural depth and increased gate count "
+            f"from {initial_gate_count} to {final_gate_count}."
+        )
+
+    _replace_design_contents(design, optimized)
+    target_met = max_depth is None or final_depth <= max_depth
+    return {
+        "engine": "yosys_abc",
+        "max_depth": max_depth,
+        "max_outputs": None,
+        "attempted_outputs": sorted(design.outputs),
+        "skipped_outputs": [],
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": final_gate_count,
+        "initial_depth": initial_depth,
+        "final_depth": final_depth,
+        "target_met": target_met,
+        "changed": [],
+        "num_changed_outputs": 0 if initial_depth == final_depth and initial_gate_count == len(design.gates) else len(design.outputs),
+    }
+
+
+def _optimize_design_depth_locally(
+    design: Design,
+    max_depth: int | None = None,
+    max_outputs: int | None = None,
+) -> dict:
+    reports = _optimization_target_cone_sizes(design)
+    outputs = [name for name, _ in sorted(reports.items(), key=lambda item: item[1]["num_gates"], reverse=True)]
+    initial_gate_count = len(design.gates)
+    initial_depth = _design_max_depth(design)
+
+    if max_outputs is None and (len(outputs) > 128 or len(design.gates) > 2000):
+        return _optimize_design_depth_with_bounded_cleanup(
+            design,
+            max_depth=max_depth,
+            outputs=outputs,
+            initial_gate_count=initial_gate_count,
+            initial_depth=initial_depth,
+        )
+
+    selected_outputs = outputs[:max_outputs] if max_outputs is not None else outputs
+    changed: list[dict[str, Any]] = []
+    skipped_dynamic: list[dict[str, str]] = []
+
+    for output in selected_outputs:
+        if output not in design.all_nets():
+            skipped_dynamic.append({"target": output, "reason": "target no longer exists after earlier local rewrites"})
+            continue
+        try:
+            result = optimize_cone(design, output, max_depth=max_depth, minimize_gate_count=True)
+        except ValueError as exc:
+            skipped_dynamic.append({"target": output, "reason": str(exc)})
+            continue
+        if result.get("num_changed", 0):
+            changed.append(result)
+
+    final_depth = _design_max_depth(design)
+    return {
+        "engine": "local",
+        "max_depth": max_depth,
+        "max_outputs": max_outputs,
+        "attempted_outputs": selected_outputs,
+        "skipped_outputs": outputs[len(selected_outputs):] + skipped_dynamic,
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": len(design.gates),
+        "initial_depth": initial_depth,
+        "final_depth": final_depth,
+        "target_met": max_depth is None or final_depth <= max_depth,
+        "changed": changed,
+        "num_changed_outputs": len(changed),
+    }
+
+
+def _optimize_design_depth_with_bounded_cleanup(
+    design: Design,
+    max_depth: int | None,
+    outputs: list[str],
+    initial_gate_count: int,
+    initial_depth: int,
+) -> dict:
+    cleanup_results: list[dict[str, Any]] = []
+
+    constant_result = constant_propagation(design, max_changes=256)
+    if constant_result.get("num_changed", 0):
+        cleanup_results.append({"op": "constant_propagation", **constant_result})
+
+    inverter_result = collapse_back_to_back_inverters(design)
+    if inverter_result.get("num_collapsed", 0):
+        cleanup_results.append({"op": "collapse_back_to_back_inverters", **inverter_result})
+
+    dangling_result = remove_dangling(design)
+    if dangling_result.get("num_removed_gates", 0) or dangling_result.get("num_removed_dffs", 0):
+        cleanup_results.append({"op": "remove_dangling", **dangling_result})
+
+    final_depth = _design_max_depth(design) if cleanup_results else initial_depth
+    return {
+        "engine": "local_bounded_cleanup",
+        "max_depth": max_depth,
+        "max_outputs": 0,
+        "attempted_outputs": [],
+        "skipped_outputs": [
+            {"target": output, "reason": "bounded cleanup skipped expensive per-cone rewrite"}
+            for output in outputs
+        ],
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": len(design.gates),
+        "initial_depth": initial_depth,
+        "final_depth": final_depth,
+        "target_met": max_depth is None or final_depth <= max_depth,
+        "changed": cleanup_results,
+        "num_changed_outputs": len(cleanup_results),
+        "bounded_reason": "large design or many sequential/output targets",
+    }
+
+def _write_yosys_abc_input(source_path: Path, target_path: Path) -> None:
+    source_text = source_path.read_text(encoding="utf-8")
+    rewritten_text, dff_wrappers = _rewrite_dffs_for_yosys_abc(source_text)
+    prelude = _build_yosys_abc_dff_prelude(dff_wrappers)
+    prefix = prelude + "\n" if prelude else ""
+    target_path.write_text(prefix + rewritten_text, encoding="utf-8")
+
+
+def _rewrite_dffs_for_yosys_abc(text: str) -> tuple[str, set[int]]:
+    wrappers: set[int] = set()
+    statements: list[str] = []
+    dff_re = re.compile(r"^(dff[A-Za-z0-9_$]*)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)$", re.S | re.I)
+
+    for raw_statement in text.split(";"):
+        stripped = raw_statement.strip()
+        if not stripped:
+            statements.append(raw_statement)
+            continue
+        match = dff_re.match(stripped)
+        if not match:
+            statements.append(raw_statement)
+            continue
+        _, inst_name, pin_text = match.groups()
+        pins = [pin.strip() for pin in pin_text.split(",") if pin.strip()]
+        if len(pins) not in {3, 4}:
+            raise ValueError(f"DFF {inst_name} expects q, d, clk[, rst]")
+        wrapper_type = _dff_wrapper_name(len(pins))
+        wrappers.add(len(pins))
+        replacement = f"{wrapper_type} {inst_name}({', '.join(pins)})"
+        prefix_len = len(raw_statement) - len(raw_statement.lstrip())
+        suffix_len = len(raw_statement) - len(raw_statement.rstrip())
+        statements.append(raw_statement[:prefix_len] + replacement + raw_statement[len(raw_statement) - suffix_len:])
+    return ";".join(statements), wrappers
+
+
+def _build_yosys_abc_dff_prelude(wrappers: set[int]) -> str:
+    return "\n\n".join(_build_sequential_dff_wrapper(count) for count in sorted(wrappers))
+
+
+def _build_sequential_dff_wrapper(pin_count: int) -> str:
+    name = _dff_wrapper_name(pin_count)
+    if pin_count == 3:
+        return "\n".join(
+            [
+                f"module {name}(q, d, clk);",
+                "output reg q;",
+                "input d, clk;",
+                "always @(posedge clk) q <= d;",
+                "endmodule",
+                "",
+            ]
+        )
+    return "\n".join(
+        [
+            f"module {name}(q, d, clk, rst);",
+            "output reg q;",
+            "input d, clk, rst;",
+            "always @(posedge clk or posedge rst)",
+            "  if (rst) q <= 1'b0;",
+            "  else q <= d;",
+            "endmodule",
+            "",
+        ]
+    )
+
+def _build_yosys_abc_depth_script(
+    input_path: Path,
+    output_path: Path,
+    top_module: str,
+    max_depth: int | None,
+    use_delay_target: bool,
+) -> str:
+    abc_pass = f"abc -D {max(1, max_depth or 1)}" if use_delay_target else "abc -fast"
+    return "\n".join(
+        [
+            f"read_verilog -sv -noopt {quote_yosys_path(input_path)}",
+            f"hierarchy -check -top {top_module}",
+            "proc",
+            "flatten",
+            "opt_clean",
+            "opt -full",
+            "techmap",
+            "opt -full",
+            abc_pass,
+            "opt_clean",
+            f"write_verilog -noattr -simple-lhs {quote_yosys_path(output_path)}",
+        ]
+    )
+
+
+
+def _prune_unreferenced_wires(design: Design) -> None:
+    referenced = set(design.inputs) | set(design.outputs)
+    for gate in design.gates.values():
+        referenced.add(gate.output)
+        referenced.update(net for net in gate.inputs if not is_constant(net))
+    for dff in design.dffs.values():
+        referenced.add(dff.q)
+        if not is_constant(dff.d):
+            referenced.add(dff.d)
+        if dff.clk:
+            referenced.add(dff.clk)
+        if dff.rst:
+            referenced.add(dff.rst)
+    design.wires = {net for net in design.wires if net in referenced}
+    rebuild_graph(design)
+
+def _replace_design_contents(target: Design, source: Design) -> None:
+    target.module_name = source.module_name
+    target.inputs = set(source.inputs)
+    target.outputs = set(source.outputs)
+    target.wires = set(source.wires)
+    target.gates = dict(source.gates)
+    target.dffs = dict(source.dffs)
+    target.drivers = dict(source.drivers)
+    target.fanouts = {net: list(sinks) for net, sinks in source.fanouts.items()}
+    rebuild_graph(target)
+
+
 def _design_max_depth(design: Design) -> int:
-    sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
+    sources = _depth_sources(design)
+    sinks = _depth_sinks(design)
     max_seen = 0
     for source in sorted(sources):
-        for output in sorted(design.outputs):
-            depth, path = max_depth(design, source, output)
+        for sink in sorted(sinks):
+            depth, path = max_depth(design, source, sink)
             if path:
                 max_seen = max(max_seen, depth)
     return max_seen
+
+
+def _depth_sources(design: Design) -> set[str]:
+    return set(design.inputs) | {dff.q for dff in design.dffs.values()}
+
+
+def _depth_sinks(design: Design) -> set[str]:
+    return set(design.outputs) | {dff.d for dff in design.dffs.values() if not is_constant(dff.d)}
+
+
+def _optimization_target_cone_sizes(design: Design) -> dict[str, dict[str, Any]]:
+    reports = primary_output_cone_sizes(design)
+    for target in sorted({dff.d for dff in design.dffs.values() if not is_constant(dff.d)}):
+        if target in reports:
+            continue
+        cone_gates = logic_cone(design, target)
+        reports[target] = {
+            "target": target,
+            "num_gates": len(cone_gates),
+            "num_nets": 0,
+        }
+    return reports
 def _cone_max_depth(design: Design, target: str) -> int:
     sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
     depths = []
@@ -1200,3 +1510,6 @@ def _cone_max_depth(design: Design, target: str) -> int:
         if path:
             depths.append(depth)
     return max(depths, default=0)
+
+
+

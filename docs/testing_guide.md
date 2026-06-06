@@ -85,6 +85,16 @@ Run multiple selected testcases:
 python scripts/run_release_testcases.py --case test01 --case test02 --planner rule
 ```
 
+Run a selected range:
+
+```bash
+python scripts/run_release_testcases.py --case-range test25-test40 --planner rule
+```
+
+The runner now requires an explicit selection. Use `--all`, `--case`, or `--case-range`; this prevents accidental full-suite LLM runs.
+
+Timeouts follow the contest PDF by default: basic begin/read/write responses use 60 seconds, while analysis, transformation, optimization, and verification responses use 300 seconds. Override with `--basic-timeout` and `--timeout` when needed.
+
 Run all release testcases:
 
 ```bash
@@ -124,6 +134,12 @@ Run one testcase with OpenAI:
 
 ```bash
 python scripts/run_release_testcases.py --case test01 --planner llm_openai
+```
+
+Run test25 through test40 with OpenAI:
+
+```bash
+python scripts/run_release_testcases.py --case-range test25-test40 --planner llm_openai
 ```
 
 Run all testcases with OpenAI:

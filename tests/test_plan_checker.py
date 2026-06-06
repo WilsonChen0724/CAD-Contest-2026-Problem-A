@@ -43,8 +43,10 @@ class PlanCheckerTest(unittest.TestCase):
     def test_accepts_new_analysis_operations(self) -> None:
         plans = [
             {"op": "all_paths_pass_through", "args": {"src": "A", "dst": "B", "node": "C"}},
+            {"op": "report_all_paths", "args": {"src": "A", "dst": "B", "max_paths": 20}},
             {"op": "report_outputs_by_cone_size", "args": {"min_gates": 100}},
             {"op": "report_gate_counts", "args": {}},
+            {"op": "report_gate_type_count", "args": {"gate_type": "not"}},
             {"op": "report_fanout", "args": {"net": "n1"}},
             {"op": "report_gate_connections", "args": {"gate": "U0"}},
             {"op": "same_clock_domain", "args": {"dff_a": "FF0", "dff_b": "FF1"}},

@@ -3,11 +3,13 @@ from __future__ import annotations
 import unittest
 
 from eda.analysis import (
+    all_paths,
     all_paths_pass_through,
     constant_input_gates,
     dff_relationships,
     fanout_cone,
     gate_on_max_depth_path,
+    gate_type_count,
     derive_boolean_equation,
     io_counts,
     max_depth_to_dff_d,
@@ -60,6 +62,25 @@ class AnalysisTest(unittest.TestCase):
         design.add_gate(Gate(name="U2", type="buf", inputs=["n1"], output="dst"))
 
         self.assertTrue(all_paths_pass_through(design, "src", "dst", "n1"))
+    def test_all_paths_enumerates_bounded_paths(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="n1"))
+        design.add_gate(Gate(name="U2", type="buf", inputs=["n1"], output="dst"))
+        design.add_gate(Gate(name="U_bypass", type="buf", inputs=["src"], output="dst"))
+
+        report = all_paths(design, "src", "dst")
+
+        self.assertEqual(report["num_paths"], 2)
+        self.assertIn(["src", "U1", "n1", "U2", "dst"], report["paths"])
+        self.assertIn(["src", "U_bypass", "dst"], report["paths"])
+
+    def test_gate_type_count_reports_one_type(self) -> None:
+        design = Design(module_name="top", inputs={"a", "clk"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="not", inputs=["a"], output="y"))
+        design.add_dff(DFF(name="FF0", d="a", q="q", clk="clk"))
+
+        self.assertEqual(gate_type_count(design, "not"), {"gate_type": "not", "count": 1})
+        self.assertEqual(gate_type_count(design, "dff"), {"gate_type": "dff", "count": 1})
 
     def test_fanout_cone_stops_at_dff_boundary(self) -> None:
         design = Design(module_name="top", inputs={"src", "clk"}, outputs={"out"})

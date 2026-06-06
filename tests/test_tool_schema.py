@@ -10,6 +10,7 @@ class ToolSchemaTest(unittest.TestCase):
         analysis_ops = TOOL_ALLOWED_OPS["run_analysis_plan"]
 
         for op in (
+            "report_all_paths",
             "report_fanout_cone",
             "report_constant_input_gates",
             "report_io_counts",
@@ -19,6 +20,7 @@ class ToolSchemaTest(unittest.TestCase):
             "report_max_depth_to_dff_d",
             "report_outputs_depth_greater_than",
             "report_last_transform_stats",
+            "report_gate_type_count",
         ):
             self.assertIn(op, analysis_ops)
 

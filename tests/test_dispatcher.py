@@ -34,6 +34,19 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Yes", body)
         self.assertIn("passes through", body)
 
+    def test_dispatcher_reports_all_paths_and_gate_type_count(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        state.design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="n1"))
+        state.design.add_gate(Gate(name="U2", type="not", inputs=["n1"], output="dst"))
+        state.design.add_gate(Gate(name="U_bypass", type="buf", inputs=["src"], output="dst"))
+
+        paths = dispatch_plan(state, {"op": "report_all_paths", "args": {"src": "src", "dst": "dst"}})
+        count = dispatch_plan(state, {"op": "report_gate_type_count", "args": {"gate_type": "not"}})
+
+        self.assertIn('Combinational paths from "src" to "dst": 2', paths)
+        self.assertIn("U_bypass", paths)
+        self.assertIn("NOT gate count: 1", count)
     def test_dispatcher_reports_outputs_by_cone_size(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})
@@ -193,6 +206,18 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("U_dead", cleanup)
         self.assertNotIn("U_dead", state.design.gates)
 
+    def test_last_transform_stats_reports_delta(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src"}, outputs={"y0", "y1", "y2"})
+        for index in range(3):
+            state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=["src"], output=f"y{index}"))
+
+        dispatch_plan(state, {"op": "insert_buffers_for_fanout", "args": {"net": "src", "max_fanout": 2}})
+        body = dispatch_plan(state, {"op": "report_last_transform_stats", "args": {}})
+
+        self.assertIn('Last transform "insert_buffers_for_fanout" stats:', body)
+        self.assertIn("gate type delta", body)
+        self.assertIn("transform-reported inserted BUF gates", body)
     def test_transform_rejects_invalid_candidate_without_polluting_state(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})

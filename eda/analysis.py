@@ -31,6 +31,15 @@ def gate_counts(design: Design) -> dict:
     }
 
 
+def gate_type_count(design: Design, gate_type: str) -> dict:
+    """Count instances of one primitive gate type or DFF cell type."""
+    normalized = gate_type.lower()
+    counts = gate_counts(design)["counts"]
+    return {
+        "gate_type": normalized,
+        "count": counts.get(normalized, 0),
+    }
+
 def io_counts(design: Design) -> dict:
     """Report primary input and primary output counts."""
     return {
@@ -82,6 +91,44 @@ def highest_fanout_primary_input(design: Design) -> dict:
         "max_fanout": max_fanout,
         "inputs": [name for name, count in fanouts.items() if count == max_fanout],
         "fanouts": fanouts,
+    }
+
+
+def gate_type_connections(design: Design, gate_type: str, max_items: int = 200) -> dict:
+    """Report connections for gates of one type, bounded for large designs."""
+    normalized = gate_type.lower()
+    names = sorted(design.dffs) if normalized == "dff" else [
+        name for name, gate in sorted(design.gates.items()) if gate.type == normalized
+    ]
+    selected = names[:max_items]
+    return {
+        "gate_type": normalized,
+        "num_gates": len(names),
+        "max_items": max_items,
+        "truncated": len(names) > len(selected),
+        "gates": [gate_connections(design, name) for name in selected],
+    }
+
+
+def dffs_by_clock(design: Design, clock: str, max_items: int = 200) -> dict:
+    """Report DFF instances driven by one clock net."""
+    matched = [name for name, dff in sorted(design.dffs.items()) if dff.clk == clock]
+    selected = matched[:max_items]
+    return {
+        "clock": clock,
+        "num_dffs": len(matched),
+        "max_items": max_items,
+        "truncated": len(matched) > len(selected),
+        "dffs": [gate_connections(design, name) for name in selected],
+    }
+
+
+def direct_pi_po_paths(design: Design) -> dict:
+    """Report zero-gate direct wire paths from primary inputs to primary outputs."""
+    direct = sorted(output for output in design.outputs if output in design.inputs)
+    return {
+        "num_paths": len(direct),
+        "paths": [[net, net] for net in direct],
     }
 
 
@@ -257,6 +304,41 @@ def all_paths_pass_through(design: Design, src: str, dst: str, node: str) -> boo
         return False
     return not find_path(design, src, dst, avoid=[node])
 
+
+def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
+    """Enumerate bounded combinational paths from src to dst."""
+    if max_paths < 1:
+        raise ValueError("max_paths must be at least 1.")
+    rebuild_graph(design)
+    adjacency = _combinational_adjacency(design)
+    paths: list[list[str]] = []
+    truncated = False
+
+    def dfs(node: str, path: list[str], active: set[str]) -> None:
+        nonlocal truncated
+        if truncated:
+            return
+        if node == dst:
+            paths.append(path)
+            if len(paths) >= max_paths:
+                truncated = True
+            return
+        for nxt in sorted(adjacency.get(node, set())):
+            if nxt in active:
+                continue
+            dfs(nxt, path + [nxt], active | {nxt})
+            if truncated:
+                return
+
+    dfs(src, [src], {src})
+    return {
+        "src": src,
+        "dst": dst,
+        "paths": paths,
+        "num_paths": len(paths),
+        "max_paths": max_paths,
+        "truncated": truncated,
+    }
 
 #----------DAG + DP for longest path from src to dst. In a DAG, this is guaranteed to terminate and yield the correct result.
 def max_depth(design: Design, src: str, dst: str) -> tuple[int, list[str]]:

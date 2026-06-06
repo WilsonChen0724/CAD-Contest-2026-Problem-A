@@ -10,9 +10,11 @@ SUPPORTED_OPS = {
     "write_design",
     "find_path",
     "all_paths_pass_through",
+    "report_all_paths",
     "max_depth",
     "logic_cone",
     "report_gate_counts",
+    "report_gate_type_count",
     "report_fanout",
     "report_highest_fanout_primary_input",
     "report_gate_connections",
@@ -408,6 +410,32 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
         One of the supported analysis plans: find_gates, logic_cone, max_depth,
         or find_path. Returns None when this is not an analysis request.
     """
+    if "symmetric" in low or "symmetry" in low:
+        return {"op": "unsupported", "args": {"reason": "Signal symmetry checking is not implemented yet."}}
+
+    if "reconnect" in low and "input pin" in low:
+        return {"op": "unsupported", "args": {"reason": "Guarded gate input pin reconnect is not implemented yet."}}
+
+    if "paths of length 0" in low or "direct wire connections" in low:
+        return {"op": "report_direct_pi_po_paths", "args": {}}
+
+    if ("flip-flop" in low or "flipflop" in low or "dff" in low or "flip-flops" in low) and "driven by clock" in low:
+        clock = _extract_after_keyword(text, "clock")
+        if clock:
+            return {"op": "report_dffs_by_clock", "args": {"clock": clock}}
+
+    if (
+        ("constant input" in low or "constant inputs" in low)
+        and ("report" in low or "list" in low or "find" in low)
+        and ("gate" in low or "gates" in low or "nand" in low)
+    ):
+        gate_type = "nand" if "nand" in low else _extract_gate_type(low)
+        return {"op": "report_constant_input_gates", "args": {"gate_type": gate_type}}
+
+    if ("list" in low or "report" in low or "find" in low) and "gates" in low and ("input" in low or "output" in low or "signals" in low):
+        gate_type = _extract_gate_type(low)
+        if gate_type is not None:
+            return {"op": "report_gate_type_connections", "args": {"gate_type": gate_type}}
     if "shared" in low and "fanin" in low and ("cone" in low or "cones" in low):
         targets = _extract_targets_after_between_or_of(text)
         if targets:
@@ -443,8 +471,11 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
 
     if (
         ("count" in low or "number" in low or "how many" in low)
-        and ("gate" in low or "gates" in low or "cell" in low or "cells" in low)
+        and ("gate" in low or "gates" in low or "cell" in low or "cells" in low or "register" in low or "dff" in low)
     ):
+        gate_type = _extract_gate_type(low)
+        if gate_type is not None:
+            return {"op": "report_gate_type_count", "args": {"gate_type": gate_type}}
         return {"op": "report_gate_counts", "args": {}}
 
     if (
@@ -464,14 +495,6 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
         and ("path" in low or "paths" in low)
     ):
         return {"op": "report_register_paths", "args": {}}
-
-    if (
-        ("constant input" in low or "constant inputs" in low)
-        and ("report" in low or "list" in low or "find" in low)
-        and ("gate" in low or "gates" in low or "nand" in low)
-    ):
-        gate_type = "nand" if "nand" in low else _extract_gate_type(low)
-        return {"op": "report_constant_input_gates", "args": {"gate_type": gate_type}}
 
     if "primary input" in low and "highest fanout" in low:
         return {"op": "report_highest_fanout_primary_input", "args": {}}
@@ -548,6 +571,20 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
         if endpoints and node:
             src, dst = endpoints
             return {"op": "all_paths_pass_through", "args": {"src": src, "dst": dst, "node": node}}
+
+    if (
+        ("all paths" in low or "every path" in low or "list paths" in low or "enumerate paths" in low)
+        and "from" in low
+        and "to" in low
+    ):
+        endpoints = _extract_src_dst(text)
+        if endpoints:
+            src, dst = endpoints
+            limit = _extract_limit_int(text)
+            args: dict[str, Any] = {"src": src, "dst": dst}
+            if limit is not None:
+                args["max_paths"] = limit
+            return {"op": "report_all_paths", "args": args}
 
     if "maximum logic depth" in low or "max logic depth" in low or "max depth" in low:
         endpoints = _extract_src_dst(text)
@@ -707,18 +744,24 @@ def _extract_quoted_text(text: str) -> str | None:
 
 def _extract_gate_type(low: str) -> str | None:
     aliases = {
-        "buffer": "buf",
+        "flip-flop": "dff",
+        "flipflop": "dff",
+        "registers": "dff",
+        "register": "dff",
         "buffers": "buf",
-        "buf": "buf",
-        "and": "and",
-        "or": "or",
+        "buffer": "buf",
+        "xnor": "xnor",
         "nand": "nand",
+        "xor": "xor",
         "nor": "nor",
         "not": "not",
         "inv": "not",
         "inverter": "not",
-        "xor": "xor",
-        "xnor": "xnor",
+        "dffs": "dff",
+        "dff": "dff",
+        "buf": "buf",
+        "and": "and",
+        "or": "or",
     }
     for word, gate_type in aliases.items():
         if re.search(rf"\b{re.escape(word)}\b", low):

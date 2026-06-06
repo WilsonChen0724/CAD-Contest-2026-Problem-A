@@ -57,7 +57,7 @@ Common mappings:
 - Balance depths from source S to destinations A,B with buffers -> balance_depth_with_buffers with {"src": "S", "dsts": ["A", "B"], "minimize_buffers": true}.
 - Optimize logic cone of target T with max depth N and minimized gate count -> optimize_cone with {"target": "T", "max_depth": N, "minimize_gate_count": true}.
 - Optimize fanout across the design so fanout <= N -> insert_buffers_for_all_high_fanout with {"max_fanout": N}.
-- Optimize design depth with optional max depth N -> optimize_design_depth with {"max_depth": N}; use {} if no bound is specified.
+- Optimize design depth with optional max depth N using Yosys/ABC -> optimize_design_depth with {"max_depth": N}; use {} if no bound is specified.
 - Propagate constants or simplify gates with constant inputs -> constant_propagation with {}.
 - Remap XNOR/NOR gates -> replace_xnor_nor_with_basic_gates with {}.
 - Remap AND/NOT gates into NAND logic -> replace_and_not_with_nand with {}.
@@ -66,9 +66,13 @@ Common mappings:
 - Rename gate or DFF instance A to B -> rename_gate with {"old_name": "A", "new_name": "B"}.
 - Maximum logic depth from input A to output B -> max_depth with {"src": "A", "dst": "B"}.
 - Find a path from A to B -> find_path with {"src": "A", "dst": "B"}.
+- Find all paths of length 0 / direct PI-to-PO wire connections -> report_direct_pi_po_paths with {}.
+- List all combinational paths from A to B -> report_all_paths with {"src": "A", "dst": "B"}; include optional "max_paths" only when the user gives a positive limit. Never use placeholders like "$all_pis", "$all_pos", "$input", or "$output".
 - Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.
 - Fanin cone of target T -> logic_cone with {"target": "T"}.
 - Count all gates by type -> report_gate_counts with {}.
+- Count one gate type, such as NOT/NAND/BUF/DFF gates -> report_gate_type_count with {"gate_type": "not"}.
+- List gates of one type with input and output signals -> report_gate_type_connections with {"gate_type": "nand"}.
 - Direct fanout of net X -> report_fanout with {"net": "X"}.
 - Primary input with the highest fanout -> report_highest_fanout_primary_input with {}.
 - Gate type and pin connections of instance U -> report_gate_connections with {"gate": "U"}.
@@ -82,8 +86,11 @@ Common mappings:
 - Derive Boolean equation for target T -> derive_boolean_equation with {"target": "T"}.
 - Maximum logic depth from any primary input to any DFF D-pin -> report_max_depth_to_dff_d with {}.
 - Outputs with logic depth greater than N -> report_outputs_depth_greater_than with {"min_depth": N}.
-- How many BUF gates were added by the previous transform -> report_last_transform_stats with {}.
+- How many BUF gates were added, removed, changed, or what changed in the previous transform -> report_last_transform_stats with {}.
 - Check whether DFF A and DFF B are in the same clock domain -> same_clock_domain with {"dff_a": "A", "dff_b": "B"}.
+- List flip-flops driven by clock C -> report_dffs_by_clock with {"clock": "C"}.
+- Signal symmetry with respect to two inputs is not implemented -> unsupported.
+- Reconnecting a specific gate input pin is not implemented -> unsupported.
 - List register-to-register paths -> report_register_paths with {}.
 - Check connectivity -> check_connectivity with {}.
 - Check fanout <= N -> check_fanout with {"max_fanout": N}.

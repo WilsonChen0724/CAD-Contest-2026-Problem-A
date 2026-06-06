@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from eda.design import Design, Gate
 from eda.graph import rebuild_graph
@@ -13,6 +16,7 @@ from eda.transform import (
     insert_dedicated_buffers_for_each_load,
     insert_buffers_for_fanout,
     optimize_cone,
+    optimize_design_depth,
     replace_nand_const1_with_not,
     remove_dangling,
     rename_net,
@@ -170,6 +174,75 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(design.gates["U_and"].inputs, ["a", "b"])
         self.assertTrue(check_design_equivalence(before, design)["ok"])
 
+
+    def test_optimize_design_depth_uses_yosys_abc_result(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="U1", type="and", inputs=["n0", "b"], output="y"))
+        rebuild_graph(design)
+
+        optimized = Design(inputs={"a", "b"}, outputs={"y"})
+        optimized.add_gate(Gate(name="U_opt", type="and", inputs=["a", "b"], output="y"))
+        rebuild_graph(optimized)
+
+        def fake_write_verilog(_design: Design, path: str | Path) -> None:
+            Path(path).write_text(
+                "module top(a, b, y);\n"
+                "input a, b;\n"
+                "output y;\n"
+                "wire n0;\n"
+                "buf U0(n0, a);\n"
+                "and U1(y, n0, b);\n"
+                "endmodule\n",
+                encoding="utf-8",
+            )
+
+        def fake_run_yosys_script(_script: str, cwd: Path | None = None):
+            out_path = Path(cwd or tempfile.gettempdir()) / "optimized.v"
+            out_path.write_text(
+                "module top(a, b, y); input a, b; output y; and U_opt(y, a, b); endmodule\n",
+                encoding="utf-8",
+            )
+            return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with patch("eda.transform.write_verilog", side_effect=fake_write_verilog), patch(
+            "eda.transform.run_yosys_script", side_effect=fake_run_yosys_script
+        ), patch("eda.transform.parse_verilog", return_value=optimized):
+            result = optimize_design_depth(design, max_depth=1)
+
+        self.assertEqual(result["engine"], "yosys_abc")
+        self.assertEqual(result["initial_depth"], 2)
+        self.assertEqual(result["final_depth"], 1)
+        self.assertTrue(result["target_met"])
+        self.assertEqual(set(design.gates), {"U_opt"})
+
+    def test_optimize_design_depth_falls_back_when_yosys_fails(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["n0"], output="y"))
+        rebuild_graph(design)
+
+        with patch("eda.transform.write_verilog", side_effect=RuntimeError("Yosys missing")):
+            result = optimize_design_depth(design)
+
+        self.assertEqual(result["engine"], "local_fallback")
+        self.assertIn("Yosys missing", result["fallback_reason"])
+        self.assertEqual(result["final_depth"], 1)
+        self.assertEqual(set(design.gates), {"U1"})
+        self.assertEqual(design.gates["U1"].inputs, ["a"])
+
+    def test_optimize_design_depth_skips_yosys_for_fanout_buffered_design(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n__fanout_buf_0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["n__fanout_buf_0"], output="y"))
+        rebuild_graph(design)
+
+        with patch("eda.transform._optimize_design_depth_with_yosys_abc") as yosys_abc:
+            result = optimize_design_depth(design)
+
+        yosys_abc.assert_not_called()
+        self.assertEqual(result["engine"], "local_fallback")
+        self.assertIn("Skipped full-design Yosys/ABC", result["fallback_reason"])
     def test_rename_net_updates_references_and_preserves_function(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))
@@ -233,3 +306,4 @@ class TransformTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

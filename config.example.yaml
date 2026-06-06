@@ -1,7 +1,7 @@
 provider: "openai"
 openai:
   api_key: "<YOUR_API_KEY>"
-  model: "gpt-4.1-mini"
+  model: "gpt-4o-mini"
 anthropic:
   api_key: "<YOUR_API_KEY>"
   model: "claude-haiku-4-5-20251001"

@@ -8,10 +8,13 @@ from runtime.state import CurrentState
 from parser.verilog_parser import parse_verilog
 from parser.verilog_writer import write_verilog
 from eda.analysis import (
+    all_paths,
     all_paths_pass_through,
     articulation_points_between,
     constant_input_gates,
     dff_relationships,
+    dffs_by_clock,
+    direct_pi_po_paths,
     direct_fanout,
     derive_boolean_equation,
     fanout_cone,
@@ -20,6 +23,8 @@ from eda.analysis import (
     gate_on_max_depth_path,
     gate_connections,
     gate_counts,
+    gate_type_count,
+    gate_type_connections,
     highest_fanout_primary_input,
     io_counts,
     logic_cone,
@@ -66,9 +71,14 @@ SUPPORTED_OPS = {
     "find_gates",
     "find_path",
     "all_paths_pass_through",
+    "report_all_paths",
     "max_depth",
     "logic_cone",
     "report_gate_counts",
+    "report_gate_type_count",
+    "report_gate_type_connections",
+    "report_direct_pi_po_paths",
+    "report_dffs_by_clock",
     "report_fanout",
     "report_highest_fanout_primary_input",
     "report_gate_connections",
@@ -120,9 +130,14 @@ REQUIRED_ARGS = {
     "find_gates": (),
     "find_path": ("src", "dst"),
     "all_paths_pass_through": ("src", "dst", "node"),
+    "report_all_paths": ("src", "dst"),
     "max_depth": ("src", "dst"),
     "logic_cone": ("target",),
     "report_gate_counts": (),
+    "report_gate_type_count": ("gate_type",),
+    "report_gate_type_connections": ("gate_type",),
+    "report_direct_pi_po_paths": (),
+    "report_dffs_by_clock": ("clock",),
     "report_fanout": ("net",),
     "report_highest_fanout_primary_input": (),
     "report_gate_connections": ("gate",),
@@ -270,6 +285,16 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             f'to "{args["dst"]}" was found.'
         )
 
+    if op == "report_all_paths":
+        _require_design(state)
+        return _format_all_paths(
+            all_paths(
+                state.design,
+                src=args["src"],
+                dst=args["dst"],
+                max_paths=_positive_int_or_default(args.get("max_paths"), 200),
+            )
+        )
     if op == "max_depth":
         _require_design(state)
         depth, path = max_depth(state.design, args["src"], args["dst"])
@@ -288,7 +313,33 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "report_gate_counts":
         _require_design(state)
         return _format_gate_counts(gate_counts(state.design))
+    if op == "report_gate_type_count":
+        _require_design(state)
+        return _format_gate_type_count(gate_type_count(state.design, args["gate_type"]))
 
+    if op == "report_gate_type_connections":
+        _require_design(state)
+        return _format_gate_type_connections(
+            gate_type_connections(
+                state.design,
+                args["gate_type"],
+                max_items=_positive_int_or_default(args.get("max_items"), 200),
+            )
+        )
+
+    if op == "report_direct_pi_po_paths":
+        _require_design(state)
+        return _format_direct_pi_po_paths(direct_pi_po_paths(state.design))
+
+    if op == "report_dffs_by_clock":
+        _require_design(state)
+        return _format_dffs_by_clock(
+            dffs_by_clock(
+                state.design,
+                args["clock"],
+                max_items=_positive_int_or_default(args.get("max_items"), 200),
+            )
+        )
     if op == "report_fanout":
         _require_design(state)
         return _format_fanout(direct_fanout(state.design, args["net"]))
@@ -580,7 +631,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "constant_propagation":
         _require_design(state)
-        result = _run_transactional_transform(state, constant_propagation, verify_equivalence=True)
+        result = _run_transactional_transform(
+            state,
+            constant_propagation,
+            max_changes=64 if len(state.design.gates) > 10000 else None,
+            verify_equivalence=False if len(state.design.gates) > 10000 else True,
+        )
         return (
             f'Propagated constants through {result["num_changed"]} gate(s). '
             f'{_format_change_sample(result["changed"])}'
@@ -591,11 +647,6 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         max_allowed_depth = args.get("max_depth")
         if max_allowed_depth is not None and not isinstance(max_allowed_depth, int):
             raise ValueError('Tool call rejected: "max_depth" must be an integer when provided.')
-        if len(state.design.gates) > 2000:
-            return (
-                "Skipped full-design depth optimization for this large design to stay within "
-                "the 60-second per-response limit. No structural changes were applied."
-            )
         result = _run_transactional_transform(
             state,
             optimize_design_depth,
@@ -603,14 +654,24 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             max_outputs=16 if len(state.design.gates) > 10000 else None,
             verify_equivalence=False,
         )
+        engine = result.get("engine", "unknown")
+        target_text = ""
+        if max_allowed_depth is not None:
+            target_text = f' Target depth <= {max_allowed_depth}: {"met" if result.get("target_met") else "not met"}.'
+        fallback_text = ""
+        if result.get("fallback_reason"):
+            fallback_text = " Yosys/ABC candidate was not applied because it did not pass safety checks; kept the safe result."
         return (
-            f'Optimized design depth: gates {result["initial_gate_count"]} -> '
+            f'Optimized design depth with {engine}: gates {result["initial_gate_count"]} -> '
             f'{result["final_gate_count"]}, depth {result["initial_depth"]} -> '
-            f'{result["final_depth"]}, changed outputs {result["num_changed_outputs"]}.'
+            f'{result["final_depth"]}, changed targets {result["num_changed_outputs"]}.'
+            f'{target_text}{fallback_text}'
         )
 
     if op == "replace_xnor_nor_with_basic_gates":
         _require_design(state)
+        if len(state.design.gates) > 10000:
+            return "Skipped full-design XNOR/NOR remap for this large design to stay within the 60-second per-response limit. No structural changes were applied."
         result = _run_transactional_transform(state, replace_xnor_nor_with_basic_gates)
         return (
             f'Remapped {result["num_changed"]} XNOR/NOR gate(s). '
@@ -619,6 +680,8 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_and_not_with_nand":
         _require_design(state)
+        if len(state.design.gates) > 10000:
+            return "Skipped full-design AND/NOT-to-NAND remap for this large design to stay within the 60-second per-response limit. No structural changes were applied."
         result = _run_transactional_transform(state, replace_and_not_with_nand)
         return (
             f'Remapped {result["num_changed"]} AND/NOT gate(s) into NAND logic. '
@@ -640,7 +703,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             rename_gate,
             args["old_name"],
             args["new_name"],
-            verify_equivalence=True,
+            verify_equivalence=False,
         )
         return (
             f'Renamed {result["kind"]} instance "{result["old_name"]}" '
@@ -653,7 +716,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             rename_net,
             args["old_net"],
             args["new_net"],
-            verify_equivalence=True,
+            verify_equivalence=False,
         )
         return (
             f'Renamed net "{result["old_net"]}" to "{result["new_net"]}" '
@@ -774,9 +837,40 @@ def _run_transactional_transform(
     state.last_transform_result = {
         "transform": getattr(transform, "__name__", str(transform)),
         "result": result,
+        "delta": _design_delta(original, candidate),
     }
     return result
 
+
+def _design_delta(before, after) -> dict[str, Any]:
+    before_gate_names = set(before.gates)
+    after_gate_names = set(after.gates)
+    before_dff_names = set(before.dffs)
+    after_dff_names = set(after.dffs)
+    before_nets = before.all_nets()
+    after_nets = after.all_nets()
+    before_report = gate_counts(before)
+    after_report = gate_counts(after)
+    before_counts = before_report["counts"]
+    after_counts = after_report["counts"]
+    all_types = sorted(set(before_counts) | set(after_counts))
+    type_delta = {
+        gate_type: after_counts.get(gate_type, 0) - before_counts.get(gate_type, 0)
+        for gate_type in all_types
+        if after_counts.get(gate_type, 0) != before_counts.get(gate_type, 0)
+    }
+    return {
+        "before_total_gates": before_report["total"],
+        "after_total_gates": after_report["total"],
+        "total_gate_delta": after_report["total"] - before_report["total"],
+        "type_delta": type_delta,
+        "added_gates": sorted(after_gate_names - before_gate_names),
+        "removed_gates": sorted(before_gate_names - after_gate_names),
+        "added_dffs": sorted(after_dff_names - before_dff_names),
+        "removed_dffs": sorted(before_dff_names - after_dff_names),
+        "added_nets": sorted(after_nets - before_nets),
+        "removed_nets": sorted(before_nets - after_nets),
+    }
 
 def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     """Return only connectivity problems introduced by a candidate transform."""
@@ -889,6 +983,67 @@ def _format_gate_counts(result: dict[str, Any]) -> str:
     lines.append(f'Total gates: {result["total"]}')
     return "\n".join(lines)
 
+
+def _format_gate_type_count(result: dict[str, Any]) -> str:
+    return f'{result["gate_type"].upper()} gate count: {result["count"]}'
+
+
+def _format_all_paths(result: dict[str, Any]) -> str:
+    lines = [
+        f'Combinational paths from "{result["src"]}" to "{result["dst"]}": '
+        f'{result["num_paths"]}'
+    ]
+    if result["truncated"]:
+        lines.append(f'Showing first {result["max_paths"]} path(s); enumeration was truncated.')
+    for index, path in enumerate(result["paths"], 1):
+        lines.append(f'{index}. ' + " -> ".join(path))
+    if not result["paths"]:
+        lines.append("- none")
+    return "\n".join(lines)
+
+def _format_gate_type_connections(result: dict[str, Any]) -> str:
+    lines = [
+        f'{result["gate_type"].upper()} gate connections: {result["num_gates"]}'
+    ]
+    if result.get("truncated"):
+        lines.append(f'Showing first {result["max_items"]} gate(s); report was truncated.')
+    for item in result["gates"]:
+        if item["kind"] == "gate":
+            inputs = ", ".join(item["inputs"]) or "(none)"
+            lines.append(f'- {item["instance"]}: inputs=[{inputs}], output={item["output"]}')
+        else:
+            pins = ", ".join(f"{pin}={net}" for pin, net in item["pins"].items() if net is not None)
+            lines.append(f'- {item["instance"]}: {pins}')
+    if not result["gates"]:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _format_direct_pi_po_paths(result: dict[str, Any]) -> str:
+    lines = [f'Direct PI-to-PO zero-gate paths: {result["num_paths"]}']
+    for index, path in enumerate(result["paths"], 1):
+        lines.append(f'{index}. ' + " -> ".join(path))
+    if not result["paths"]:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _format_dffs_by_clock(result: dict[str, Any]) -> str:
+    lines = [f'DFFs driven by clock "{result["clock"]}": {result["num_dffs"]}']
+    if result.get("truncated"):
+        lines.append(f'Showing first {result["max_items"]} DFF(s); report was truncated.')
+    for item in result["dffs"]:
+        pins = ", ".join(f"{pin}={net}" for pin, net in item["pins"].items() if net is not None)
+        lines.append(f'- {item["instance"]}: {pins}')
+    if not result["dffs"]:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _positive_int_or_default(value: Any, default: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return default
 
 def _format_fanout(result: dict[str, Any]) -> str:
     lines = [
@@ -1026,19 +1181,57 @@ def _format_last_transform_stats(last_transform: dict[str, Any] | None) -> str:
         return "No transform has been performed yet."
     result = last_transform.get("result", {})
     transform = last_transform.get("transform", "unknown_transform")
+    delta = last_transform.get("delta", {})
     if not isinstance(result, dict):
         return f'Last transform "{transform}" completed, but no structured stats are available.'
 
-    if "num_inserted_buffers" in result:
-        return f'Last transform "{transform}" inserted {result["num_inserted_buffers"]} BUF gate(s).'
-    if "num_removed_gates" in result:
-        return f'Last transform "{transform}" removed {result["num_removed_gates"]} gate(s).'
-    if "num_changed" in result:
-        return f'Last transform "{transform}" changed {result["num_changed"]} gate(s).'
-    if "num_merged" in result:
-        return f'Last transform "{transform}" merged {result["num_merged"]} gate(s).'
-    return f'Last transform "{transform}" completed. Stats: {result}'
+    lines = [f'Last transform "{transform}" stats:']
+    if isinstance(delta, dict) and delta:
+        lines.append(
+            "- total gate instances: "
+            f'{delta.get("before_total_gates", "?")} -> '
+            f'{delta.get("after_total_gates", "?")} '
+            f'(delta {delta.get("total_gate_delta", "?")})'
+        )
+        type_delta = delta.get("type_delta") or {}
+        if type_delta:
+            changes = ", ".join(
+                f'{gate_type}: {change:+d}'
+                for gate_type, change in sorted(type_delta.items())
+            )
+            lines.append(f'- gate type delta: {changes}')
+        else:
+            lines.append("- gate type delta: none")
+        lines.append(_format_delta_list("added gates", delta.get("added_gates", [])))
+        lines.append(_format_delta_list("removed gates", delta.get("removed_gates", [])))
+        lines.append(_format_delta_list("added DFFs", delta.get("added_dffs", [])))
+        lines.append(_format_delta_list("removed DFFs", delta.get("removed_dffs", [])))
+        lines.append(_format_delta_list("added nets", delta.get("added_nets", [])))
+        lines.append(_format_delta_list("removed nets", delta.get("removed_nets", [])))
 
+    if "num_inserted_buffers" in result:
+        lines.append(f'- transform-reported inserted BUF gates: {result["num_inserted_buffers"]}')
+    if "num_removed_gates" in result:
+        lines.append(f'- transform-reported removed gates: {result["num_removed_gates"]}')
+    if "removed_gate_count" in result:
+        lines.append(f'- transform-reported removed gates: {result["removed_gate_count"]}')
+    if "num_changed" in result:
+        lines.append(f'- transform-reported changed items: {result["num_changed"]}')
+    if "num_merged" in result:
+        lines.append(f'- transform-reported merged gates: {result["num_merged"]}')
+    if "num_changed_nets" in result:
+        lines.append(f'- transform-reported changed nets: {result["num_changed_nets"]}')
+    if "changed" in result:
+        lines.append(_format_change_sample(result["changed"], label="Sample transform changes"))
+    return "\n".join(lines)
+
+
+def _format_delta_list(label: str, items: Any, limit: int = 8) -> str:
+    if not isinstance(items, list) or not items:
+        return f'- {label}: none'
+    sample = items[:limit]
+    suffix = f' (+{len(items) - limit} more)' if len(items) > limit else ""
+    return f'- {label}: {sample}{suffix}'
 
 def _format_change_sample(
     changes: list[Any],

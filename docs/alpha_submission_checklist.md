@@ -53,6 +53,19 @@ Do not include development outputs unless explicitly requested:
 
 ## Environment Checks Before Upload
 
+Additional Q&A constraints for Problem A:
+
+- The official Docker working directory is `/app`.
+- Input files are mounted under `/app`; read the design from the path given in
+  the prompt.
+- Write generated netlists and logs relative to the working directory / testcase
+  path requested by the prompt.
+- Evaluation has internet access only to the designated model API endpoints, so
+  do not rely on `pip install`, Yosys download, or other general internet access
+  during evaluation.
+- The released named-pin DFF style such as `.RN`, `.SN`, `.CK`, `.D`, and `.Q`
+  is the correct testcase format and should remain supported.
+
 Run these in the same environment intended for submission:
 
 ```bash

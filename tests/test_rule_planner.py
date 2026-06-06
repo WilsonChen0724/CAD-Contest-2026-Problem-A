@@ -19,6 +19,11 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "all_paths_pass_through", "args": {"src": "A", "dst": "B", "node": "C"}})
 
+    def test_maps_report_all_paths(self) -> None:
+        plan = plan_request("List all paths from A to B.", None)
+
+        self.assertEqual(plan, {"op": "report_all_paths", "args": {"src": "A", "dst": "B"}})
+
     def test_maps_primary_output_cone_size_report(self) -> None:
         plan = plan_request("Report all primary outputs whose logic cone contains more than 100 gates.", None)
 
@@ -33,6 +38,10 @@ class RulePlannerTest(unittest.TestCase):
         self.assertEqual(
             plan_request("Report the total number of gates broken down by type.", None),
             {"op": "report_gate_counts", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("How many NOT gates are in the current design?", None),
+            {"op": "report_gate_type_count", "args": {"gate_type": "not"}},
         )
         self.assertEqual(
             plan_request("Report the fanout of net n1.", None),

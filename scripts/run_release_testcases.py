@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -41,9 +42,15 @@ def main() -> int:
         help="Run only one testcase name, e.g. --case test01. May be repeated.",
     )
     parser.add_argument(
+        "--case-range",
+        action="append",
+        default=[],
+        help="Run a contiguous testcase range, e.g. --case-range test25-test40 or --case-range 25-40. May be repeated.",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
-        help="Run all release testcases explicitly. If neither --case nor --all is provided, all cases still run for backward compatibility.",
+        help="Run all release testcases explicitly.",
     )
     parser.add_argument(
         "--planner",
@@ -84,8 +91,14 @@ def main() -> int:
     parser.add_argument(
         "--timeout",
         type=float,
+        default=300.0,
+        help="Timeout in seconds for non-basic responses. Official default: 300 seconds.",
+    )
+    parser.add_argument(
+        "--basic-timeout",
+        type=float,
         default=60.0,
-        help="Timeout in seconds for each individual response.",
+        help="Timeout in seconds for basic begin/read/write responses. Official default: 60 seconds.",
     )
     args = parser.parse_args()
 
@@ -96,11 +109,19 @@ def main() -> int:
         print(f"Release testcase directory not found: {testcase_root}", file=sys.stderr)
         return 2
 
-    if args.all and args.case:
-        print("Use either --all or --case, not both.", file=sys.stderr)
+    if args.all and (args.case or args.case_range):
+        print("Use either --all or selected cases/ranges, not both.", file=sys.stderr)
+        return 2
+    if not args.all and not args.case and not args.case_range:
+        print("No testcase selection provided. Use --all, --case testNN, or --case-range test25-test40.", file=sys.stderr)
         return 2
 
-    case_dirs = _select_cases(testcase_root, args.case)
+    try:
+        selected_cases = _expand_selected_cases(args.case, args.case_range)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    case_dirs = _select_cases(testcase_root, selected_cases, run_all=args.all)
     if not case_dirs:
         print("No testcase directories matched.", file=sys.stderr)
         return 2
@@ -124,6 +145,7 @@ def main() -> int:
                 config=args.config,
                 ensure_yosys=args.ensure_yosys,
                 timeout=args.timeout,
+                basic_timeout=args.basic_timeout,
             )
             results.append(result)
             _print_case_summary(result)
@@ -156,10 +178,37 @@ def _planner_runs(planner: str) -> list[str]:
     return [planner]
 
 
-def _select_cases(testcase_root: Path, selected: list[str]) -> list[Path]:
+def _expand_selected_cases(cases: list[str], ranges: list[str]) -> list[str]:
+    selected = list(cases)
+    for item in ranges:
+        selected.extend(_expand_case_range(item))
+    return selected
+
+
+def _expand_case_range(raw_range: str) -> list[str]:
+    parts = raw_range.split("-", 1)
+    if len(parts) != 2:
+        raise ValueError(f'Invalid --case-range "{raw_range}". Expected test25-test40 or 25-40.')
+    start = _parse_case_number(parts[0], raw_range)
+    end = _parse_case_number(parts[1], raw_range)
+    if start > end:
+        raise ValueError(f'Invalid --case-range "{raw_range}": start must be <= end.')
+    return [f"test{number:02d}" for number in range(start, end + 1)]
+
+
+def _parse_case_number(token: str, raw_range: str) -> int:
+    normalized = token.strip().lower()
+    if normalized.startswith("test"):
+        normalized = normalized[4:]
+    if not normalized.isdigit():
+        raise ValueError(f'Invalid --case-range "{raw_range}": could not parse testcase number from "{token}".')
+    return int(normalized)
+
+
+def _select_cases(testcase_root: Path, selected: list[str], *, run_all: bool = False) -> list[Path]:
     requested = set(selected)
     case_dirs = sorted(path for path in testcase_root.iterdir() if path.is_dir())
-    if not requested:
+    if run_all:
         return case_dirs
     return [path for path in case_dirs if path.name in requested]
 
@@ -174,6 +223,7 @@ def _run_case(
     config: str,
     ensure_yosys: bool,
     timeout: float,
+    basic_timeout: float,
 ) -> CaseResult:
     prompt_path = case_dir / "prompt.txt"
     if not prompt_path.exists():
@@ -193,11 +243,12 @@ def _run_case(
     if ensure_yosys:
         command.append("--ensure-yosys")
 
+    response_timeouts = [_timeout_for_prompt(prompt, basic_timeout, timeout) for prompt in prompts]
     stdout, stderr, returncode = _run_case_interactive(
         command=command,
         cwd=release_dir,
         prompts=prompts,
-        response_timeout=timeout,
+        response_timeouts=response_timeouts,
     )
 
     out_path = result_root / f"{case_dir.name}.stdout.txt"
@@ -220,6 +271,25 @@ def _run_case(
     )
 
 
+
+def _timeout_for_prompt(prompt: str, basic_timeout: float, non_basic_timeout: float) -> float:
+    return basic_timeout if _is_basic_operation_prompt(prompt) else non_basic_timeout
+
+
+def _is_basic_operation_prompt(prompt: str) -> bool:
+    text = prompt.strip().lower()
+    words = set(re.findall(r"[a-z0-9_]+", text))
+    if "testcase" in words and words & {"beginning", "begin", "start"}:
+        return True
+    if {"case", "name"}.issubset(words) and "testcase" in words:
+        return True
+    design_file_hint = any(hint in text for hint in (".v", "verilog", "netlist", "design", "file"))
+    if words & {"load", "read"} and design_file_hint:
+        return True
+    write_file_hint = any(hint in text for hint in (".v", "netlist", "current design", "modified design"))
+    if words & {"write", "save", "output"} and write_file_hint:
+        return True
+    return False
 def _copy_generated_netlist(release_dir: Path, result_root: Path, case_name: str) -> None:
     generated = release_dir / f"{case_name}_out.v"
     if generated.exists():
@@ -280,7 +350,7 @@ def _run_case_interactive(
     command: list[str],
     cwd: Path,
     prompts: list[str],
-    response_timeout: float,
+    response_timeouts: list[float],
 ) -> tuple[str, str, int]:
     """
     Run main.py once, feed prompts one by one, and enforce a timeout per response.
@@ -308,6 +378,7 @@ def _run_case_interactive(
     try:
         assert process.stdin is not None
         for response_id, prompt in enumerate(prompts, start=1):
+            response_timeout = response_timeouts[response_id - 1]
             if process.poll() is not None:
                 returncode = process.returncode or 1
                 stderr_lines.append(
