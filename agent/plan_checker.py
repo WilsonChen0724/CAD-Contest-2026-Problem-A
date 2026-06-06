@@ -35,9 +35,15 @@ SUPPORTED_OPS = {
     "replace_or_with_nand_not",
     "replace_nand_const1_with_not",
     "insert_buffers_for_fanout",
+    "insert_buffers_for_all_high_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
     "constant_propagation",
+    "optimize_design_depth",
+    "replace_xnor_nor_with_basic_gates",
+    "replace_and_not_with_nand",
+    "merge_equivalent_gates",
+    "rename_gate",
     "rename_net",
     "check_connectivity",
     "check_fanout",
@@ -73,9 +79,15 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "replace_or_with_nand_not": {"cone_target": str},
     "replace_nand_const1_with_not": {},
     "insert_buffers_for_fanout": {"net": str, "max_fanout": int},
+    "insert_buffers_for_all_high_fanout": {"max_fanout": int},
     "balance_depth_with_buffers": {"src": str, "dsts": list},
     "optimize_cone": {"target": str},
     "constant_propagation": {},
+    "optimize_design_depth": {},
+    "replace_xnor_nor_with_basic_gates": {},
+    "replace_and_not_with_nand": {},
+    "merge_equivalent_gates": {},
+    "rename_gate": {"old_name": str, "new_name": str},
     "rename_net": {"old_net": str, "new_net": str},
     "check_connectivity": {},
     "check_fanout": {"max_fanout": int},
@@ -94,8 +106,8 @@ _OPTIONAL_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "replace_buffers_with_and": {"targets": list, "targets_from": str},
     "balance_depth_with_buffers": {"minimize_buffers": bool},
     "optimize_cone": {"max_depth": int, "minimize_gate_count": bool},
+    "optimize_design_depth": {"max_depth": int},
 }
-
 
 def parse_plan_json(raw_plan: str) -> dict[str, Any]:
     """
@@ -125,14 +137,14 @@ def parse_plan_json(raw_plan: str) -> dict[str, Any]:
 
 def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
     """
-    Validate arguments returned by one OpenAI domain tool call.
+    Validate arguments returned by one provider domain tool call.
 
-    The OpenAI schema keeps output structurally stable, but this function is the
+    The provider tool schema keeps output structurally stable, but this function is the
     local safety boundary: it checks the called tool name, rejects operations
     outside that tool's category, and then reuses the per-op plan validation.
     """
     if tool_name not in TOOL_ALLOWED_OPS:
-        raise PlanValidationError(f"Unexpected OpenAI tool call '{tool_name}'.")
+        raise PlanValidationError(f"Unexpected provider tool call '{tool_name}'.")
     if not isinstance(tool_args, dict):
         raise PlanValidationError(f"{tool_name}.arguments must be a JSON object.")
 
@@ -152,7 +164,7 @@ def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
         op = step.get("op")
         if op not in allowed_ops:
             raise PlanValidationError(
-                f"Operation '{op}' is not allowed in OpenAI tool '{tool_name}'."
+                f"Operation '{op}' is not allowed in provider tool '{tool_name}'."
             )
 
     normalized_steps = [_normalize_tool_step(step) for step in steps]
@@ -175,7 +187,7 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         - Plan must be either {"op": ..., "args": ...} or {"steps": [...]}.
         - Every op must be supported by the current dispatcher.
         - args must be a dict with required fields and correct basic types.
-        - save_as, when present, must be a string.
+        - save_as, when present, must be a string or null.
     """
     if not isinstance(plan, dict):
         raise PlanValidationError("Plan must be a JSON object.")
@@ -230,8 +242,8 @@ def _validate_single_step(step: Any) -> None:
     if not isinstance(args, dict):
         raise PlanValidationError("Field 'args' must be a JSON object.")
 
-    if "save_as" in step and not isinstance(step["save_as"], str):
-        raise PlanValidationError("Field 'save_as' must be a string.")
+    if "save_as" in step and step["save_as"] is not None and not isinstance(step["save_as"], str):
+        raise PlanValidationError("Field 'save_as' must be a string or null.")
 
     _validate_args(op, args)
 
@@ -250,7 +262,7 @@ def _validate_args(op: str, args: dict[str, Any]) -> None:
             raise PlanValidationError(f"Operation '{op}' has unknown argument '{key}'.")
 
     for key, expected_type in {**required, **optional}.items():
-        if key in args and not isinstance(args[key], expected_type):
+        if key in args and not _matches_expected_type(args[key], expected_type):
             raise PlanValidationError(f"Operation '{op}' argument '{key}' has the wrong type.")
 
     if op == "replace_buffers_with_and":
@@ -272,6 +284,41 @@ def _validate_args(op: str, args: dict[str, Any]) -> None:
         if not args["dsts"] or not all(isinstance(item, str) for item in args["dsts"]):
             raise PlanValidationError("balance_depth_with_buffers.args.dsts must be a non-empty list of strings.")
 
+    _validate_non_empty_strings(op, args)
+    _validate_numeric_bounds(op, args)
+
+
+def _validate_non_empty_strings(op: str, args: dict[str, Any]) -> None:
+    for key, value in args.items():
+        if isinstance(value, str) and not value.strip():
+            raise PlanValidationError(f"Operation '{op}' argument '{key}' must not be empty.")
+        if isinstance(value, list) and any(isinstance(item, str) and not item.strip() for item in value):
+            raise PlanValidationError(f"Operation '{op}' argument '{key}' must not contain empty strings.")
+
+
+def _matches_expected_type(value: Any, expected_type: type | tuple[type, ...]) -> bool:
+    if expected_type is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(expected_type, tuple) and int in expected_type and isinstance(value, bool):
+        return False
+    return isinstance(value, expected_type)
+
+
+def _validate_numeric_bounds(op: str, args: dict[str, Any]) -> None:
+    non_negative_args = {
+        "report_outputs_by_cone_size": ("min_gates",),
+        "check_fanout": ("max_fanout",),
+        "insert_buffers_for_all_high_fanout": ("max_fanout",),
+        "check_depth": ("max_depth",),
+        "optimize_cone": ("max_depth",),
+        "optimize_design_depth": ("max_depth",),
+    }
+    for key in non_negative_args.get(op, ()):
+        if key in args and args[key] < 0:
+            raise PlanValidationError(f"Operation '{op}' argument '{key}' must be non-negative.")
+
+    if op in {"insert_buffers_for_fanout", "insert_buffers_for_all_high_fanout"} and args["max_fanout"] < 2:
+        raise PlanValidationError(f"Operation '{op}' argument 'max_fanout' must be at least 2.")
 
 def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
     unknown = set(obj) - allowed

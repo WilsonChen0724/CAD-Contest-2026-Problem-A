@@ -10,6 +10,7 @@ from pathlib import Path
 @dataclass
 class CaseResult:
     name: str
+    planner: str
     returncode: int
     prompts: int
     responses: int
@@ -37,10 +38,15 @@ def main() -> int:
         help="Run only one testcase name, e.g. --case test01. May be repeated.",
     )
     parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all release testcases explicitly. If neither --case nor --all is provided, all cases still run for backward compatibility.",
+    )
+    parser.add_argument(
         "--planner",
-        choices=("rule", "llm", "hybrid"),
-        default="llm",
-        help="Planner mode passed to main.py.",
+        choices=("rule", "llm_openai", "llm_claude", "llm_both"),
+        default="rule",
+        help="Planner mode passed to main.py. In this runner, llm_both runs llm_openai and llm_claude separately and stores both outputs.",
     )
     parser.add_argument(
         "--config",
@@ -87,35 +93,46 @@ def main() -> int:
         print(f"Release testcase directory not found: {testcase_root}", file=sys.stderr)
         return 2
 
+    if args.all and args.case:
+        print("Use either --all or --case, not both.", file=sys.stderr)
+        return 2
+
     case_dirs = _select_cases(testcase_root, args.case)
     if not case_dirs:
         print("No testcase directories matched.", file=sys.stderr)
         return 2
 
-    result_root = release_dir / "runner_output"
-    result_root.mkdir(parents=True, exist_ok=True)
+    planner_runs = _planner_runs(args.planner)
 
     results: list[CaseResult] = []
-    for case_dir in case_dirs:
-        print(f"Running {case_dir.name}...", flush=True)
-        result = _run_case(
-            repo_root=repo_root,
-            release_dir=release_dir,
-            result_root=result_root,
-            case_dir=case_dir,
-            planner=args.planner,
-            config=args.config,
-            ensure_yosys=args.ensure_yosys,
-            timeout=args.timeout,
-        )
-        results.append(result)
-        _print_case_summary(result)
-        if args.stop_on_fail and _is_failure(
-            result,
-            args.fail_on_unsupported,
-            args.fail_on_error,
-            args.fail_on_response_mismatch,
-        ):
+    should_stop = False
+    for planner in planner_runs:
+        result_root = release_dir / "runner_output" / planner
+        result_root.mkdir(parents=True, exist_ok=True)
+        print(f"\n=== Planner: {planner} ===", flush=True)
+        for case_dir in case_dirs:
+            print(f"Running {case_dir.name} with {planner}...", flush=True)
+            result = _run_case(
+                repo_root=repo_root,
+                release_dir=release_dir,
+                result_root=result_root,
+                case_dir=case_dir,
+                planner=planner,
+                config=args.config,
+                ensure_yosys=args.ensure_yosys,
+                timeout=args.timeout,
+            )
+            results.append(result)
+            _print_case_summary(result)
+            if args.stop_on_fail and _is_failure(
+                result,
+                args.fail_on_unsupported,
+                args.fail_on_error,
+                args.fail_on_response_mismatch,
+            ):
+                should_stop = True
+                break
+        if should_stop:
             break
 
     _print_total_summary(results)
@@ -128,6 +145,12 @@ def main() -> int:
         )
         for r in results
     ) else 0
+
+
+def _planner_runs(planner: str) -> list[str]:
+    if planner == "llm_both":
+        return ["llm_openai", "llm_claude"]
+    return [planner]
 
 
 def _select_cases(testcase_root: Path, selected: list[str]) -> list[Path]:
@@ -194,9 +217,11 @@ def _run_case(
     err_path = result_root / f"{case_dir.name}.stderr.txt"
     out_path.write_text(stdout, encoding="utf-8")
     err_path.write_text(stderr, encoding="utf-8")
+    _copy_generated_netlist(release_dir, result_root, case_dir.name)
 
     return CaseResult(
         name=case_dir.name,
+        planner=planner,
         returncode=returncode,
         prompts=prompt_count,
         responses=stdout.count("#RESPONSE"),
@@ -206,6 +231,13 @@ def _run_case(
         output_path=out_path,
         stderr_path=err_path,
     )
+
+
+def _copy_generated_netlist(release_dir: Path, result_root: Path, case_name: str) -> None:
+    generated = release_dir / f"{case_name}_out.v"
+    if generated.exists():
+        target = result_root / generated.name
+        target.write_bytes(generated.read_bytes())
 
 
 def _is_failure(
@@ -227,7 +259,7 @@ def _is_failure(
 
 def _print_case_summary(result: CaseResult) -> None:
     print(
-        f"{result.name}: rc={result.returncode}, prompts={result.prompts}, "
+        f"{result.planner}/{result.name}: rc={result.returncode}, prompts={result.prompts}, "
         f"responses={result.responses}, missing={result.missing_responses}, "
         f"unsupported={result.unsupported}, errors={result.errors}"
     )
@@ -235,14 +267,17 @@ def _print_case_summary(result: CaseResult) -> None:
 
 def _print_total_summary(results: list[CaseResult]) -> None:
     print("")
-    print(f"Ran {len(results)} release testcase(s).")
+    print(f"Ran {len(results)} release testcase run(s).")
     print(f"Prompts: {sum(item.prompts for item in results)}")
     print(f"Responses: {sum(item.responses for item in results)}")
     print(f"Missing responses: {sum(item.missing_responses for item in results)}")
     print(f"Unsupported responses: {sum(item.unsupported for item in results)}")
     print(f"Error responses: {sum(item.errors for item in results)}")
     if results:
-        print(f"Detailed outputs: {results[0].output_path.parent}")
+        output_dirs = sorted({str(item.output_path.parent) for item in results})
+        print("Detailed outputs:")
+        for output_dir in output_dirs:
+            print(f"- {output_dir}")
 
 
 def _count_prompt_lines(prompt_text: str) -> int:

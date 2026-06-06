@@ -8,11 +8,11 @@ into a restricted Tool API plan, validates the plan, executes deterministic EDA
 backend operations on the current gate-level Verilog design state, and prints
 contest-style response blocks.
 
-The LLM never edits Verilog directly. In LLM mode it must call one OpenAI
-function tool from gent/tool_schema.py (un_design_io_plan, un_analysis_plan,
-un_transform_plan, or un_verify_plan). The returned tool-call arguments
-are normalized into the project Tool API plan, checked by gent/plan_checker.py,
-and then executed through untime/dispatcher.py.
+The LLM never edits Verilog directly. In LLM mode it must call one provider
+domain tool from `agent/tool_schema.py` (`run_design_io_plan`,
+`run_analysis_plan`, `run_transform_plan`, or `run_verify_plan`). The returned
+tool-call arguments are normalized into the project Tool API plan, checked by
+`agent/plan_checker.py`, and then executed through `runtime/dispatcher.py`.
 The broader target API is documented in `docs/tool_spec.md`; this README marks
 which parts are implemented in v0.3.1.
 
@@ -25,7 +25,7 @@ stdin request
 main.py request loop
     |
     v
-rule planner / LLM planner / hybrid planner
+rule planner / OpenAI planner / Claude planner / fallback planner
     |
     v
 validated Tool API JSON plan
@@ -48,20 +48,23 @@ stdout response + testcase log + optional output netlist
 
 ```bash
 python main.py -config config.example.yaml -planner rule
-python main.py -config config.example.yaml -planner llm
-python main.py -config config.example.yaml -planner hybrid
+python main.py -config config.example.yaml -planner llm_openai
+python main.py -config config.example.yaml -planner llm_claude
+python main.py -config config.example.yaml -planner llm_both
 ```
 
 - `rule`: deterministic keyword/rule planner. This is the default and needs no
   API key.
-- llm: sends each request to the OpenAI Responses API with four domain
-  function tools and validates the returned tool-call plan.
-- `hybrid`: tries the deterministic planner first, then falls back to the LLM
-  only when the rule planner returns `unsupported`.
+- `llm_openai`: sends each request to the OpenAI Responses API with four
+  domain function tools and validates the returned tool-call plan.
+- `llm_claude`: sends each request to the Anthropic Messages API with the same
+  four domain tools and validates the returned `tool_use` plan.
+- `llm_both`: tries OpenAI first, then falls back to Claude when OpenAI is
+  missing, unavailable, or returns a checker-rejected plan.
 
 The LLM path includes one repair retry when the model returns an invalid tool
-call or a checker-rejected plan. Raw OpenAI tool calls are logged to stderr as
-pretty-printed [llm-tool-call] JSON blocks, so contest stdout remains clean.
+call or a checker-rejected plan. Raw provider tool calls are logged to stderr as
+pretty-printed `[llm-tool-call]` JSON blocks, so contest stdout remains clean.
 
 ### Implemented Tool API operations
 
@@ -186,7 +189,7 @@ and is guarded structurally.
   `third_party/yosys/oss-cad-suite`.
 - `z3-solver` is recommended for formal equivalence/property checks. Without
   it, small formal checks fall back to brute-force enumeration.
-- Optional OpenAI API key for `-planner llm` or `-planner hybrid` fallback.
+- Optional `OPENAI_API_KEY` for `-planner llm_openai`; optional `ANTHROPIC_API_KEY` for `-planner llm_claude`; both are useful for `-planner llm_both`.
 
 Install Python dependencies:
 
@@ -237,6 +240,9 @@ provider: "openai"
 openai:
   api_key: "<YOUR_API_KEY>"
   model: "gpt-4.1-mini"
+anthropic:
+  api_key: "<YOUR_API_KEY>"
+  model: "claude-haiku-4-5-20251001"
 generation:
   temperature: 0.2
   max_output_tokens: 4096
@@ -279,16 +285,18 @@ Run one case:
 python scripts/run_release_testcases.py --case test01 --ensure-yosys
 ```
 
-Use the LLM or hybrid planner:
+Use an LLM planner, or compare both providers:
 
 ```bash
-python scripts/run_release_testcases.py --planner hybrid --ensure-yosys
+python scripts/run_release_testcases.py --planner llm_openai --ensure-yosys
+python scripts/run_release_testcases.py --planner llm_claude --ensure-yosys
+python scripts/run_release_testcases.py --planner llm_both --ensure-yosys
 ```
 
 The runner executes each `testcase/testNN/prompt.txt` with `main.py` using the
 release directory as the working directory, so prompt paths such as
 `testcase/test01/test01.v` resolve naturally. Per-case stdout/stderr logs are
-written under `A_release testcase_0510/runner_output/`.
+written under `A_release testcase_0510/runner_output/<planner>/`, so `llm_openai`, `llm_claude`, and `rule` runs do not overwrite each other. In the release runner, `--planner llm_both` runs `llm_openai` and `llm_claude` separately and records both provider outputs. Generated `testNN_out.v` files are also copied into the matching planner output folder when present.
 
 During development, unsupported responses are counted but do not fail the run.
 After the remaining backend tools are implemented, enable stricter regression
@@ -508,8 +516,8 @@ Yosys parser/writer path and the safer planner/runtime boundary.
 
 3. Planner modes
 
-   `main.py` now supports `rule`, `llm`, and `hybrid` planner modes. The LLM
-   planner calls the OpenAI Responses API, requests structured JSON, validates
+   `main.py` now supports `rule`, `llm_openai`, `llm_claude`, and `llm_both` planner modes. The LLM
+   planner calls provider tool APIs, requests domain tool calls, validates
    the result through `plan_checker.py`, and retries once with a repair request
    when validation fails.
 

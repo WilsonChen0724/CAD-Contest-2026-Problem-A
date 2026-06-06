@@ -7,7 +7,7 @@ Assumptions:
 - You are in the repository root: `CAD_Contest2026_Problem_A`.
 - Python dependencies are installed in your active Python/conda environment.
 - Yosys is already installed and available as `yosys` on `PATH`, or installed under `third_party/yosys/oss-cad-suite`.
-- `OPENAI_API_KEY` is not set yet unless you are running LLM tests.
+- `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not set yet unless you are running LLM tests.
 
 ## 1. Environment Check
 
@@ -88,62 +88,77 @@ python scripts/run_release_testcases.py --case test01 --case test02 --planner ru
 Run all release testcases:
 
 ```bash
-python scripts/run_release_testcases.py --planner rule
+python scripts/run_release_testcases.py --all --planner rule
 ```
 
 Outputs are written to:
 
 ```text
-A_release testcase_0510/runner_output/testNN.stdout.txt
-A_release testcase_0510/runner_output/testNN.stderr.txt
+A_release testcase_0510/runner_output/<planner>/testNN.stdout.txt
+A_release testcase_0510/runner_output/<planner>/testNN.stderr.txt
 ```
 
-Generated netlists are written relative to `A_release testcase_0510`, following each prompt's requested output path.
+Generated netlists are written relative to `A_release testcase_0510`, following each prompt's requested output path. The release runner also copies `testNN_out.v` into `runner_output/<planner>/` when that file is generated, which keeps OpenAI and Claude outputs comparable.
 
-## 5. Run A_release Testcases with the LLM Planner
+## 5. Run A_release Testcases with LLM Planners
 
-Set your OpenAI API key first. Do not commit real keys.
+Set the API key for the provider you want to test. Do not commit real keys.
 
 Temporary shell variable:
 
 ```bash
-export OPENAI_API_KEY="your_api_key_here"
+export OPENAI_API_KEY="your_openai_key_here"
+export ANTHROPIC_API_KEY="your_anthropic_key_here"
 ```
 
 Conda environment variable:
 
 ```bash
-conda env config vars set OPENAI_API_KEY="your_api_key_here"
+conda env config vars set OPENAI_API_KEY="your_openai_key_here"
+conda env config vars set ANTHROPIC_API_KEY="your_anthropic_key_here"
 conda deactivate
 conda activate eda
 ```
 
-Run one testcase with the LLM planner:
+Run one testcase with OpenAI:
 
 ```bash
-python scripts/run_release_testcases.py --case test01 --planner llm
+python scripts/run_release_testcases.py --case test01 --planner llm_openai
 ```
 
-Run one testcase with hybrid planning:
+Run all testcases with OpenAI:
 
 ```bash
-python scripts/run_release_testcases.py --case test01 --planner hybrid
+python scripts/run_release_testcases.py --all --planner llm_openai
+```
+
+Run one testcase with Claude:
+
+```bash
+python scripts/run_release_testcases.py --case test01 --planner llm_claude
+```
+
+Run one testcase with both OpenAI and Claude for comparison:
+
+```bash
+python scripts/run_release_testcases.py --case test01 --planner llm_both
 ```
 
 Planner modes:
 
 - `rule`: deterministic local rules only.
-- `llm`: every request goes to OpenAI and must return one EDA domain tool call.
-- `hybrid`: try rule planning first; call the LLM only when the rule planner returns `unsupported`.
+- `llm_openai`: every request goes to OpenAI and must return one EDA domain function tool call.
+- `llm_claude`: every request goes to Claude and must return one EDA domain `tool_use` call.
+- `llm_both`: in `main.py`, try OpenAI first and fall back to Claude; in this release runner, run `llm_openai` and `llm_claude` separately so both providers have their own logs.
 
 ## 6. Inspect LLM Tool Calls
 
-When `--planner llm` or an LLM fallback in `--planner hybrid` calls OpenAI, raw tool-call traces are printed to stderr and captured by the release runner.
+When `--planner llm_openai`, `--planner llm_claude`, or `--planner llm_both` calls a provider, raw tool-call traces are printed to stderr and captured by the release runner.
 
 View the trace:
 
 ```bash
-cat "A_release testcase_0510/runner_output/test01.stderr.txt"
+cat "A_release testcase_0510/runner_output/llm_openai/test01.stderr.txt"
 ```
 
 Each trace block looks like:
@@ -177,18 +192,18 @@ Each trace block looks like:
 }
 ```
 
-`arguments` is the raw OpenAI tool-call payload. `normalized_plan` is the checked plan passed to the dispatcher.
+`arguments` is the raw provider tool-call payload. `normalized_plan` is the checked plan passed to the dispatcher.
 
 ## 7. Strict Regression Options
 
 During development, unsupported responses are counted but do not fail the release runner. Once backend coverage improves, use stricter flags:
 
 ```bash
-python scripts/run_release_testcases.py --planner rule --fail-on-unsupported --fail-on-error
+python scripts/run_release_testcases.py --all --planner rule --fail-on-unsupported --fail-on-error
 ```
 
 Stop on the first failing testcase:
 
 ```bash
-python scripts/run_release_testcases.py --planner rule --fail-on-unsupported --fail-on-error --stop-on-fail
+python scripts/run_release_testcases.py --all --planner rule --fail-on-unsupported --fail-on-error --stop-on-fail
 ```

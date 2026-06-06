@@ -5,7 +5,7 @@ from math import ceil
 from functools import wraps
 from typing import Any, TypeVar
 
-from eda.analysis import find_path, logic_cone, max_depth
+from eda.analysis import find_path, logic_cone, max_depth, primary_output_cone_sizes
 from eda.design import DFF, Design, Gate, is_constant
 from eda.graph import rebuild_graph
 
@@ -284,6 +284,32 @@ def rename_net(design: Design, old_net: str, new_net: str) -> dict:
     return replace_net_references(design, old_net, new_net)
 
 
+
+@_rebuild_graph_after_transform
+def rename_gate(design: Design, old_name: str, new_name: str) -> dict:
+    """Rename one gate or DFF instance without changing net connectivity."""
+    if old_name == new_name:
+        if old_name in design.gates:
+            return {"old_name": old_name, "new_name": new_name, "kind": "gate"}
+        if old_name in design.dffs:
+            return {"old_name": old_name, "new_name": new_name, "kind": "dff"}
+        raise ValueError(f'Instance not found: "{old_name}"')
+    if new_name in design.gates or new_name in design.dffs:
+        raise ValueError(f'Cannot rename "{old_name}" to existing instance name "{new_name}".')
+    if new_name in design.all_nets():
+        raise ValueError(f'Cannot rename "{old_name}" to existing net "{new_name}".')
+
+    if old_name in design.gates:
+        gate = design.gates.pop(old_name)
+        gate.name = new_name
+        design.gates[new_name] = gate
+        return {"old_name": old_name, "new_name": new_name, "kind": "gate"}
+    if old_name in design.dffs:
+        dff = design.dffs.pop(old_name)
+        dff.name = new_name
+        design.dffs[new_name] = dff
+        return {"old_name": old_name, "new_name": new_name, "kind": "dff"}
+    raise ValueError(f'Instance not found: "{old_name}"')
 @_rebuild_graph_after_transform
 def constant_propagation(design: Design) -> dict:
     """Simplify primitive gates with constant or redundant inputs."""
@@ -507,6 +533,147 @@ def optimize_cone(
     }
 
 
+@_rebuild_graph_after_transform
+def insert_buffers_for_all_high_fanout(design: Design, max_fanout: int) -> dict:
+    """Apply fanout buffering to every net currently exceeding max_fanout."""
+    if max_fanout < 2:
+        raise ValueError("insert_buffers_for_all_high_fanout requires max_fanout >= 2.")
+
+    rebuild_graph(design)
+    candidates = sorted(
+        net for net, sinks in design.fanouts.items()
+        if not is_constant(net) and len(sinks) > max_fanout
+    )
+    changed: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+
+    for net in candidates:
+        rebuild_graph(design)
+        if len(design.fanouts.get(net, [])) <= max_fanout:
+            continue
+        try:
+            result = insert_buffers_for_fanout(design, net, max_fanout)
+        except ValueError as exc:
+            skipped.append({"net": net, "reason": str(exc)})
+            continue
+        if result.get("num_inserted_buffers", 0):
+            changed.append(result)
+
+    return {
+        "max_fanout": max_fanout,
+        "attempted_nets": candidates,
+        "changed": changed,
+        "skipped": skipped,
+        "num_changed_nets": len(changed),
+        "num_inserted_buffers": sum(item.get("num_inserted_buffers", 0) for item in changed),
+        "final_max_fanout": _max_fanout(design),
+    }
+
+
+@_rebuild_graph_after_transform
+def optimize_design_depth(design: Design, max_depth: int | None = None) -> dict:
+    """Run conservative cone optimization on each primary output, largest cones first."""
+    if max_depth is not None and max_depth < 0:
+        raise ValueError("optimize_design_depth requires max_depth >= 0 when provided.")
+
+    reports = primary_output_cone_sizes(design)
+    outputs = [name for name, _ in sorted(reports.items(), key=lambda item: item[1]["num_gates"], reverse=True)]
+    changed: list[dict[str, Any]] = []
+    initial_gate_count = len(design.gates)
+    initial_depth = _design_max_depth(design)
+
+    for output in outputs:
+        result = optimize_cone(design, output, max_depth=max_depth, minimize_gate_count=True)
+        if result.get("num_changed", 0):
+            changed.append(result)
+
+    return {
+        "max_depth": max_depth,
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": len(design.gates),
+        "initial_depth": initial_depth,
+        "final_depth": _design_max_depth(design),
+        "changed": changed,
+        "num_changed_outputs": len(changed),
+    }
+
+
+@_rebuild_graph_after_transform
+def replace_xnor_nor_with_basic_gates(design: Design) -> dict:
+    """Rewrite XNOR and NOR gates as XOR/NOT and OR/NOT structures."""
+    changed: list[dict[str, Any]] = []
+    for name in sorted(list(design.gates)):
+        gate = design.gates.get(name)
+        if gate is None or gate.type not in {"xnor", "nor"} or len(gate.inputs) != 2:
+            continue
+        old_type = gate.type
+        mid_net = design.make_unique_wire_name(f"{name}_{old_type}_pre")
+        out_net = gate.output
+        gate.output = mid_net
+        gate.type = "xor" if old_type == "xnor" else "or"
+        inv_name = design.make_unique_gate_name(f"{name}_{old_type}_not")
+        design.add_gate(Gate(name=inv_name, type="not", inputs=[mid_net], output=out_net))
+        changed.append({"rewritten_gate": name, "old_type": old_type, "added_gate": inv_name, "added_net": mid_net})
+    return {"changed": changed, "num_changed": len(changed)}
+
+
+@_rebuild_graph_after_transform
+def replace_and_not_with_nand(design: Design) -> dict:
+    """Rewrite AND/NOT gates into NAND-only structures."""
+    changed: list[dict[str, Any]] = []
+    for name in sorted(list(design.gates)):
+        gate = design.gates.get(name)
+        if gate is None:
+            continue
+        if gate.type == "not" and len(gate.inputs) == 1:
+            gate.type = "nand"
+            gate.inputs = [gate.inputs[0], gate.inputs[0]]
+            changed.append({"rewritten_gate": name, "old_type": "not", "added_gates": []})
+        elif gate.type == "and" and len(gate.inputs) == 2:
+            out_net = gate.output
+            mid_net = design.make_unique_wire_name(f"{name}_nand_pre")
+            gate.type = "nand"
+            gate.output = mid_net
+            inv_name = design.make_unique_gate_name(f"{name}_nand_restore")
+            design.add_gate(Gate(name=inv_name, type="nand", inputs=[mid_net, mid_net], output=out_net))
+            changed.append({"rewritten_gate": name, "old_type": "and", "added_gates": [inv_name], "added_nets": [mid_net]})
+    return {"changed": changed, "num_changed": len(changed)}
+
+
+@_rebuild_graph_after_transform
+def merge_equivalent_gates(design: Design) -> dict:
+    """Merge structurally identical primitive gates when the duplicate output is internal."""
+    rebuild_graph(design)
+    canonical_by_key: dict[tuple[str, tuple[str, ...]], str] = {}
+    changed: list[dict[str, Any]] = []
+    commutative = {"and", "or", "nand", "nor", "xor", "xnor"}
+
+    for name in sorted(list(design.gates)):
+        gate = design.gates.get(name)
+        if gate is None:
+            continue
+        inputs = tuple(sorted(gate.inputs)) if gate.type in commutative else tuple(gate.inputs)
+        key = (gate.type, inputs)
+        canonical_name = canonical_by_key.get(key)
+        if canonical_name is None:
+            canonical_by_key[key] = name
+            continue
+        canonical = design.gates.get(canonical_name)
+        if canonical is None or gate.output in design.outputs:
+            continue
+        for sink in list(design.fanouts.get(gate.output, [])):
+            if sink.startswith("PO:"):
+                break
+        else:
+            for sink in list(design.fanouts.get(gate.output, [])):
+                _redirect_sink(design, sink, old_net=gate.output, new_net=canonical.output)
+            removed_output = gate.output
+            del design.gates[name]
+            _discard_internal_wire(design, removed_output)
+            changed.append({"removed_gate": name, "canonical_gate": canonical_name, "redirected_net": removed_output, "replacement_net": canonical.output})
+            rebuild_graph(design)
+
+    return {"changed": changed, "num_merged": len(changed)}
 def _redirect_sink(design: Design, sink: str, old_net: str, new_net: str) -> None:
     kind, name = sink.split(":", 1)
     if kind == "GATE":
@@ -881,6 +1048,15 @@ def _referenced_as_internal_net(design: Design, net: str) -> bool:
     return False
 
 
+def _design_max_depth(design: Design) -> int:
+    sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
+    max_seen = 0
+    for source in sorted(sources):
+        for output in sorted(design.outputs):
+            depth, path = max_depth(design, source, output)
+            if path:
+                max_seen = max(max_seen, depth)
+    return max_seen
 def _cone_max_depth(design: Design, target: str) -> int:
     sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
     depths = []
