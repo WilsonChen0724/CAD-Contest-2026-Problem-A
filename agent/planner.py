@@ -231,7 +231,16 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
 
         return {"op": "replace_buffers_with_and", "args": args}
 
-    if any(word in low for word in ("remove", "eliminate", "delete")) and ("dangling" in low or "unused" in low):
+    if (
+        any(word in low for word in ("remove", "eliminate", "delete", "sweep", "prune"))
+        and (
+            "dangling" in low
+            or "unused" in low
+            or "do not contribute" in low
+            or "does not contribute" in low
+            or "not contribute" in low
+        )
+    ):
         return {"op": "remove_dangling", "args": {}}
 
     if (
@@ -262,7 +271,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
     if (
         any(word in low for word in ("insert", "add", "build"))
         and ("buffer" in low or "buffers" in low)
-        and ("fanout" in low or "fan-out" in low)
+        and ("fanout" in low or "fan-out" in low or "loads" in low or "drives more than" in low)
     ):
         max_fanout = _extract_limit_int(text)
         if (
@@ -275,6 +284,8 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
                 or "entire design" in low
                 or "across the design" in low
                 or "wherever" in low
+                or "wherever needed" in low
+                or "no gate drives more than" in low
             )
         ):
             return {"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": max_fanout}}
@@ -293,6 +304,17 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
                 "args": {"src": src, "dsts": dsts, "minimize_buffers": True},
             }
 
+    if (
+        ("for each output" in low or "each output" in low)
+        and "optimize" in low
+        and "depth" in low
+    ):
+        args: dict[str, Any] = {}
+        max_allowed_depth = _extract_limit_int(text)
+        if max_allowed_depth is not None:
+            args["max_depth"] = max_allowed_depth
+        return {"op": "optimize_design_depth", "args": args}
+
     if "optimize" in low and ("logic cone" in low or "cone" in low):
         target = _extract_after_keyword(text, "cone of") or _extract_after_keyword(text, "of")
         target = target or _extract_after_keyword(text, "target") or _extract_after_keyword(text, "for")
@@ -307,6 +329,15 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
                     args["max_depth"] = max_allowed_depth
             return {"op": "optimize_cone", "args": args}
 
+    if "optimize" in low and re.search(r"\b[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?\b", text):
+        target = _extract_after_keyword(text, "optimize")
+        if target and target.lower() not in {"logic", "the", "design", "its"}:
+            args: dict[str, Any] = {"target": target, "minimize_gate_count": True}
+            max_allowed_depth = _extract_limit_int(text)
+            if max_allowed_depth is not None:
+                args["max_depth"] = max_allowed_depth
+            return {"op": "optimize_cone", "args": args}
+
     if (
         any(word in low for word in ("insert", "add"))
         and ("buf" in low or "buffer" in low)
@@ -319,8 +350,15 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
 
     if (
         ("optimize" in low or "optimization" in low)
-        and "depth" in low
-        and ("design" in low or "combinational logic" in low or "perform depth" in low)
+        and ("depth" in low or "critical path" in low or "maximum path" in low)
+        and (
+            "design" in low
+            or "logic" in low
+            or "combinational logic" in low
+            or "perform depth" in low
+            or "critical path" in low
+            or "maximum path" in low
+        )
     ):
         args = {}
         max_allowed_depth = _extract_limit_int(text)
