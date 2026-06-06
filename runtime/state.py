@@ -16,6 +16,8 @@ class CurrentState:
     original_design: Design | None = None
     design_path: Path | None = None
     previous_results: dict[str, Any] = field(default_factory = dict)
+    last_transform_result: dict[str, Any] | None = None
+    last_transform_input: Design | None = None
     log_path: Path | None = None
     output_dir: Path = Path("output")
     log_dir: Path = Path("output/logs")
@@ -28,6 +30,8 @@ class CurrentState:
         self.original_design = None
         self.design_path = None
         self.previous_results.clear()
+        self.last_transform_result = None
+        self.last_transform_input = None
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.log_dir / f"{case_name}.log"

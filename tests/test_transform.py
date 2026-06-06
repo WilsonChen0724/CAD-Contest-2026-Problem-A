@@ -8,9 +8,12 @@ from eda.graph import rebuild_graph
 from eda.analysis import max_depth
 from eda.transform import (
     balance_depth_with_buffers,
+    collapse_back_to_back_inverters,
     constant_propagation,
+    insert_dedicated_buffers_for_each_load,
     insert_buffers_for_fanout,
     optimize_cone,
+    replace_nand_const1_with_not,
     remove_dangling,
     rename_net,
     replace_buffers_with_and,
@@ -72,6 +75,20 @@ class TransformTest(unittest.TestCase):
         self.assertIn("U_inv", design.gates)
         self.assertEqual(design.gates["U_buf"].type, "buf")
 
+    def test_collapse_back_to_back_inverters(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="not", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["n0"], output="y"))
+        before = deepcopy(design)
+
+        result = collapse_back_to_back_inverters(design)
+
+        self.assertEqual(result["num_changed"], 1)
+        self.assertNotIn("U0", design.gates)
+        self.assertEqual(design.gates["U1"].type, "buf")
+        self.assertEqual(design.gates["U1"].inputs, ["a"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+
     def test_replace_or_with_nand_not_rewrites_only_target_cone(self) -> None:
         design = Design(inputs={"a", "b", "c"}, outputs={"flag", "other"})
         design.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="flag"))
@@ -106,6 +123,20 @@ class TransformTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "max_fanout >= 2"):
             insert_buffers_for_fanout(design, "src", 1)
+
+    def test_insert_dedicated_buffers_for_each_load(self) -> None:
+        design = Design(inputs={"src"}, outputs={"y0", "y1"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["src"], output="y0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="y1"))
+        before = deepcopy(design)
+
+        result = insert_dedicated_buffers_for_each_load(design, "src")
+
+        self.assertEqual(result["num_inserted_buffers"], 2)
+        self.assertEqual(len(design.fanouts["src"]), 2)
+        self.assertTrue(all(sink.startswith("GATE:") for sink in design.fanouts["src"]))
+        self.assertNotEqual(design.gates["U0"].inputs, ["src"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
 
     def test_balance_depth_with_buffers_equalizes_endpoint_depths(self) -> None:
         design = Design(inputs={"src"}, outputs={"y0", "y1", "y2"})
@@ -186,6 +217,18 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["num_changed"], 1)
         self.assertEqual(design.gates["U_and"].type, "buf")
         self.assertEqual(design.gates["U_and"].inputs, ["1'b0"])
+
+    def test_replace_nand_const1_with_not_rewrites_specific_identity(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y", "z"})
+        design.add_gate(Gate(name="U_nand1", type="nand", inputs=["a", "1'b1"], output="y"))
+        design.add_gate(Gate(name="U_nand0", type="nand", inputs=["b", "1'b0"], output="z"))
+
+        result = replace_nand_const1_with_not(design)
+
+        self.assertEqual(result["num_changed"], 1)
+        self.assertEqual(design.gates["U_nand1"].type, "not")
+        self.assertEqual(design.gates["U_nand1"].inputs, ["a"])
+        self.assertEqual(design.gates["U_nand0"].type, "nand")
 
 
 if __name__ == "__main__":

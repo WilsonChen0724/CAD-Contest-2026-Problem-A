@@ -1,0 +1,78 @@
+[llm-tool-call]
+{
+  "arguments": {
+    "steps": [
+      {
+        "args": {
+          "case_name": "test01"
+        },
+        "op": "begin_testcase",
+        "save_as": null
+      }
+    ]
+  },
+  "event": "openai_domain_tool_call",
+  "normalized_plan": {
+    "steps": [
+      {
+        "args": {
+          "case_name": "test01"
+        },
+        "op": "begin_testcase"
+      }
+    ]
+  },
+  "tool": "run_design_io_plan"
+}
+[llm-tool-call]
+{
+  "arguments": {
+    "steps": [
+      {
+        "args": {
+          "path": "testcase/test01/test01.v"
+        },
+        "op": "read_design",
+        "save_as": null
+      }
+    ]
+  },
+  "event": "openai_domain_tool_call",
+  "normalized_plan": {
+    "steps": [
+      {
+        "args": {
+          "path": "testcase/test01/test01.v"
+        },
+        "op": "read_design"
+      }
+    ]
+  },
+  "tool": "run_design_io_plan"
+}
+[llm-tool-call]
+{
+  "arguments": {
+    "steps": [
+      {
+        "args": {
+          "path": "test01_out.v"
+        },
+        "op": "write_design",
+        "save_as": null
+      }
+    ]
+  },
+  "event": "openai_domain_tool_call",
+  "normalized_plan": {
+    "steps": [
+      {
+        "args": {
+          "path": "test01_out.v"
+        },
+        "op": "write_design"
+      }
+    ]
+  },
+  "tool": "run_design_io_plan"
+}

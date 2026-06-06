@@ -4,10 +4,18 @@ import unittest
 
 from eda.analysis import (
     all_paths_pass_through,
+    constant_input_gates,
     dff_relationships,
     fanout_cone,
+    gate_on_max_depth_path,
+    derive_boolean_equation,
+    io_counts,
+    max_depth_to_dff_d,
     max_depth,
+    outputs_depth_greater_than,
     primary_output_cone_sizes,
+    register_to_register_paths,
+    shared_fanin_cone_gates,
 )
 from eda.design import DFF, Design, Gate
 
@@ -66,6 +74,16 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(cone["primary_outputs"], ["out"])
         self.assertEqual(cone["dff_sinks"], ["FF1"])
 
+    def test_constant_input_gates(self) -> None:
+        design = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
+        design.add_gate(Gate(name="U0", type="nand", inputs=["a", "1'b1"], output="y"))
+        design.add_gate(Gate(name="U1", type="and", inputs=["a", "z"], output="z"))
+
+        report = constant_input_gates(design, gate_type="nand")
+
+        self.assertEqual(report["num_gates"], 1)
+        self.assertEqual(report["gates"][0]["name"], "U0")
+
     def test_primary_output_cone_sizes(self) -> None:
         design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})
         design.add_gate(Gate(name="U1", type="and", inputs=["a", "b"], output="n1"))
@@ -77,6 +95,21 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(report["y0"]["num_gates"], 2)
         self.assertEqual(report["y1"]["num_gates"], 1)
         self.assertEqual(report["y0"]["gates"], ["U1", "U2"])
+
+    def test_io_counts(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+
+        self.assertEqual(io_counts(design)["num_inputs"], 2)
+        self.assertEqual(io_counts(design)["num_outputs"], 1)
+
+    def test_gate_on_max_depth_path(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"y", "z"})
+        design.add_gate(Gate(name="U_short", type="buf", inputs=["b"], output="z"))
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["n0"], output="y"))
+
+        self.assertTrue(gate_on_max_depth_path(design, "U0")["on_max_depth_path"])
+        self.assertFalse(gate_on_max_depth_path(design, "U_short")["on_max_depth_path"])
 
     def test_dff_relationships_basic_clock_domains(self) -> None:
         design = Design(module_name="top", inputs={"a", "clk"}, outputs={"out"})
@@ -92,6 +125,47 @@ class AnalysisTest(unittest.TestCase):
         self.assertIn({"src_dff": "FF0", "dst_dff": "FF1"}, report["dff_to_dff"])
         self.assertIn({"src_input": "a", "dst_dff": "FF0"}, report["pi_to_dff"])
         self.assertIn({"src_dff": "FF1", "dst_output": "out"}, report["dff_to_primary_output"])
+
+    def test_register_to_register_paths(self) -> None:
+        design = Design(module_name="top", inputs={"a", "clk"}, outputs={"out"})
+        design.add_dff(DFF(name="FF0", d="a", q="q0", clk="clk"))
+        design.add_gate(Gate(name="U0", type="buf", inputs=["q0"], output="d1"))
+        design.add_dff(DFF(name="FF1", d="d1", q="q1", clk="clk"))
+
+        report = register_to_register_paths(design)
+
+        self.assertEqual(report["num_paths"], 1)
+        self.assertEqual(report["paths"][0]["src_dff"], "FF0")
+        self.assertEqual(report["paths"][0]["dst_dff"], "FF1")
+
+    def test_shared_fanin_cone_gates(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})
+        design.add_gate(Gate(name="U_shared", type="and", inputs=["a", "b"], output="n0"))
+        design.add_gate(Gate(name="U0", type="buf", inputs=["n0"], output="y0"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["n0"], output="y1"))
+
+        report = shared_fanin_cone_gates(design, "y0", "y1")
+
+        self.assertEqual(report["shared_gates"], ["U_shared"])
+
+    def test_derive_boolean_equation(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="nand", inputs=["a", "b"], output="y"))
+
+        report = derive_boolean_equation(design, "y")
+
+        self.assertEqual(report["expression"], "!(a & b)")
+
+    def test_max_depth_to_dff_d_and_output_depth_threshold(self) -> None:
+        design = Design(module_name="top", inputs={"a", "clk"}, outputs={"y0", "y1"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["n0"], output="d0"))
+        design.add_dff(DFF(name="FF0", d="d0", q="q0", clk="clk"))
+        design.add_gate(Gate(name="U2", type="buf", inputs=["q0"], output="y0"))
+        design.add_gate(Gate(name="U3", type="buf", inputs=["a"], output="y1"))
+
+        self.assertEqual(max_depth_to_dff_d(design)["max_depth"], 2)
+        self.assertEqual(outputs_depth_greater_than(design, 0)["num_outputs"], 2)
 
 
 if __name__ == "__main__":

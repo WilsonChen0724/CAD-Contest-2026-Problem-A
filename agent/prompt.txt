@@ -15,6 +15,7 @@ Hard rules:
 - Never fill required arguments with an empty string. If the request does not name the required net, target, src, dst, gate, or instance, return unsupported.
 - Use whole-design transform ops only when they are explicitly supported by the selected tool schema. Current whole-design transforms include insert_buffers_for_all_high_fanout, optimize_design_depth, constant_propagation, replace_xnor_nor_with_basic_gates, replace_and_not_with_nand, and merge_equivalent_gates.
 - Rename gate/DFF instances with rename_gate. Rename wires, nets, and signals with rename_net. Do not use rename_net for gate instance names.
+- For "always 0/1 regardless of all inputs" questions, use check_equivalence with expr "0" or "1"; do not use check_property.
 
 Choose exactly one domain tool:
 - run_design_io_plan: begin_testcase, read_design, write_design.
@@ -49,8 +50,10 @@ Common mappings:
 - Replace the found buffers with AND -> replace_buffers_with_and with {"targets_from": "found_buffers", "extra_input": "_gc_ctrl"}.
 - Remove dangling or unused gates/nets -> remove_dangling with {}.
 - Replace inverter followed by buffer -> replace_inv_buf_with_inv with {}.
+- Collapse back-to-back inverter pairs -> collapse_back_to_back_inverters with {}.
 - Replace OR gates in cone T with NAND/NOT -> replace_or_with_nand_not with {"cone_target": "T"}.
 - Insert buffers on high-fanout net X so fanout <= N -> insert_buffers_for_fanout with {"net": "X", "max_fanout": N}.
+- Insert one dedicated BUF per load of signal X -> insert_dedicated_buffers_for_each_load with {"net": "X"}.
 - Balance depths from source S to destinations A,B with buffers -> balance_depth_with_buffers with {"src": "S", "dsts": ["A", "B"], "minimize_buffers": true}.
 - Optimize logic cone of target T with max depth N and minimized gate count -> optimize_cone with {"target": "T", "max_depth": N, "minimize_gate_count": true}.
 - Optimize fanout across the design so fanout <= N -> insert_buffers_for_all_high_fanout with {"max_fanout": N}.
@@ -67,15 +70,29 @@ Common mappings:
 - Fanin cone of target T -> logic_cone with {"target": "T"}.
 - Count all gates by type -> report_gate_counts with {}.
 - Direct fanout of net X -> report_fanout with {"net": "X"}.
+- Primary input with the highest fanout -> report_highest_fanout_primary_input with {}.
 - Gate type and pin connections of instance U -> report_gate_connections with {"gate": "U"}.
 - Report primary outputs whose logic cone contains more than N gates -> report_outputs_by_cone_size with {"min_gates": N}.
+- Count primary inputs and outputs -> report_io_counts with {}.
+- Transitive fanout or gates reachable from source S -> report_fanout_cone with {"source": "S"}.
+- Report gates with constant input pins -> report_constant_input_gates with {"gate_type": null}; use {"gate_type": "nand"} for NAND-only questions.
+- Check whether gate G lies on a maximum-depth path -> gate_on_max_depth_path with {"gate": "G"}.
+- Articulation points between A and B -> report_articulation_points with {"src": "A", "dst": "B"}.
+- Shared gates between fanin cones of A and B -> report_shared_fanin_cone_gates with {"target_a": "A", "target_b": "B"}.
+- Derive Boolean equation for target T -> derive_boolean_equation with {"target": "T"}.
+- Maximum logic depth from any primary input to any DFF D-pin -> report_max_depth_to_dff_d with {}.
+- Outputs with logic depth greater than N -> report_outputs_depth_greater_than with {"min_depth": N}.
+- How many BUF gates were added by the previous transform -> report_last_transform_stats with {}.
 - Check whether DFF A and DFF B are in the same clock domain -> same_clock_domain with {"dff_a": "A", "dff_b": "B"}.
 - List register-to-register paths -> report_register_paths with {}.
 - Check connectivity -> check_connectivity with {}.
 - Check fanout <= N -> check_fanout with {"max_fanout": N}.
 - Check depth from A to B <= N -> check_depth with {"src": "A", "dst": "B", "max_depth": N}.
 - Check whether the current design is equivalent to the original loaded netlist -> check_equivalent_to_original with {}.
+- Prove transformed design is equivalent to pre-transformation netlist -> check_equivalent_to_last_transform_input with {}.
 - Check whether expression E is equivalent to target T -> check_equivalence with {"expr": "E", "target": "T"}.
+- Check whether output/signal T is always 0 -> check_equivalence with {"expr": "0", "target": "T"}.
+- Check whether output/signal T is always 1 -> check_equivalence with {"expr": "1", "target": "T"}.
 - Check whether target T satisfies property P -> check_property with {"target": "T", "property": "P"}.
 
 Important state conventions:

@@ -33,10 +33,15 @@ Implemented or partially implemented:
 - Gate-count report by primitive type.
 - Direct fanout reporting for both nets and gate/DFF instances.
 - Gate/DFF connection reports with pin connections and output fanout.
+- Primary input/output count report.
 - Single path search and avoid-path checks.
 - Maximum combinational gate-depth calculation.
+- Global maximum-depth-path membership check for one gate.
 - Fanin cone collection.
+- Transitive fanout cone reporting.
 - Primary-output cone-size report.
+- Register-to-register path reporting with a practical output cap.
+- Constant-input gate reporting.
 - Gate search by type or name substring.
 - Same-clock-domain structural DFF check.
 - Connectivity, fanout-bound, and depth-bound checks.
@@ -44,14 +49,11 @@ Implemented or partially implemented:
 Important gaps:
 
 - Complete path enumeration, not only one example path.
-- Transitive fanout cone reporting is implemented as a helper but is not yet
-  exposed as a Tool API operation.
 - Cone-local gate type counts, such as "number of each gate type in the cone of
   n8".
 - Output ranking queries, such as largest fanin cone or deepest fanin cone.
 - More complete structural reports, such as primary input/output widths,
-  floating inputs, unconnected outputs, cut/articulation points, and
-  register-to-register paths.
+  floating inputs, unconnected outputs, and cut/articulation points.
 
 ### Formal Verification
 
@@ -88,6 +90,8 @@ Implemented first version:
   under connectivity and equivalence guards. Backend and deterministic planner
   support are implemented first; OpenAI `tool_schema.py` exposure is pending
   team approval.
+- `replace_nand_const1_with_not`: local rewrite for 2-input NAND gates with one
+  constant-1 input.
 - `replace_buffers_with_and`: selected function-changing buffer-to-AND rewrite.
 - `remove_dangling`: remove logic not contributing to primary outputs.
 - `replace_inv_buf_with_inv`: collapse inverter-buffer chains.
@@ -117,10 +121,15 @@ Mostly covered or partially covered:
 - Basic testcase setup, design load, and design write.
 - Gate-count report by type.
 - Direct fanout and immediate successor reports for nets and gate instances.
+- Transitive fanout cone reports.
 - Rename net.
 - Original-loaded-netlist equivalence checks.
 - Path existence and avoid-path questions.
 - Fanin cone and max-depth questions.
+- Gate-on-maximum-depth-path membership questions.
+- Primary input/output count questions.
+- Register-to-register structural path reports with a response cap.
+- Constant-input NAND reporting and simple NAND-constant-1 rewriting.
 - Combinational signal equivalence questions.
 - Fanout optimization with inserted buffers.
 - Dangling or unused logic removal.
@@ -130,10 +139,9 @@ Not yet covered enough:
 
 - Named-pin DFF parsing for later release cases.
 - Complete enumeration of all paths.
-- Transitive fanout cone reports.
 - Cone-local gate type counts.
 - Rename gate.
-- Constant propagation for gates with tied constants.
+- Broader constant propagation cleanup after reported gate subsets.
 - Boolean equation derivation.
 - Full technology mapping and resynthesis-style restructuring.
 - Cut/articulation analysis.
@@ -148,8 +156,6 @@ Not yet covered enough:
     `RESET`.
   - Keep DFFs as combinational boundaries; no multi-cycle sequential reasoning
     is required.
-- `fanout_cone`
-  - Expose existing helper as a Tool API operation for reachable-gate prompts.
 - `all_paths`
   - Enumerate combinational paths with practical limits to avoid path explosion.
 - cone-local structural reports
@@ -172,6 +178,19 @@ Not yet covered enough:
   - Store an original design snapshot after `read_design`.
   - Compare current design against the original snapshot using the existing
     combinational `check_design_equivalence`.
+- `report_fanout_cone`
+  - Expose transitive reachable-gate reports for prompts such as "gates
+    reachable from primary input n0".
+- `report_io_counts`
+  - Report primary input/output counts.
+- `gate_on_max_depth_path`
+  - Determine whether a gate lies on a global maximum-depth combinational path.
+- `report_register_paths`
+  - Report DFF-Q to DFF-D combinational paths with capped output.
+- `report_constant_input_gates`
+  - Report NAND or other gates with constant inputs.
+- `replace_nand_const1_with_not`
+  - Rewrite the structural identity `nand(x, 1) -> not(x)`.
 
 ### P1: Common Testcase Requests
 

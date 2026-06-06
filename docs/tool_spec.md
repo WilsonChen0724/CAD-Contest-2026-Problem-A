@@ -220,6 +220,27 @@ Input:
 Output includes load count, unique sink count, gate/DFF/primary-output sinks,
 and consumed input pins when applicable.
 
+### report_fanout_cone
+
+Report the transitive combinational fanout cone from a source net.
+
+Input:
+
+```json
+{
+  "op": "report_fanout_cone",
+  "args": {
+    "source": "n0"
+  }
+}
+```
+
+Rules:
+
+- Traverse through primitive combinational gates.
+- Stop at DFF input pins and primary outputs.
+- Return reachable gates, reached nets, primary-output endpoints, and DFF sinks.
+
 ### report_gate_connections
 
 Report one gate or DFF instance's type, pin connections, and output fanout.
@@ -250,6 +271,159 @@ Input:
   }
 }
 ```
+
+### report_io_counts
+
+Report the number of primary inputs and primary outputs.
+
+Input:
+
+```json
+{
+  "op": "report_io_counts",
+  "args": {}
+}
+```
+
+### gate_on_max_depth_path
+
+Check whether one gate lies on any maximum-depth combinational path in the
+design.
+
+Input:
+
+```json
+{
+  "op": "gate_on_max_depth_path",
+  "args": {
+    "gate": "g0"
+  }
+}
+```
+
+Rules:
+
+- Sources are primary inputs and DFF Q pins.
+- Endpoints are primary outputs and DFF D pins.
+- DFFs are still treated as sequential boundaries.
+
+### report_shared_fanin_cone_gates
+
+Report gates shared by two transitive fanin cones.
+
+Input:
+
+```json
+{
+  "op": "report_shared_fanin_cone_gates",
+  "args": {
+    "target_a": "n16",
+    "target_b": "n17"
+  }
+}
+```
+
+### derive_boolean_equation
+
+Derive a structural Boolean equation for a target when tractable.
+
+Input:
+
+```json
+{
+  "op": "derive_boolean_equation",
+  "args": {
+    "target": "n16"
+  }
+}
+```
+
+Rules:
+
+- Primary inputs and DFF Q pins are symbolic boundaries.
+- Large expressions may be truncated.
+
+### report_max_depth_to_dff_d
+
+Report the maximum combinational depth from any primary input to any DFF D pin.
+
+Input:
+
+```json
+{
+  "op": "report_max_depth_to_dff_d",
+  "args": {}
+}
+```
+
+### report_outputs_depth_greater_than
+
+Report primary outputs whose structural logic depth is greater than a threshold.
+
+Input:
+
+```json
+{
+  "op": "report_outputs_depth_greater_than",
+  "args": {
+    "min_depth": 4
+  }
+}
+```
+
+### report_last_transform_stats
+
+Report stats from the previous successful transform.
+
+Input:
+
+```json
+{
+  "op": "report_last_transform_stats",
+  "args": {}
+}
+```
+
+### report_register_paths
+
+Report register-to-register paths through combinational logic.
+
+Input:
+
+```json
+{
+  "op": "report_register_paths",
+  "args": {
+    "max_paths": 200
+  }
+}
+```
+
+Rules:
+
+- `max_paths` is optional.
+- Traversal starts at DFF Q pins and stops at downstream DFF D pins.
+- Output may be capped to avoid path explosion on large designs.
+
+### report_constant_input_gates
+
+Report gates with one or more constant inputs.
+
+Input:
+
+```json
+{
+  "op": "report_constant_input_gates",
+  "args": {
+    "gate_type": "nand"
+  }
+}
+```
+
+Rules:
+
+- `gate_type` is optional.
+- Constants currently include `1'b0`, `1'b1`, `0`, and `1`.
 
 ### find_gates
 
@@ -366,6 +540,26 @@ Safety condition:
 - Intermediate net must have only the buffer as fanout.
 - The replacement must preserve the final output net value.
 
+### collapse_back_to_back_inverters
+
+Collapse safe NOT followed by NOT chains into direct wiring.
+
+Input:
+
+```json
+{
+  "op": "collapse_back_to_back_inverters",
+  "args": {}
+}
+```
+
+Rules:
+
+- The intermediate net between the two inverters must have only the second
+  inverter as fanout.
+- If the second inverter drives a primary output net, it is rewritten as a BUF
+  to preserve the output driver name.
+
 ### replace_or_with_nand_not
 
 Replace 2-input OR gates in a cone with NAND/NOT equivalent logic.
@@ -395,6 +589,39 @@ not U_nb(nb, b);
 nand U_nand(y, na, nb);
 ```
 
+### replace_nand_const1_with_not
+
+Replace 2-input NAND gates that have one constant-1 input with inverters.
+
+Input:
+
+```json
+{
+  "op": "replace_nand_const1_with_not",
+  "args": {}
+}
+```
+
+Rewrite:
+
+```verilog
+nand U(y, a, 1'b1);
+```
+
+becomes:
+
+```verilog
+not U(y, a);
+```
+
+Rules:
+
+- Only rewrites 2-input NAND gates with exactly one non-constant data input and
+  one constant-1 input.
+- The output net and instance name are preserved.
+- This local identity is function-preserving; transactional connectivity guards
+  must not allow new connectivity regressions.
+
 ### insert_buffers_for_fanout
 
 Insert buffer stages on a high-fanout net so every driven gate fanout is at most
@@ -417,6 +644,27 @@ Rules:
 - Preserve logical functionality.
 - Report number of inserted buffers and final maximum fanout.
 - Commit only after connectivity, equivalence, and fanout-bound checks pass.
+
+### insert_dedicated_buffers_for_each_load
+
+Insert one dedicated BUF per current direct load of a net or signal.
+
+Input:
+
+```json
+{
+  "op": "insert_dedicated_buffers_for_each_load",
+  "args": {
+    "net": "n2"
+  }
+}
+```
+
+Rules:
+
+- Gate and DFF input sinks are redirected through dedicated buffer output nets.
+- Primary-output sinks are left direct in the current implementation.
+- Commit only after connectivity and combinational equivalence checks pass.
 
 ### balance_depth_with_buffers
 
@@ -591,6 +839,25 @@ Rules:
 - Scope is combinational-only.
 - DFFs are treated as boundaries.
 - Multi-cycle sequential equivalence is intentionally out of scope for now.
+
+### check_equivalent_to_last_transform_input
+
+Check whether the current design is equivalent to the design state immediately
+before the previous successful transform.
+
+Input:
+
+```json
+{
+  "op": "check_equivalent_to_last_transform_input",
+  "args": {}
+}
+```
+
+Rules:
+
+- Scope is combinational-only.
+- DFFs are treated as boundaries.
 
 ### check_equivalence
 

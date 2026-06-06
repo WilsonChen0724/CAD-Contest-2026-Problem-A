@@ -23,6 +23,7 @@ from eda.graph import rebuild_graph
 # day 7: optimize_cone
 # day 8: safe net rename
 # day 9: constant propagation
+# day 10: NAND const-1 to inverter rewrite
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -332,6 +333,27 @@ def constant_propagation(design: Design) -> dict:
 
 
 @_rebuild_graph_after_transform
+def replace_nand_const1_with_not(design: Design) -> dict:
+    """Rewrite 2-input NAND gates with one constant-1 input into inverters."""
+    changed: list[dict[str, str]] = []
+    for gate in design.gates.values():
+        if gate.type != "nand" or len(gate.inputs) != 2:
+            continue
+        a, b = gate.inputs
+        if _is_const_true(a) and not is_constant(b):
+            gate.type = "not"
+            gate.inputs = [b]
+        elif _is_const_true(b) and not is_constant(a):
+            gate.type = "not"
+            gate.inputs = [a]
+        else:
+            continue
+        changed.append({"gate": gate.name, "replacement": "not", "output": gate.output})
+
+    return {"changed": changed, "num_changed": len(changed)}
+
+
+@_rebuild_graph_after_transform
 def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict:
     """
     Insert a balanced buffer tree so the selected net's fanout stays bounded.
@@ -357,6 +379,7 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
             "inserted_buffers": [],
             "inserted_nets": [],
             "num_inserted_buffers": 0,
+            "final_net_fanout": len(design.fanouts.get(net, [])),
             "final_max_fanout": _max_fanout(design),
         }
 
@@ -371,7 +394,7 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
 
     def add_buffer(source_net: str) -> str:
         buffer_net = design.make_unique_wire_name(f"{net}_fanout_buf")
-        buffer_name = design.make_unique_gate_name(f"{net}_fanout_buf")
+        buffer_name = design.make_unique_gate_name(f"{net}_fanout_buf_gate")
         design.add_gate(Gate(name=buffer_name, type="buf", inputs=[source_net], output=buffer_net))
         inserted_buffers.append(buffer_name)
         inserted_nets.append(buffer_net)
@@ -403,8 +426,69 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
         "inserted_buffers": inserted_buffers,
         "inserted_nets": inserted_nets,
         "num_inserted_buffers": len(inserted_buffers),
+        "final_net_fanout": len(design.fanouts.get(net, [])),
         "final_max_fanout": _max_fanout(design),
     }
+
+
+@_rebuild_graph_after_transform
+def insert_dedicated_buffers_for_each_load(design: Design, net: str) -> dict:
+    """
+    Insert one BUF per current direct load of a net.
+
+    Gate and DFF input sinks are redirected through dedicated new buffer output
+    nets. Primary-output sinks are left direct because preserving a primary
+    output name while inserting a buffer requires replacing the existing driver,
+    which is a different transform.
+    """
+    rebuild_graph(design)
+    if net not in design.all_nets():
+        raise ValueError(f'Net not found: "{net}"')
+
+    original_sinks = list(design.fanouts.get(net, []))
+    inserted_buffers: list[str] = []
+    inserted_nets: list[str] = []
+    skipped_sinks: list[str] = []
+
+    for sink in original_sinks:
+        if sink.startswith("PO:"):
+            skipped_sinks.append(sink)
+            continue
+        buffer_net = design.make_unique_wire_name(f"{net}_dedicated_buf")
+        buffer_name = design.make_unique_gate_name(f"{net}_dedicated_buf_gate")
+        design.add_gate(Gate(name=buffer_name, type="buf", inputs=[net], output=buffer_net))
+        _redirect_sink(design, sink, old_net=net, new_net=buffer_net)
+        inserted_buffers.append(buffer_name)
+        inserted_nets.append(buffer_net)
+
+    rebuild_graph(design)
+    return {
+        "net": net,
+        "original_loads": len(original_sinks),
+        "inserted_buffers": inserted_buffers,
+        "inserted_nets": inserted_nets,
+        "skipped_sinks": skipped_sinks,
+        "num_inserted_buffers": len(inserted_buffers),
+        "final_direct_loads": len(design.fanouts.get(net, [])),
+    }
+
+
+@_rebuild_graph_after_transform
+def collapse_back_to_back_inverters(design: Design) -> dict:
+    """Collapse safe NOT->NOT chains by reconnecting downstream sinks."""
+    changed: list[dict[str, Any]] = []
+    max_iterations = max(1, len(design.gates) + 1)
+
+    for _ in range(max_iterations):
+        rebuild_graph(design)
+        rewrite = _collapse_one_back_to_back_inverter(design)
+        if rewrite is None:
+            break
+        changed.append(rewrite)
+    else:
+        raise RuntimeError("collapse_back_to_back_inverters did not converge.")
+
+    return {"changed": changed, "num_changed": len(changed)}
 
 
 @_rebuild_graph_after_transform
@@ -512,20 +596,36 @@ def optimize_cone(
 
 
 @_rebuild_graph_after_transform
-def insert_buffers_for_all_high_fanout(design: Design, max_fanout: int) -> dict:
+def insert_buffers_for_all_high_fanout(
+    design: Design,
+    max_fanout: int,
+    max_changed_nets: int | None = None,
+) -> dict:
     """Apply fanout buffering to every net currently exceeding max_fanout."""
     if max_fanout < 2:
         raise ValueError("insert_buffers_for_all_high_fanout requires max_fanout >= 2.")
 
     rebuild_graph(design)
     candidates = sorted(
-        net for net, sinks in design.fanouts.items()
-        if not is_constant(net) and len(sinks) > max_fanout
+        (
+            net for net, sinks in design.fanouts.items()
+            if not is_constant(net) and len(sinks) > max_fanout
+        ),
+        key=lambda net: (-len(design.fanouts.get(net, [])), net),
     )
     changed: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
 
-    for net in candidates:
+    for index, net in enumerate(candidates):
+        if max_changed_nets is not None and len(changed) >= max_changed_nets:
+            for skipped_net in candidates[index:]:
+                skipped.append(
+                    {
+                        "net": skipped_net,
+                        "reason": f"bounded mode reached {max_changed_nets} changed net(s)",
+                    }
+                )
+            break
         rebuild_graph(design)
         if len(design.fanouts.get(net, [])) <= max_fanout:
             continue
@@ -539,6 +639,7 @@ def insert_buffers_for_all_high_fanout(design: Design, max_fanout: int) -> dict:
 
     return {
         "max_fanout": max_fanout,
+        "max_changed_nets": max_changed_nets,
         "attempted_nets": candidates,
         "changed": changed,
         "skipped": skipped,
@@ -549,24 +650,32 @@ def insert_buffers_for_all_high_fanout(design: Design, max_fanout: int) -> dict:
 
 
 @_rebuild_graph_after_transform
-def optimize_design_depth(design: Design, max_depth: int | None = None) -> dict:
+def optimize_design_depth(
+    design: Design,
+    max_depth: int | None = None,
+    max_outputs: int | None = None,
+) -> dict:
     """Run conservative cone optimization on each primary output, largest cones first."""
     if max_depth is not None and max_depth < 0:
         raise ValueError("optimize_design_depth requires max_depth >= 0 when provided.")
 
     reports = primary_output_cone_sizes(design)
     outputs = [name for name, _ in sorted(reports.items(), key=lambda item: item[1]["num_gates"], reverse=True)]
+    selected_outputs = outputs[:max_outputs] if max_outputs is not None else outputs
     changed: list[dict[str, Any]] = []
     initial_gate_count = len(design.gates)
     initial_depth = _design_max_depth(design)
 
-    for output in outputs:
+    for output in selected_outputs:
         result = optimize_cone(design, output, max_depth=max_depth, minimize_gate_count=True)
         if result.get("num_changed", 0):
             changed.append(result)
 
     return {
         "max_depth": max_depth,
+        "max_outputs": max_outputs,
+        "attempted_outputs": selected_outputs,
+        "skipped_outputs": outputs[len(selected_outputs):],
         "initial_gate_count": initial_gate_count,
         "final_gate_count": len(design.gates),
         "initial_depth": initial_depth,
@@ -652,6 +761,54 @@ def merge_equivalent_gates(design: Design) -> dict:
             rebuild_graph(design)
 
     return {"changed": changed, "num_merged": len(changed)}
+
+
+def _collapse_one_back_to_back_inverter(design: Design) -> dict[str, Any] | None:
+    for second_name in sorted(list(design.gates)):
+        second = design.gates.get(second_name)
+        if second is None or second.type != "not" or len(second.inputs) != 1:
+            continue
+        mid_net = second.inputs[0]
+        driver = design.drivers.get(mid_net)
+        if not driver or not driver.startswith("GATE:"):
+            continue
+        first_name = driver.split(":", 1)[1]
+        first = design.gates.get(first_name)
+        if first is None or first.type != "not" or len(first.inputs) != 1:
+            continue
+        if design.fanouts.get(mid_net, []) != [f"GATE:{second_name}"]:
+            continue
+
+        source_net = first.inputs[0]
+        output_net = second.output
+        if output_net in design.outputs or any(sink.startswith("PO:") for sink in design.fanouts.get(output_net, [])):
+            second.type = "buf"
+            second.inputs = [source_net]
+            del design.gates[first_name]
+            _discard_internal_wire(design, mid_net)
+            return {
+                "rule": "back_to_back_inverter_to_output_buffer",
+                "removed_gates": [first_name],
+                "rewritten_gate": second_name,
+                "removed_nets": [mid_net],
+            }
+
+        for sink in list(design.fanouts.get(output_net, [])):
+            _redirect_sink(design, sink, old_net=output_net, new_net=source_net)
+        del design.gates[first_name]
+        del design.gates[second_name]
+        _discard_internal_wire(design, mid_net)
+        _discard_internal_wire(design, output_net)
+        return {
+            "rule": "remove_back_to_back_inverters",
+            "removed_gates": [first_name, second_name],
+            "redirected_net": output_net,
+            "replacement_net": source_net,
+            "removed_nets": [mid_net, output_net],
+        }
+    return None
+
+
 def _redirect_sink(design: Design, sink: str, old_net: str, new_net: str) -> None:
     kind, name = sink.split(":", 1)
     if kind == "GATE":
