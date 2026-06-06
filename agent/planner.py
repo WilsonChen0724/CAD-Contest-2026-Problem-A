@@ -14,12 +14,14 @@ SUPPORTED_OPS = {
     "logic_cone",
     "report_gate_counts",
     "report_fanout",
+    "report_highest_fanout_primary_input",
     "report_gate_connections",
     "report_outputs_by_cone_size",
     "report_fanout_cone",
     "report_constant_input_gates",
     "report_io_counts",
     "gate_on_max_depth_path",
+    "report_articulation_points",
     "report_shared_fanin_cone_gates",
     "derive_boolean_equation",
     "report_max_depth_to_dff_d",
@@ -432,6 +434,15 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
     ):
         gate_type = "nand" if "nand" in low else _extract_gate_type(low)
         return {"op": "report_constant_input_gates", "args": {"gate_type": gate_type}}
+
+    if "primary input" in low and "highest fanout" in low:
+        return {"op": "report_highest_fanout_primary_input", "args": {}}
+
+    if "articulation" in low and ("between" in low or "from" in low):
+        targets = _extract_targets_after_between_or_of(text)
+        if targets:
+            src, dst = targets
+            return {"op": "report_articulation_points", "args": {"src": src, "dst": dst}}
 
     if "transitive fanout" in low or "reachable from" in low or "fanout cone" in low:
         source = _extract_after_keyword(text, "fanout of") or _extract_after_keyword(text, "from")

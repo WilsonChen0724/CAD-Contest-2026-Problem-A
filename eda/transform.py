@@ -379,6 +379,7 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
             "inserted_buffers": [],
             "inserted_nets": [],
             "num_inserted_buffers": 0,
+            "final_net_fanout": len(design.fanouts.get(net, [])),
             "final_max_fanout": _max_fanout(design),
         }
 
@@ -425,6 +426,7 @@ def insert_buffers_for_fanout(design: Design, net: str, max_fanout: int) -> dict
         "inserted_buffers": inserted_buffers,
         "inserted_nets": inserted_nets,
         "num_inserted_buffers": len(inserted_buffers),
+        "final_net_fanout": len(design.fanouts.get(net, [])),
         "final_max_fanout": _max_fanout(design),
     }
 
@@ -594,20 +596,36 @@ def optimize_cone(
 
 
 @_rebuild_graph_after_transform
-def insert_buffers_for_all_high_fanout(design: Design, max_fanout: int) -> dict:
+def insert_buffers_for_all_high_fanout(
+    design: Design,
+    max_fanout: int,
+    max_changed_nets: int | None = None,
+) -> dict:
     """Apply fanout buffering to every net currently exceeding max_fanout."""
     if max_fanout < 2:
         raise ValueError("insert_buffers_for_all_high_fanout requires max_fanout >= 2.")
 
     rebuild_graph(design)
     candidates = sorted(
-        net for net, sinks in design.fanouts.items()
-        if not is_constant(net) and len(sinks) > max_fanout
+        (
+            net for net, sinks in design.fanouts.items()
+            if not is_constant(net) and len(sinks) > max_fanout
+        ),
+        key=lambda net: (-len(design.fanouts.get(net, [])), net),
     )
     changed: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
 
-    for net in candidates:
+    for index, net in enumerate(candidates):
+        if max_changed_nets is not None and len(changed) >= max_changed_nets:
+            for skipped_net in candidates[index:]:
+                skipped.append(
+                    {
+                        "net": skipped_net,
+                        "reason": f"bounded mode reached {max_changed_nets} changed net(s)",
+                    }
+                )
+            break
         rebuild_graph(design)
         if len(design.fanouts.get(net, [])) <= max_fanout:
             continue
@@ -621,6 +639,7 @@ def insert_buffers_for_all_high_fanout(design: Design, max_fanout: int) -> dict:
 
     return {
         "max_fanout": max_fanout,
+        "max_changed_nets": max_changed_nets,
         "attempted_nets": candidates,
         "changed": changed,
         "skipped": skipped,

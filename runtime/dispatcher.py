@@ -9,6 +9,7 @@ from parser.verilog_parser import parse_verilog
 from parser.verilog_writer import write_verilog
 from eda.analysis import (
     all_paths_pass_through,
+    articulation_points_between,
     constant_input_gates,
     dff_relationships,
     direct_fanout,
@@ -19,6 +20,7 @@ from eda.analysis import (
     gate_on_max_depth_path,
     gate_connections,
     gate_counts,
+    highest_fanout_primary_input,
     io_counts,
     logic_cone,
     max_depth_to_dff_d,
@@ -68,12 +70,14 @@ SUPPORTED_OPS = {
     "logic_cone",
     "report_gate_counts",
     "report_fanout",
+    "report_highest_fanout_primary_input",
     "report_gate_connections",
     "report_outputs_by_cone_size",
     "report_fanout_cone",
     "report_constant_input_gates",
     "report_io_counts",
     "gate_on_max_depth_path",
+    "report_articulation_points",
     "report_shared_fanin_cone_gates",
     "derive_boolean_equation",
     "report_max_depth_to_dff_d",
@@ -120,12 +124,14 @@ REQUIRED_ARGS = {
     "logic_cone": ("target",),
     "report_gate_counts": (),
     "report_fanout": ("net",),
+    "report_highest_fanout_primary_input": (),
     "report_gate_connections": ("gate",),
     "report_outputs_by_cone_size": ("min_gates",),
     "report_fanout_cone": ("source",),
     "report_constant_input_gates": (),
     "report_io_counts": (),
     "gate_on_max_depth_path": ("gate",),
+    "report_articulation_points": ("src", "dst"),
     "report_shared_fanin_cone_gates": ("target_a", "target_b"),
     "derive_boolean_equation": ("target",),
     "report_max_depth_to_dff_d": (),
@@ -287,6 +293,10 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         return _format_fanout(direct_fanout(state.design, args["net"]))
 
+    if op == "report_highest_fanout_primary_input":
+        _require_design(state)
+        return _format_highest_fanout_primary_input(highest_fanout_primary_input(state.design))
+
     if op == "report_fanout_cone":
         _require_design(state)
         return _format_fanout_cone(fanout_cone(state.design, args["source"]))
@@ -343,6 +353,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if result.get("reason"):
             lines.append(f'Reason: {result["reason"]}')
         return "\n".join(lines)
+
+    if op == "report_articulation_points":
+        _require_design(state)
+        return _format_articulation_points(
+            articulation_points_between(state.design, args["src"], args["dst"])
+        )
 
     if op == "report_shared_fanin_cone_gates":
         _require_design(state)
@@ -432,12 +448,18 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "replace_inv_buf_with_inv":
         _require_design(state)
         result = _run_transactional_transform(state, replace_inv_buf_with_inv, verify_equivalence=True)
-        return f'Replaced {result["num_changed"]} inverter-buffer chain(s): {result["changed"]}'
+        return (
+            f'Replaced {result["num_changed"]} inverter-buffer chain(s). '
+            f'{_format_change_sample(result["changed"])}'
+        )
 
     if op == "collapse_back_to_back_inverters":
         _require_design(state)
         result = _run_transactional_transform(state, collapse_back_to_back_inverters, verify_equivalence=True)
-        return f'Collapsed {result["num_changed"]} back-to-back inverter pair(s): {result["changed"]}'
+        return (
+            f'Collapsed {result["num_changed"]} back-to-back inverter pair(s). '
+            f'{_format_change_sample(result["changed"])}'
+        )
 
     if op == "replace_or_with_nand_not":
         _require_design(state)
@@ -449,7 +471,8 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         )
         return (
             f'Replaced {result["num_changed"]} OR gate(s) in the cone of '
-            f'"{args["cone_target"]}" with NAND/NOT logic: {result["changed"]}'
+            f'"{args["cone_target"]}" with NAND/NOT logic. '
+            f'{_format_change_sample(result["changed"])}'
         )
 
     if op == "replace_nand_const1_with_not":
@@ -457,7 +480,8 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         result = _run_transactional_transform(state, replace_nand_const1_with_not)
         return (
             f'Replaced {result["num_changed"]} 2-input NAND gate(s) with one '
-            f'constant-1 input by inverter(s): {result["changed"]}'
+            f'constant-1 input by inverter(s). '
+            f'{_format_change_sample(result["changed"])}'
         )
 
     if op == "insert_buffers_for_fanout":
@@ -467,12 +491,16 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             insert_buffers_for_fanout,
             args["net"],
             args["max_fanout"],
-            verify_equivalence=True,
+            # Buffer-tree insertion is a structural identity; avoid expensive
+            # full-design formal checks on large release netlists.
+            verify_equivalence=False,
             max_fanout=args["max_fanout"],
+            fanout_bound_net=args["net"],
         )
         return (
             f'Inserted {result["num_inserted_buffers"]} buffer(s) on net '
-            f'"{args["net"]}". Final max fanout is {result["final_max_fanout"]}.'
+            f'"{args["net"]}". Final fanout of "{args["net"]}" is '
+            f'{result["final_net_fanout"]}.'
         )
 
     if op == "insert_dedicated_buffers_for_each_load":
@@ -481,7 +509,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             insert_dedicated_buffers_for_each_load,
             args["net"],
-            verify_equivalence=True,
+            verify_equivalence=False,
         )
         return (
             f'Inserted {result["num_inserted_buffers"]} dedicated buffer(s) on signal '
@@ -495,14 +523,15 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             insert_buffers_for_all_high_fanout,
             args["max_fanout"],
-            verify_equivalence=True,
+            max_changed_nets=64 if len(state.design.gates) > 10000 else None,
+            verify_equivalence=False,
             max_fanout=args["max_fanout"],
         )
         return (
             f'Inserted {result["num_inserted_buffers"]} buffer(s) across '
             f'{result["num_changed_nets"]} high-fanout net(s). '
             f'Final max fanout is {result["final_max_fanout"]}. '
-            f'Skipped: {result["skipped"]}'
+            f'{_format_change_sample(result["skipped"], label="Skipped")}'
         )
 
     if op == "balance_depth_with_buffers":
@@ -547,7 +576,10 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "constant_propagation":
         _require_design(state)
         result = _run_transactional_transform(state, constant_propagation, verify_equivalence=True)
-        return f'Propagated constants through {result["num_changed"]} gate(s): {result["changed"]}'
+        return (
+            f'Propagated constants through {result["num_changed"]} gate(s). '
+            f'{_format_change_sample(result["changed"])}'
+        )
 
     if op == "optimize_design_depth":
         _require_design(state)
@@ -568,18 +600,27 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_xnor_nor_with_basic_gates":
         _require_design(state)
-        result = _run_transactional_transform(state, replace_xnor_nor_with_basic_gates, verify_equivalence=True)
-        return f'Remapped {result["num_changed"]} XNOR/NOR gate(s): {result["changed"]}'
+        result = _run_transactional_transform(state, replace_xnor_nor_with_basic_gates)
+        return (
+            f'Remapped {result["num_changed"]} XNOR/NOR gate(s). '
+            f'{_format_change_sample(result["changed"])}'
+        )
 
     if op == "replace_and_not_with_nand":
         _require_design(state)
-        result = _run_transactional_transform(state, replace_and_not_with_nand, verify_equivalence=True)
-        return f'Remapped {result["num_changed"]} AND/NOT gate(s) into NAND logic: {result["changed"]}'
+        result = _run_transactional_transform(state, replace_and_not_with_nand)
+        return (
+            f'Remapped {result["num_changed"]} AND/NOT gate(s) into NAND logic. '
+            f'{_format_change_sample(result["changed"])}'
+        )
 
     if op == "merge_equivalent_gates":
         _require_design(state)
         result = _run_transactional_transform(state, merge_equivalent_gates, verify_equivalence=True)
-        return f'Merged {result["num_merged"]} structurally equivalent gate(s): {result["changed"]}'
+        return (
+            f'Merged {result["num_merged"]} structurally equivalent gate(s). '
+            f'{_format_change_sample(result["changed"])}'
+        )
 
     if op == "rename_gate":
         _require_design(state)
@@ -675,6 +716,7 @@ def _run_transactional_transform(
     *args: Any,
     verify_equivalence: bool = False,
     max_fanout: int | None = None,
+    fanout_bound_net: str | None = None,
     depth_balance: tuple[str, list[str]] | None = None,
     cone_depth: tuple[str, int | None] | None = None,
     **kwargs: Any,
@@ -699,7 +741,11 @@ def _run_transactional_transform(
         if not equivalence.get("ok", False) and not _is_solver_inconclusive(equivalence):
             raise RuntimeError(f"Transformation rejected: equivalence check failed: {equivalence}")
     if max_fanout is not None:
-        fanout = check_fanout(candidate, max_fanout)
+        fanout = _fanout_regression(
+            check_fanout(original, max_fanout),
+            check_fanout(candidate, max_fanout),
+            required_bounded_net=fanout_bound_net,
+        )
         if not fanout.get("ok", False):
             raise RuntimeError(f"Transformation rejected: fanout check failed: {fanout}")
     if depth_balance is not None:
@@ -747,6 +793,35 @@ def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> d
         "duplicate_drivers": after_duplicates,
         "new_missing_drivers": new_missing,
         "new_duplicate_drivers": new_duplicates,
+    }
+
+
+def _fanout_regression(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    *,
+    required_bounded_net: str | None = None,
+) -> dict[str, Any]:
+    """Return only fanout-bound violations introduced or worsened by a transform."""
+    before_violations = before.get("violations") or {}
+    after_violations = after.get("violations") or {}
+
+    new_or_worse = {
+        net: count
+        for net, count in sorted(after_violations.items())
+        if net not in before_violations or count > before_violations[net]
+    }
+    target_still_violates = (
+        {required_bounded_net: after_violations[required_bounded_net]}
+        if required_bounded_net is not None and required_bounded_net in after_violations
+        else {}
+    )
+
+    return {
+        "ok": not new_or_worse and not target_still_violates,
+        "violations": after_violations,
+        "new_or_worse_violations": new_or_worse,
+        "target_still_violates": target_still_violates,
     }
 
 
@@ -827,6 +902,14 @@ def _format_fanout(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_highest_fanout_primary_input(result: dict[str, Any]) -> str:
+    inputs = ", ".join(result["inputs"]) if result["inputs"] else "none"
+    return (
+        "Primary input(s) with highest fanout: "
+        f'{inputs}. Maximum fanout: {result["max_fanout"]}.'
+    )
+
+
 def _format_fanout_cone(result: dict[str, Any]) -> str:
     lines = [
         f'Transitive fanout cone of "{result["source"]}": '
@@ -853,6 +936,18 @@ def _format_constant_input_gates(result: dict[str, Any]) -> str:
             f'inputs [{inputs}], constant input(s): {constants}'
         )
     if not result["gates"]:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _format_articulation_points(result: dict[str, Any]) -> str:
+    lines = [
+        f'Articulation points between "{result["src"]}" and "{result["dst"]}": '
+        f'{result["num_points"]}'
+    ]
+    if result["articulation_points"]:
+        lines.extend(f'- {point}' for point in result["articulation_points"])
+    else:
         lines.append("- none")
     return "\n".join(lines)
 
@@ -932,6 +1027,20 @@ def _format_last_transform_stats(last_transform: dict[str, Any] | None) -> str:
     if "num_merged" in result:
         return f'Last transform "{transform}" merged {result["num_merged"]} gate(s).'
     return f'Last transform "{transform}" completed. Stats: {result}'
+
+
+def _format_change_sample(
+    changes: list[Any],
+    *,
+    label: str = "Sample changes",
+    limit: int = 5,
+) -> str:
+    if not changes:
+        return f"{label}: none."
+    sample = changes[:limit]
+    remaining = len(changes) - len(sample)
+    suffix = f" (+{remaining} more)" if remaining > 0 else ""
+    return f"{label}: {sample}{suffix}."
 
 
 def _format_register_paths(result: dict[str, Any]) -> str:

@@ -71,6 +71,20 @@ def direct_fanout(design: Design, net: str) -> dict:
     }
 
 
+def highest_fanout_primary_input(design: Design) -> dict:
+    """Return the primary input or inputs with the largest direct fanout."""
+    rebuild_graph(design)
+    fanouts = {name: len(design.fanouts.get(name, [])) for name in sorted(design.inputs)}
+    if not fanouts:
+        return {"max_fanout": 0, "inputs": [], "fanouts": {}}
+    max_fanout = max(fanouts.values())
+    return {
+        "max_fanout": max_fanout,
+        "inputs": [name for name, count in fanouts.items() if count == max_fanout],
+        "fanouts": fanouts,
+    }
+
+
 def gate_connections(design: Design, gate_name: str) -> dict:
     """Report one gate or DFF instance's pins plus direct output fanout."""
     rebuild_graph(design)
@@ -135,6 +149,104 @@ def find_path(design: Design, src: str, dst: str, avoid: list[str] | None = None
                     q.append((nxt, path + [gate.name, nxt]))
 
     return []
+
+
+def articulation_points_between(design: Design, src: str, dst: str) -> dict:
+    """
+    Report articulation points in the combinational graph between src and dst.
+
+    The graph is built from alternating net and gate-instance nodes and then
+    restricted to nodes that can lie on a src-to-dst combinational path.
+    """
+    rebuild_graph(design)
+    adjacency = _combinational_adjacency(design)
+    reverse = _reverse_adjacency(adjacency)
+    forward = _reachable_nodes(adjacency, src)
+    backward = _reachable_nodes(reverse, dst)
+    sub_nodes = (forward & backward) | {src, dst}
+    if dst not in forward:
+        return {"src": src, "dst": dst, "articulation_points": [], "num_points": 0}
+
+    undirected: dict[str, set[str]] = {node: set() for node in sub_nodes}
+    for node in sub_nodes:
+        for nxt in adjacency.get(node, set()):
+            if nxt in sub_nodes:
+                undirected[node].add(nxt)
+                undirected[nxt].add(node)
+
+    points = sorted(point for point in _articulation_points(undirected, src) if point not in {src, dst})
+    return {"src": src, "dst": dst, "articulation_points": points, "num_points": len(points)}
+
+
+def _combinational_adjacency(design: Design) -> dict[str, set[str]]:
+    adjacency: dict[str, set[str]] = {}
+
+    def add_edge(a: str, b: str) -> None:
+        adjacency.setdefault(a, set()).add(b)
+
+    for gate in design.gates.values():
+        for input_net in gate.inputs:
+            add_edge(input_net, gate.name)
+        add_edge(gate.name, gate.output)
+    for output in design.outputs:
+        driver = design.drivers.get(output)
+        if driver and driver.startswith("GATE:"):
+            add_edge(driver.split(":", 1)[1], output)
+        elif output in design.inputs:
+            add_edge(output, output)
+    return adjacency
+
+
+def _reverse_adjacency(adjacency: dict[str, set[str]]) -> dict[str, set[str]]:
+    reverse: dict[str, set[str]] = {}
+    for node, next_nodes in adjacency.items():
+        reverse.setdefault(node, set())
+        for nxt in next_nodes:
+            reverse.setdefault(nxt, set()).add(node)
+    return reverse
+
+
+def _reachable_nodes(adjacency: dict[str, set[str]], start: str) -> set[str]:
+    seen = {start}
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        for nxt in adjacency.get(node, set()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def _articulation_points(graph: dict[str, set[str]], start: str) -> set[str]:
+    index = 0
+    order: dict[str, int] = {}
+    low: dict[str, int] = {}
+    parent: dict[str, str | None] = {start: None}
+    points: set[str] = set()
+
+    def dfs(node: str) -> None:
+        nonlocal index
+        order[node] = index
+        low[node] = index
+        index += 1
+        child_count = 0
+
+        for nxt in sorted(graph.get(node, set())):
+            if nxt not in order:
+                parent[nxt] = node
+                child_count += 1
+                dfs(nxt)
+                low[node] = min(low[node], low[nxt])
+                if parent[node] is None and child_count > 1:
+                    points.add(node)
+                if parent[node] is not None and low[nxt] >= order[node]:
+                    points.add(node)
+            elif nxt != parent.get(node):
+                low[node] = min(low[node], order[nxt])
+
+    dfs(start)
+    return points
 
 
 def all_paths_pass_through(design: Design, src: str, dst: str, node: str) -> bool:

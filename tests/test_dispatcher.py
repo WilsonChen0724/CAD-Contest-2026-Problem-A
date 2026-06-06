@@ -235,8 +235,27 @@ class DispatcherTest(unittest.TestCase):
         )
 
         self.assertIn("Inserted", body)
-        self.assertIn("Final max fanout", body)
+        self.assertIn('Final fanout of "src" is 2', body)
         self.assertTrue(check_fanout(state.design, 2)["ok"])
+
+    def test_dispatcher_allows_preexisting_fanout_violations_on_other_nets(self) -> None:
+        outputs = {f"y{i}" for i in range(5)} | {f"z{i}" for i in range(3)}
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src", "other"}, outputs=outputs)
+        for i in range(5):
+            state.design.add_gate(Gate(name=f"U_src_{i}", type="buf", inputs=["src"], output=f"y{i}"))
+        for i in range(3):
+            state.design.add_gate(Gate(name=f"U_other_{i}", type="buf", inputs=["other"], output=f"z{i}"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "insert_buffers_for_fanout", "args": {"net": "src", "max_fanout": 2}},
+        )
+
+        self.assertIn("Inserted", body)
+        fanout = check_fanout(state.design, 2)
+        self.assertNotIn("src", fanout["violations"])
+        self.assertEqual(fanout["violations"].get("other"), 3)
 
     def test_dispatcher_balances_depths_with_post_check(self) -> None:
         state = CurrentState()
