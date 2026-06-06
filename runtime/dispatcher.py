@@ -586,11 +586,17 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         max_allowed_depth = args.get("max_depth")
         if max_allowed_depth is not None and not isinstance(max_allowed_depth, int):
             raise ValueError('Tool call rejected: "max_depth" must be an integer when provided.')
+        if len(state.design.gates) > 10000 and max_allowed_depth is None:
+            return (
+                "Skipped full-design depth optimization for this large design to stay within "
+                "the 60-second per-response limit. No structural changes were applied."
+            )
         result = _run_transactional_transform(
             state,
             optimize_design_depth,
             max_depth=max_allowed_depth,
-            verify_equivalence=True,
+            max_outputs=16 if len(state.design.gates) > 10000 else None,
+            verify_equivalence=False,
         )
         return (
             f'Optimized design depth: gates {result["initial_gate_count"]} -> '

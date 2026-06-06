@@ -650,24 +650,32 @@ def insert_buffers_for_all_high_fanout(
 
 
 @_rebuild_graph_after_transform
-def optimize_design_depth(design: Design, max_depth: int | None = None) -> dict:
+def optimize_design_depth(
+    design: Design,
+    max_depth: int | None = None,
+    max_outputs: int | None = None,
+) -> dict:
     """Run conservative cone optimization on each primary output, largest cones first."""
     if max_depth is not None and max_depth < 0:
         raise ValueError("optimize_design_depth requires max_depth >= 0 when provided.")
 
     reports = primary_output_cone_sizes(design)
     outputs = [name for name, _ in sorted(reports.items(), key=lambda item: item[1]["num_gates"], reverse=True)]
+    selected_outputs = outputs[:max_outputs] if max_outputs is not None else outputs
     changed: list[dict[str, Any]] = []
     initial_gate_count = len(design.gates)
     initial_depth = _design_max_depth(design)
 
-    for output in outputs:
+    for output in selected_outputs:
         result = optimize_cone(design, output, max_depth=max_depth, minimize_gate_count=True)
         if result.get("num_changed", 0):
             changed.append(result)
 
     return {
         "max_depth": max_depth,
+        "max_outputs": max_outputs,
+        "attempted_outputs": selected_outputs,
+        "skipped_outputs": outputs[len(selected_outputs):],
         "initial_gate_count": initial_gate_count,
         "final_gate_count": len(design.gates),
         "initial_depth": initial_depth,

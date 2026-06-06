@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import queue
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,8 +84,8 @@ def main() -> int:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=180.0,
-        help="Timeout in seconds for each testcase subprocess.",
+        default=60.0,
+        help="Timeout in seconds for each individual response.",
     )
     args = parser.parse_args()
 
@@ -177,7 +180,8 @@ def _run_case(
         raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
 
     prompt_text = prompt_path.read_text(encoding="utf-8")
-    prompt_count = _count_prompt_lines(prompt_text)
+    prompts = _prompt_lines(prompt_text)
+    prompt_count = len(prompts)
     command = [
         sys.executable,
         str(repo_root / "main.py"),
@@ -189,29 +193,12 @@ def _run_case(
     if ensure_yosys:
         command.append("--ensure-yosys")
 
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=release_dir,
-            input=prompt_text,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-        )
-        stdout = completed.stdout
-        stderr = completed.stderr
-        returncode = completed.returncode
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode(errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode(errors="replace")
-        stderr = (
-            f"{stderr}\nTimeoutExpired: testcase exceeded {timeout:.1f} seconds."
-        ).strip()
-        returncode = 124
+    stdout, stderr, returncode = _run_case_interactive(
+        command=command,
+        cwd=release_dir,
+        prompts=prompts,
+        response_timeout=timeout,
+    )
 
     out_path = result_root / f"{case_dir.name}.stdout.txt"
     err_path = result_root / f"{case_dir.name}.stderr.txt"
@@ -282,6 +269,151 @@ def _print_total_summary(results: list[CaseResult]) -> None:
 
 def _count_prompt_lines(prompt_text: str) -> int:
     return sum(1 for line in prompt_text.splitlines() if line.strip())
+
+
+def _prompt_lines(prompt_text: str) -> list[str]:
+    return [line.strip() for line in prompt_text.splitlines() if line.strip()]
+
+
+def _run_case_interactive(
+    *,
+    command: list[str],
+    cwd: Path,
+    prompts: list[str],
+    response_timeout: float,
+) -> tuple[str, str, int]:
+    """
+    Run main.py once, feed prompts one by one, and enforce a timeout per response.
+
+    The contest state is preserved because all prompts still go to the same
+    subprocess. The runner only changes how timeout accounting is done.
+    """
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_q: queue.Queue[str | None] = queue.Queue()
+    stderr_q: queue.Queue[str | None] = queue.Queue()
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    stdout_thread = _start_reader(process.stdout, stdout_q)
+    stderr_thread = _start_reader(process.stderr, stderr_q)
+
+    returncode = 0
+    try:
+        assert process.stdin is not None
+        for response_id, prompt in enumerate(prompts, start=1):
+            if process.poll() is not None:
+                returncode = process.returncode or 1
+                stderr_lines.append(
+                    f"Process exited before response {response_id} with code {returncode}.\n"
+                )
+                break
+
+            process.stdin.write(prompt + "\n")
+            process.stdin.flush()
+            timed_out = not _read_until_response_end(
+                stdout_q=stdout_q,
+                stderr_q=stderr_q,
+                stdout_lines=stdout_lines,
+                stderr_lines=stderr_lines,
+                response_id=response_id,
+                timeout=response_timeout,
+            )
+            if timed_out:
+                stderr_lines.append(
+                    f"TimeoutExpired: response {response_id} exceeded {response_timeout:.1f} seconds.\n"
+                )
+                _terminate_process(process)
+                returncode = 124
+                break
+        else:
+            process.stdin.close()
+            try:
+                returncode = process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                stderr_lines.append("TimeoutExpired: process did not exit after all prompts.\n")
+                _terminate_process(process)
+                returncode = 124
+    finally:
+        if process.stdin and not process.stdin.closed:
+            process.stdin.close()
+
+    _drain_queue(stdout_q, stdout_lines)
+    _drain_queue(stderr_q, stderr_lines)
+    stdout_thread.join(timeout=1.0)
+    stderr_thread.join(timeout=1.0)
+    _drain_queue(stdout_q, stdout_lines)
+    _drain_queue(stderr_q, stderr_lines)
+    return "".join(stdout_lines), "".join(stderr_lines), returncode
+
+
+def _start_reader(stream, out_queue: queue.Queue[str | None]) -> threading.Thread:
+    def read_stream() -> None:
+        try:
+            if stream is not None:
+                for line in stream:
+                    out_queue.put(line)
+        finally:
+            out_queue.put(None)
+
+    thread = threading.Thread(target=read_stream, daemon=True)
+    thread.start()
+    return thread
+
+
+def _read_until_response_end(
+    *,
+    stdout_q: queue.Queue[str | None],
+    stderr_q: queue.Queue[str | None],
+    stdout_lines: list[str],
+    stderr_lines: list[str],
+    response_id: int,
+    timeout: float,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    end_marker = f"#END {response_id}"
+    while True:
+        _drain_queue(stderr_q, stderr_lines)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            line = stdout_q.get(timeout=min(0.1, remaining))
+        except queue.Empty:
+            continue
+        if line is None:
+            return False
+        stdout_lines.append(line)
+        if line.strip() == end_marker:
+            _drain_queue(stderr_q, stderr_lines)
+            return True
+
+
+def _drain_queue(source: queue.Queue[str | None], target: list[str]) -> None:
+    while True:
+        try:
+            item = source.get_nowait()
+        except queue.Empty:
+            return
+        if item is not None:
+            target.append(item)
+
+
+def _terminate_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=3.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3.0)
 
 
 def _count_error_markers(stdout: str, stderr: str) -> int:
