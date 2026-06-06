@@ -74,19 +74,31 @@ These operations are wired through both the plan checker and dispatcher:
 - `all_paths_pass_through`
 - `max_depth`
 - `logic_cone`
+- `report_gate_counts`
+- `report_fanout`
+- `report_fanout_cone`
+- `report_gate_connections`
 - `report_outputs_by_cone_size`
+- `report_io_counts`
+- `gate_on_max_depth_path`
+- `report_register_paths`
+- `report_constant_input_gates`
 - `find_gates`
 - `same_clock_domain`
 - `replace_buffers_with_and`
 - `remove_dangling`
 - `replace_inv_buf_with_inv`
 - `replace_or_with_nand_not`
+- `replace_nand_const1_with_not`
 - `insert_buffers_for_fanout`
 - `balance_depth_with_buffers`
 - `optimize_cone`
+- `constant_propagation`
+- `rename_net`
 - `check_connectivity`
 - `check_fanout`
 - `check_depth`
+- `check_equivalent_to_original`
 - `check_equivalence`
 - `check_property`
 - `unsupported`
@@ -118,6 +130,11 @@ The current backend includes:
 - path search that does not cross DFF boundaries,
 - longest combinational max-depth propagation with loop guarding,
 - fanin logic-cone collection,
+- transitive fanout-cone reporting,
+- gate-on-maximum-depth-path membership checks,
+- primary input/output count reports,
+- capped register-to-register structural path reports,
+- constant-input gate reports,
 - gate search by type and/or name substring,
 - fanout-bound checking,
 - depth-bound checking,
@@ -149,10 +166,18 @@ The implemented transformations are:
   single inverter when the intermediate net has no other fanout.
 - `replace_or_with_nand_not`: 2-input OR gates in a requested cone are rewritten
   as equivalent NAND/NOT logic.
+- `replace_nand_const1_with_not`: 2-input NAND gates with one constant-1 input
+  are rewritten as inverters.
+- `rename_net`: one net is renamed across declarations and all structural
+  references while preserving function.
+- `constant_propagation`: gates with constant or redundant inputs are simplified
+  under transactional guards.
 
 Function-preserving transformations are transactional: they run on a copied
-design, pass connectivity checks, and must preserve common primary-output
-functions before the modified design is committed.
+design, must not introduce new connectivity regressions, and generally must
+preserve common primary-output functions before the modified design is
+committed. The local NAND-with-constant-1 rewrite is a direct Boolean identity
+and is guarded structurally.
 
 ## Requirements
 
@@ -298,6 +323,16 @@ tests/       unit tests, smoke input, sample netlists
 third_party/ local Yosys install location, not committed
 output/      generated logs and output netlists
 ```
+
+Useful planning and handoff docs:
+
+- `docs/current_progress_and_next_features.md`: current coverage and next
+  backend priorities.
+- `docs/person_b_tool_schema_handoff.md`: newly wired backend operations that
+  Person B should review before updating `agent/tool_schema.py` for direct LLM
+  mode.
+- `docs/implementation_alternatives.md`: alternative implementation directions
+  for optimization, renaming, reconnect, and equivalence scope.
 
 ## Open-Source Helper Policy
 

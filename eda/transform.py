@@ -23,6 +23,7 @@ from eda.graph import rebuild_graph
 # day 7: optimize_cone
 # day 8: safe net rename
 # day 9: constant propagation
+# day 10: NAND const-1 to inverter rewrite
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -301,6 +302,27 @@ def constant_propagation(design: Design) -> dict:
             break
     else:
         raise RuntimeError("constant_propagation did not converge.")
+
+    return {"changed": changed, "num_changed": len(changed)}
+
+
+@_rebuild_graph_after_transform
+def replace_nand_const1_with_not(design: Design) -> dict:
+    """Rewrite 2-input NAND gates with one constant-1 input into inverters."""
+    changed: list[dict[str, str]] = []
+    for gate in design.gates.values():
+        if gate.type != "nand" or len(gate.inputs) != 2:
+            continue
+        a, b = gate.inputs
+        if _is_const_true(a) and not is_constant(b):
+            gate.type = "not"
+            gate.inputs = [b]
+        elif _is_const_true(b) and not is_constant(a):
+            gate.type = "not"
+            gate.inputs = [a]
+        else:
+            continue
+        changed.append({"gate": gate.name, "replacement": "not", "output": gate.output})
 
     return {"changed": changed, "num_changed": len(changed)}
 

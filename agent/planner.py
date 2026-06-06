@@ -16,12 +16,18 @@ SUPPORTED_OPS = {
     "report_fanout",
     "report_gate_connections",
     "report_outputs_by_cone_size",
+    "report_fanout_cone",
+    "report_constant_input_gates",
+    "report_io_counts",
+    "gate_on_max_depth_path",
+    "report_register_paths",
     "find_gates",
     "same_clock_domain",
     "replace_buffers_with_and",
     "remove_dangling",
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
+    "replace_nand_const1_with_not",
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
@@ -184,6 +190,14 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
     ):
         return {"op": "constant_propagation", "args": {}}
 
+    if (
+        ("replace" in low or "simplify" in low)
+        and "nand" in low
+        and ("constant 1" in low or "constant-1" in low or "1'b1" in low)
+        and ("inverter" in low or "inverters" in low or "not" in low)
+    ):
+        return {"op": "replace_nand_const1_with_not", "args": {}}
+
     if "replace" in low and ("buffer" in low or "buffers" in low) and _mentions_gate_type(low, "and"):
         extra_input = _extract_extra_input(text) or "_gc_ctrl"
         targets = _extract_instance_list(text)
@@ -275,6 +289,38 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
         and ("gate" in low or "gates" in low or "cell" in low or "cells" in low)
     ):
         return {"op": "report_gate_counts", "args": {}}
+
+    if (
+        ("number" in low or "count" in low or "how many" in low)
+        and ("primary inputs" in low or "primary input" in low)
+        and ("outputs" in low or "primary outputs" in low or "primary output" in low)
+    ):
+        return {"op": "report_io_counts", "args": {}}
+
+    if "maximum-depth path" in low or "maximum depth path" in low or "max-depth path" in low:
+        gate = _extract_connection_instance(text) or _extract_after_keyword(text, "gate")
+        if gate:
+            return {"op": "gate_on_max_depth_path", "args": {"gate": gate}}
+
+    if (
+        ("register-to-register" in low or "register to register" in low)
+        and ("path" in low or "paths" in low)
+    ):
+        return {"op": "report_register_paths", "args": {}}
+
+    if (
+        ("constant input" in low or "constant inputs" in low)
+        and ("report" in low or "list" in low or "find" in low)
+        and ("gate" in low or "gates" in low or "nand" in low)
+    ):
+        gate_type = "nand" if "nand" in low else _extract_gate_type(low)
+        return {"op": "report_constant_input_gates", "args": {"gate_type": gate_type}}
+
+    if "transitive fanout" in low or "reachable from" in low or "fanout cone" in low:
+        source = _extract_after_keyword(text, "fanout of") or _extract_after_keyword(text, "from")
+        source = source or _extract_after_keyword(text, "input") or _extract_after_keyword(text, "source")
+        if source:
+            return {"op": "report_fanout_cone", "args": {"source": source}}
 
     if "fanout" in low or "fan-out" in low or "driven by" in low or "loads of" in low:
         net = _extract_after_keyword(text, "fanout of") or _extract_after_keyword(text, "fan-out of")
@@ -545,7 +591,7 @@ def _extract_src_dst(text: str) -> tuple[str, str] | None:
 
 
 def _extract_after_keyword(text: str, keyword: str) -> str | None:
-    pattern = rf"\b{re.escape(keyword)}\s+(?:input\s+|output\s+|signal\s+|net\s+)?({_SIGNAL_RE})"
+    pattern = rf"\b{re.escape(keyword)}\s+(?:(?:primary\s+)?(?:input|output)\s+|signal\s+|net\s+)?({_SIGNAL_RE})"
     match = re.search(pattern, text, flags=re.I)
     return match.group(1) if match else None
 

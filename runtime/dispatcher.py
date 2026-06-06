@@ -9,20 +9,26 @@ from parser.verilog_parser import parse_verilog
 from parser.verilog_writer import write_verilog
 from eda.analysis import (
     all_paths_pass_through,
+    constant_input_gates,
     direct_fanout,
+    fanout_cone,
     find_gates,
     find_path,
+    gate_on_max_depth_path,
     gate_connections,
     gate_counts,
+    io_counts,
     logic_cone,
     max_depth,
     primary_output_cone_sizes,
+    register_to_register_paths,
 )
 from eda.transform import (
     balance_depth_with_buffers,
     constant_propagation,
     insert_buffers_for_fanout,
     optimize_cone,
+    replace_nand_const1_with_not,
     remove_dangling,
     rename_net,
     replace_buffers_with_and,
@@ -51,11 +57,17 @@ SUPPORTED_OPS = {
     "report_fanout",
     "report_gate_connections",
     "report_outputs_by_cone_size",
+    "report_fanout_cone",
+    "report_constant_input_gates",
+    "report_io_counts",
+    "gate_on_max_depth_path",
+    "report_register_paths",
     "same_clock_domain",
     "replace_buffers_with_and",
     "remove_dangling",
     "replace_inv_buf_with_inv",
     "replace_or_with_nand_not",
+    "replace_nand_const1_with_not",
     "insert_buffers_for_fanout",
     "balance_depth_with_buffers",
     "optimize_cone",
@@ -83,11 +95,17 @@ REQUIRED_ARGS = {
     "report_fanout": ("net",),
     "report_gate_connections": ("gate",),
     "report_outputs_by_cone_size": ("min_gates",),
+    "report_fanout_cone": ("source",),
+    "report_constant_input_gates": (),
+    "report_io_counts": (),
+    "gate_on_max_depth_path": ("gate",),
+    "report_register_paths": (),
     "same_clock_domain": ("dff_a", "dff_b"),
     "replace_buffers_with_and": ("extra_input",),
     "remove_dangling": (),
     "replace_inv_buf_with_inv": (),
     "replace_or_with_nand_not": ("cone_target",),
+    "replace_nand_const1_with_not": (),
     "insert_buffers_for_fanout": ("net", "max_fanout"),
     "balance_depth_with_buffers": ("src", "dsts"),
     "optimize_cone": ("target",),
@@ -229,6 +247,10 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         return _format_fanout(direct_fanout(state.design, args["net"]))
 
+    if op == "report_fanout_cone":
+        _require_design(state)
+        return _format_fanout_cone(fanout_cone(state.design, args["source"]))
+
     if op == "report_gate_connections":
         _require_design(state)
         return _format_gate_connections(gate_connections(state.design, args["gate"]))
@@ -247,6 +269,54 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         lines = [f"Primary outputs with logic cones larger than {min_gates} gates:"]
         for output, num_gates in matched:
             lines.append(f"- {output}: {num_gates} gates")
+        return "\n".join(lines)
+
+    if op == "report_constant_input_gates":
+        _require_design(state)
+        return _format_constant_input_gates(
+            constant_input_gates(state.design, gate_type=args.get("gate_type"))
+        )
+
+    if op == "report_io_counts":
+        _require_design(state)
+        result = io_counts(state.design)
+        return (
+            "Primary IO counts:\n"
+            f'- inputs: {result["num_inputs"]}\n'
+            f'- outputs: {result["num_outputs"]}'
+        )
+
+    if op == "gate_on_max_depth_path":
+        _require_design(state)
+        result = gate_on_max_depth_path(state.design, args["gate"])
+        answer = "Yes" if result["on_max_depth_path"] else "No"
+        lines = [
+            f'{answer}. Gate "{args["gate"]}" '
+            f'{"lies" if result["on_max_depth_path"] else "does not lie"} '
+            "on a maximum-depth combinational path.",
+            f'Global maximum depth: {result["global_max_depth"]}.',
+        ]
+        if result.get("gate_path_depth") is not None:
+            lines.append(f'Best path through gate depth: {result["gate_path_depth"]}.')
+        if result.get("example_prefix_path"):
+            lines.append("Example prefix: " + " -> ".join(result["example_prefix_path"]))
+        if result.get("reason"):
+            lines.append(f'Reason: {result["reason"]}')
+        return "\n".join(lines)
+
+    if op == "report_register_paths":
+        _require_design(state)
+        result = register_to_register_paths(state.design, max_paths=args.get("max_paths", 200))
+        lines = [f'Register-to-register combinational paths: {result["num_paths"]}']
+        if result["truncated"]:
+            lines.append(f'Showing first {result["max_paths"]} path(s).')
+        for item in result["paths"]:
+            lines.append(
+                f'- {item["src_dff"]} -> {item["dst_dff"]}: '
+                + " -> ".join(item["path"])
+            )
+        if not result["paths"]:
+            lines.append("- none")
         return "\n".join(lines)
 
     if op == "same_clock_domain":
@@ -312,6 +382,14 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         return (
             f'Replaced {result["num_changed"]} OR gate(s) in the cone of '
             f'"{args["cone_target"]}" with NAND/NOT logic: {result["changed"]}'
+        )
+
+    if op == "replace_nand_const1_with_not":
+        _require_design(state)
+        result = _run_transactional_transform(state, replace_nand_const1_with_not)
+        return (
+            f'Replaced {result["num_changed"]} 2-input NAND gate(s) with one '
+            f'constant-1 input by inverter(s): {result["changed"]}'
         )
 
     if op == "insert_buffers_for_fanout":
@@ -459,11 +537,14 @@ def _run_transactional_transform(
     """
     _require_design(state)
     original = state.design
+    original_connectivity = check_connectivity(original)
     candidate = deepcopy(original)
     result = transform(candidate, *args, **kwargs)
     connectivity = check_connectivity(candidate)
     if not connectivity.get("ok", False):
-        raise RuntimeError(f"Transformation rejected: connectivity check failed: {connectivity}")
+        regressions = _connectivity_regressions(original_connectivity, connectivity)
+        if regressions["missing_drivers"] or regressions["duplicate_drivers"]:
+            raise RuntimeError(f"Transformation rejected: connectivity check failed: {connectivity}")
     if verify_equivalence:
         equivalence = check_design_equivalence(original, candidate)
         if not equivalence.get("ok", False):
@@ -484,6 +565,30 @@ def _run_transactional_transform(
             raise RuntimeError(f"Transformation rejected: cone depth check failed: {depth}")
     state.design = candidate
     return result
+
+
+def _connectivity_regressions(before: dict, after: dict) -> dict[str, Any]:
+    before_missing = set(before.get("missing_drivers", []))
+    after_missing = set(after.get("missing_drivers", []))
+
+    before_duplicates = {
+        net: set(drivers)
+        for net, drivers in before.get("duplicate_drivers", {}).items()
+    }
+    after_duplicates = {
+        net: set(drivers)
+        for net, drivers in after.get("duplicate_drivers", {}).items()
+    }
+    duplicate_regressions = {
+        net: sorted(drivers)
+        for net, drivers in sorted(after_duplicates.items())
+        if net not in before_duplicates or not drivers.issubset(before_duplicates[net])
+    }
+
+    return {
+        "missing_drivers": sorted(after_missing - before_missing),
+        "duplicate_drivers": duplicate_regressions,
+    }
 
 
 def _resolve_read_path(path: str) -> Path:
@@ -542,6 +647,36 @@ def _format_fanout(result: dict[str, Any]) -> str:
             lines.append(f'- primary output {sink["name"]}')
         else:
             lines.append(f'- {sink["sink"]}')
+    return "\n".join(lines)
+
+
+def _format_fanout_cone(result: dict[str, Any]) -> str:
+    lines = [
+        f'Transitive fanout cone of "{result["source"]}": '
+        f'{result["num_gates"]} gate(s), {result["num_nets"]} net(s), '
+        f'{result["num_primary_outputs"]} primary output(s), '
+        f'{result["num_dff_sinks"]} DFF sink(s).'
+    ]
+    if result["gates"]:
+        lines.append("Reachable gates:")
+        lines.extend(f"- {gate}" for gate in result["gates"])
+    else:
+        lines.append("Reachable gates: none")
+    return "\n".join(lines)
+
+
+def _format_constant_input_gates(result: dict[str, Any]) -> str:
+    title_type = result["gate_type"].upper() if result["gate_type"] else "Gate"
+    lines = [f"{title_type} gates with constant inputs: {result['num_gates']}"]
+    for item in result["gates"]:
+        inputs = ", ".join(item["inputs"])
+        constants = ", ".join(item["constant_inputs"])
+        lines.append(
+            f'- {item["name"]} ({item["gate_type"]}), output {item["output"]}, '
+            f'inputs [{inputs}], constant input(s): {constants}'
+        )
+    if not result["gates"]:
+        lines.append("- none")
     return "\n".join(lines)
 
 

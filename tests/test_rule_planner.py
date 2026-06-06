@@ -42,6 +42,28 @@ class RulePlannerTest(unittest.TestCase):
             plan_request("Report the gate type and pin connections of gate U0.", None),
             {"op": "report_gate_connections", "args": {"gate": "U0"}},
         )
+        self.assertEqual(
+            plan_request("Determine the number of primary inputs and outputs.", None),
+            {"op": "report_io_counts", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("What is the transitive fanout of primary input n0? List all gates reachable from n0.", None),
+            {"op": "report_fanout_cone", "args": {"source": "n0"}},
+        )
+        self.assertEqual(
+            plan_request("Report any NAND gates with constant inputs (0 or 1) in this design.", None),
+            {"op": "report_constant_input_gates", "args": {"gate_type": "nand"}},
+        )
+
+    def test_maps_gate_on_max_depth_path(self) -> None:
+        plan = plan_request("Determine whether gate g0 lies on any maximum-depth path of the design.", None)
+
+        self.assertEqual(plan, {"op": "gate_on_max_depth_path", "args": {"gate": "g0"}})
+
+    def test_maps_register_to_register_paths(self) -> None:
+        plan = plan_request("List all register-to-register paths in this design through combinational logic.", None)
+
+        self.assertEqual(plan, {"op": "report_register_paths", "args": {}})
 
     def test_maps_remove_dangling(self) -> None:
         plan = plan_request("Remove any dangling gates and nets.", None)
@@ -94,6 +116,14 @@ class RulePlannerTest(unittest.TestCase):
         plan = plan_request("Propagate constants and simplify gates with tied constant inputs.", None)
 
         self.assertEqual(plan, {"op": "constant_propagation", "args": {}})
+
+    def test_maps_nand_const1_rewrite(self) -> None:
+        plan = plan_request(
+            "Try to replace all 2-input NAND gates that have one input tied to constant 1 with inverters.",
+            None,
+        )
+
+        self.assertEqual(plan, {"op": "replace_nand_const1_with_not", "args": {}})
 
     def test_maps_original_equivalence_check(self) -> None:
         plan = plan_request("Verify the current design is equivalent to the original loaded netlist.", None)

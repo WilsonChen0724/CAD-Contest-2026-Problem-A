@@ -220,6 +220,27 @@ Input:
 Output includes load count, unique sink count, gate/DFF/primary-output sinks,
 and consumed input pins when applicable.
 
+### report_fanout_cone
+
+Report the transitive combinational fanout cone from a source net.
+
+Input:
+
+```json
+{
+  "op": "report_fanout_cone",
+  "args": {
+    "source": "n0"
+  }
+}
+```
+
+Rules:
+
+- Traverse through primitive combinational gates.
+- Stop at DFF input pins and primary outputs.
+- Return reachable gates, reached nets, primary-output endpoints, and DFF sinks.
+
 ### report_gate_connections
 
 Report one gate or DFF instance's type, pin connections, and output fanout.
@@ -250,6 +271,82 @@ Input:
   }
 }
 ```
+
+### report_io_counts
+
+Report the number of primary inputs and primary outputs.
+
+Input:
+
+```json
+{
+  "op": "report_io_counts",
+  "args": {}
+}
+```
+
+### gate_on_max_depth_path
+
+Check whether one gate lies on any maximum-depth combinational path in the
+design.
+
+Input:
+
+```json
+{
+  "op": "gate_on_max_depth_path",
+  "args": {
+    "gate": "g0"
+  }
+}
+```
+
+Rules:
+
+- Sources are primary inputs and DFF Q pins.
+- Endpoints are primary outputs and DFF D pins.
+- DFFs are still treated as sequential boundaries.
+
+### report_register_paths
+
+Report register-to-register paths through combinational logic.
+
+Input:
+
+```json
+{
+  "op": "report_register_paths",
+  "args": {
+    "max_paths": 200
+  }
+}
+```
+
+Rules:
+
+- `max_paths` is optional.
+- Traversal starts at DFF Q pins and stops at downstream DFF D pins.
+- Output may be capped to avoid path explosion on large designs.
+
+### report_constant_input_gates
+
+Report gates with one or more constant inputs.
+
+Input:
+
+```json
+{
+  "op": "report_constant_input_gates",
+  "args": {
+    "gate_type": "nand"
+  }
+}
+```
+
+Rules:
+
+- `gate_type` is optional.
+- Constants currently include `1'b0`, `1'b1`, `0`, and `1`.
 
 ### find_gates
 
@@ -394,6 +491,39 @@ not U_na(na, a);
 not U_nb(nb, b);
 nand U_nand(y, na, nb);
 ```
+
+### replace_nand_const1_with_not
+
+Replace 2-input NAND gates that have one constant-1 input with inverters.
+
+Input:
+
+```json
+{
+  "op": "replace_nand_const1_with_not",
+  "args": {}
+}
+```
+
+Rewrite:
+
+```verilog
+nand U(y, a, 1'b1);
+```
+
+becomes:
+
+```verilog
+not U(y, a);
+```
+
+Rules:
+
+- Only rewrites 2-input NAND gates with exactly one non-constant data input and
+  one constant-1 input.
+- The output net and instance name are preserved.
+- This local identity is function-preserving; transactional connectivity guards
+  must not allow new connectivity regressions.
 
 ### insert_buffers_for_fanout
 

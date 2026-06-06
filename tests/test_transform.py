@@ -11,6 +11,7 @@ from eda.transform import (
     constant_propagation,
     insert_buffers_for_fanout,
     optimize_cone,
+    replace_nand_const1_with_not,
     remove_dangling,
     rename_net,
     replace_buffers_with_and,
@@ -186,6 +187,18 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["num_changed"], 1)
         self.assertEqual(design.gates["U_and"].type, "buf")
         self.assertEqual(design.gates["U_and"].inputs, ["1'b0"])
+
+    def test_replace_nand_const1_with_not_rewrites_specific_identity(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y", "z"})
+        design.add_gate(Gate(name="U_nand1", type="nand", inputs=["a", "1'b1"], output="y"))
+        design.add_gate(Gate(name="U_nand0", type="nand", inputs=["b", "1'b0"], output="z"))
+
+        result = replace_nand_const1_with_not(design)
+
+        self.assertEqual(result["num_changed"], 1)
+        self.assertEqual(design.gates["U_nand1"].type, "not")
+        self.assertEqual(design.gates["U_nand1"].inputs, ["a"])
+        self.assertEqual(design.gates["U_nand0"].type, "nand")
 
 
 if __name__ == "__main__":

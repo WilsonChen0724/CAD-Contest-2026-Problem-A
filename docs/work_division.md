@@ -10,6 +10,9 @@ Related planning documents:
   testcase coverage gaps, and the next implementation priorities.
 - `docs/implementation_alternatives.md` records alternative implementation
   approaches for optimization, renaming, reconnect, and equivalence scope.
+- `docs/person_b_tool_schema_handoff.md` records backend operations that are
+  ready for Person B to expose through `agent/tool_schema.py` for direct LLM
+  mode testing.
 
 ## Current Status
 
@@ -213,6 +216,9 @@ Primary responsibilities:
 
 Next concrete tasks:
 
+- Review `docs/person_b_tool_schema_handoff.md` and update
+  `agent/tool_schema.py` so direct `--planner llm` mode can call the newly
+  wired backend operations.
 - Update planner tests for gate-instance fanout phrases, such as "number of
   gates driven by g0" and "immediate successors of gate g0".
 - Add mappings for `fanout_cone`, bounded `all_paths`, cone-local gate counts,
