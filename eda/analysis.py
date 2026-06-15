@@ -468,14 +468,18 @@ def find_path(design: Design, src: str, dst: str, avoid: list[str] | None = None
     """
     rebuild_graph(design)
     avoid_set = set(avoid or [])
-    q = deque([(src, [src])])
-    seen = {src}
+    src_candidates = _resolve_signal_candidates(design, src)
+    dst_candidates = set(_resolve_signal_candidates(design, dst))
+    if not src_candidates or not dst_candidates:
+        return []
+    q = deque((candidate, [candidate]) for candidate in src_candidates)
+    seen = set(src_candidates)
 
     while q:
         node, path = q.popleft()
         if node in avoid_set and node != src:
             continue
-        if node == dst:
+        if node in dst_candidates:
             return path
 
         # If node is a net, traverse to gates that consume it and to PO.
@@ -613,26 +617,53 @@ def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
         raise ValueError("max_paths must be at least 1.")
     rebuild_graph(design)
     adjacency = _combinational_adjacency(design)
+    src_candidates = _resolve_signal_candidates(design, src)
+    dst_candidates = set(_resolve_signal_candidates(design, dst))
+    if not src_candidates or not dst_candidates:
+        return {
+            "src": src,
+            "dst": dst,
+            "paths": [],
+            "num_paths": 0,
+            "max_paths": max_paths,
+            "truncated": False,
+        }
+    reverse = _reverse_adjacency(adjacency)
+    can_reach_dst: set[str] = set()
+    for candidate in dst_candidates:
+        can_reach_dst.update(_reachable_nodes(reverse, candidate))
+    can_reach_dst.update(dst_candidates)
     paths: list[list[str]] = []
     truncated = False
+    expansions = 0
+    expansion_limit = max(10000, max_paths * 500)
 
     def dfs(node: str, path: list[str], active: set[str]) -> None:
-        nonlocal truncated
+        nonlocal expansions, truncated
         if truncated:
             return
-        if node == dst:
+        expansions += 1
+        if expansions > expansion_limit:
+            truncated = True
+            return
+        if node in dst_candidates:
             paths.append(path)
             if len(paths) >= max_paths:
                 truncated = True
             return
         for nxt in sorted(adjacency.get(node, set())):
-            if nxt in active:
+            if nxt in active or nxt not in can_reach_dst:
                 continue
             dfs(nxt, path + [nxt], active | {nxt})
             if truncated:
                 return
 
-    dfs(src, [src], {src})
+    for start in src_candidates:
+        if start not in can_reach_dst and start not in dst_candidates:
+            continue
+        dfs(start, [start], {start})
+        if truncated:
+            break
     return {
         "src": src,
         "dst": dst,
@@ -641,6 +672,15 @@ def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
         "max_paths": max_paths,
         "truncated": truncated,
     }
+
+
+def _resolve_signal_candidates(design: Design, name: str) -> list[str]:
+    """Resolve an exact net name or a bus base like n25 to expanded bit nets."""
+    all_nets = design.all_nets()
+    if name in all_nets:
+        return [name]
+    prefix = f"{name}["
+    return sorted(net for net in all_nets if net.startswith(prefix))
 
 #----------DAG + DP for longest path from src to dst. In a DAG, this is guaranteed to terminate and yield the correct result.
 def max_depth(design: Design, src: str, dst: str) -> tuple[int, list[str]]:

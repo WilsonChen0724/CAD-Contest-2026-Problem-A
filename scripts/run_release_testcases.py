@@ -397,9 +397,9 @@ def _run_case_interactive(
                 timeout=response_timeout,
             )
             if timed_out:
-                stderr_lines.append(
-                    f"TimeoutExpired: response {response_id} exceeded {response_timeout:.1f} seconds.\n"
-                )
+                message = f"TimeoutExpired: response {response_id} exceeded {response_timeout:.1f} seconds."
+                stderr_lines.append(message + "\n")
+                _append_timeout_response(stdout_lines, response_id, message)
                 _terminate_process(process)
                 returncode = 124
                 break
@@ -422,6 +422,16 @@ def _run_case_interactive(
     _drain_queue(stdout_q, stdout_lines)
     _drain_queue(stderr_q, stderr_lines)
     return "".join(stdout_lines), "".join(stderr_lines), returncode
+
+
+def _append_timeout_response(stdout_lines: list[str], response_id: int, message: str) -> None:
+    response_text = "".join(stdout_lines)
+    if f"#END {response_id}" in response_text:
+        return
+    if f"#RESPONSE {response_id}" not in response_text:
+        stdout_lines.append(f"#RESPONSE {response_id}\n")
+    stdout_lines.append(f"Error: {message}\n")
+    stdout_lines.append(f"#END {response_id}\n")
 
 
 def _start_reader(stream, out_queue: queue.Queue[str | None]) -> threading.Thread:

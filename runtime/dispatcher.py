@@ -236,6 +236,9 @@ REQUIRED_ARGS = {
     "unsupported": ("reason",),
 }
 
+_REPORT_LIST_LIMIT = 120
+_REPORT_PATH_LIMIT = 80
+
 def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     """Execute a single tool call or a multi-step plan."""
     if not isinstance(plan, dict):
@@ -382,7 +385,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         gates = logic_cone(state.design, args["target"])
         if save_as:
             state.remember_result(save_as, gates, kind="gate_list")
-        return f'Logic cone of "{args["target"]}" contains {len(gates)} gates:\n' + "\n".join(gates)
+        return _format_logic_cone(args["target"], gates)
 
     if op == "report_gate_counts":
         _require_design(state)
@@ -425,6 +428,11 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "report_fanout":
         _require_design(state)
+        if _is_floating_signal_placeholder(args["net"]):
+            result = check_connectivity(state.design)
+            if save_as:
+                state.remember_result(save_as, result, kind="connectivity_report")
+            return _format_floating_signal_summary(result)
         return _format_fanout(direct_fanout(state.design, args["net"]))
 
     if op == "report_highest_fanout_primary_input":
@@ -442,6 +450,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             if not isinstance(gates, list):
                 raise ValueError(f'Previous result "{args["gate"]}" is not a gate list.')
             return _format_gate_connection_list(state.design, gates)
+        if (
+            args["gate"] not in state.design.gates
+            and args["gate"] not in state.design.dffs
+            and args["gate"] in state.design.all_nets()
+        ):
+            return _format_fanout(direct_fanout(state.design, args["gate"]))
         return _format_gate_connections(gate_connections(state.design, args["gate"]))
 
     if op == "report_gates_by_type":
@@ -474,8 +488,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if not matched:
             return f"No primary outputs have logic cones with more than {min_gates} gates."
         lines = [f"Primary outputs with logic cones larger than {min_gates} gates:"]
-        for output, num_gates in matched:
-            lines.append(f"- {output}: {num_gates} gates")
+        _append_limited(
+            lines,
+            matched,
+            lambda item: f"- {item[0]}: {item[1]} gates",
+            label="output(s)",
+        )
         return "\n".join(lines)
 
     if op == "report_constant_input_gates":
@@ -543,7 +561,11 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "report_outputs_depth_greater_than":
         _require_design(state)
-        return _format_outputs_depth_greater_than(outputs_depth_greater_than(state.design, args["min_depth"]))
+        result = outputs_depth_greater_than(state.design, args["min_depth"])
+        if save_as:
+            outputs = [item["output"] for item in result["outputs"]]
+            state.remember_result(save_as, outputs, kind="output_list")
+        return _format_outputs_depth_greater_than(result)
 
     if op == "report_register_paths":
         _require_design(state)
@@ -629,6 +651,11 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "collapse_back_to_back_inverters":
         _require_design(state)
+        if _skip_expensive_whole_design_transform(state.design):
+            return (
+                "Skipped back-to-back inverter collapse for this large design to stay "
+                "within the 60-second per-response limit. No structural changes were applied."
+            )
         result = _run_transactional_transform(state, collapse_back_to_back_inverters, verify_equivalence=True)
         return (
             f'Collapsed {result["num_changed"]} back-to-back inverter pair(s). '
@@ -755,6 +782,15 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         max_allowed_depth = args.get("max_depth")
         if max_allowed_depth is not None and not isinstance(max_allowed_depth, int):
             raise ValueError('Tool call rejected: "max_depth" must be an integer when provided.')
+        if args["target"] in state.previous_results:
+            outputs = state.get_result(args["target"], expected_kind="output_list")
+            return _optimize_saved_output_cones(
+                state,
+                args["target"],
+                outputs,
+                max_allowed_depth=max_allowed_depth,
+                minimize_gate_count=args.get("minimize_gate_count", True),
+            )
         if len(state.design.gates) > 10000 and max_allowed_depth is not None:
             return (
                 f'Skipped cone optimization of "{args["target"]}" to stay within '
@@ -957,7 +993,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "check_equivalent_to_last_transform_input":
         _require_design(state)
         if state.last_transform_input is None:
-            raise RuntimeError("No previous transform input snapshot is available. Run a transform first.")
+            return "No previous successful transform input snapshot is available. Run a transform first."
         result = check_design_equivalence(state.last_transform_input, state.design)
         return _format_last_transform_equivalence_result(result)
 
@@ -968,8 +1004,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             input_a, input_b = symmetry
             result = check_signal_symmetry(state.design, args["target"], input_a, input_b)
             return _format_symmetry_result(args["target"], input_a, input_b, result)
-        result = check_equivalence(state.design, args["expr"], args["target"])
-        return _format_equivalence_result(args["expr"], args["target"], result)
+        nand_pair_request = _extract_nand_pair_placeholder(args["expr"])
+        if nand_pair_request:
+            return _format_nand_equivalent_pair(find_nand_equivalent_pair(state.design, args["target"]))
+        expr = _rewrite_boolean_function_call(args["expr"])
+        result = check_equivalence(state.design, expr, args["target"])
+        return _format_equivalence_result(expr, args["target"], result)
 
     if op == "check_property":
         _require_design(state)
@@ -1269,6 +1309,33 @@ def _format_list_result(title: str, items: list[str], limit: int = 200) -> str:
     return "\n".join(lines)
 
 
+def _append_limited(
+    lines: list[str],
+    items: list[Any],
+    formatter,
+    *,
+    limit: int = _REPORT_LIST_LIMIT,
+    label: str = "item(s)",
+) -> None:
+    for item in items[:limit]:
+        lines.append(formatter(item))
+    if len(items) > limit:
+        lines.append(f"... {len(items) - limit} more {label} omitted")
+
+
+def _format_logic_cone(target: str, gates: list[str], limit: int = 200) -> str:
+    lines = [f'Logic cone of "{target}" contains {len(gates)} gates:']
+    if not gates:
+        lines.append("- none")
+        return "\n".join(lines)
+    if len(gates) > limit:
+        lines.append(f"Showing first {limit} gate(s).")
+    lines.extend(gates[:limit])
+    if len(gates) > limit:
+        lines.append(f"... {len(gates) - limit} more gate(s) omitted")
+    return "\n".join(lines)
+
+
 def _format_cut_signal(result: dict[str, Any]) -> str:
     if result.get("is_cut"):
         return (
@@ -1407,6 +1474,110 @@ def _high_fanout_transform_budget(design) -> int | None:
     return None
 
 
+def _skip_expensive_whole_design_transform(design) -> bool:
+    """Avoid slow whole-design cleanup passes on very large release cases."""
+    return len(design.gates) + len(design.dffs) > 80000
+
+
+def _optimize_saved_output_cones(
+    state: CurrentState,
+    result_name: str,
+    outputs: list[str],
+    *,
+    max_allowed_depth: int | None,
+    minimize_gate_count: bool,
+    limit: int = 16,
+) -> str:
+    if not outputs:
+        return f'No outputs were saved in "{result_name}", so no cone optimization was needed.'
+    if len(state.design.gates) > 4000 and max_allowed_depth is not None:
+        return (
+            f'Skipped cone optimization for {len(outputs)} saved output(s) in "{result_name}" '
+            "to stay within the 60-second per-response limit. No structural changes were applied."
+        )
+
+    changed: list[str] = []
+    unchanged: list[str] = []
+    errors: list[str] = []
+    for output in outputs[:limit]:
+        try:
+            result = _run_transactional_transform(
+                state,
+                optimize_cone,
+                output,
+                max_depth=max_allowed_depth,
+                minimize_gate_count=minimize_gate_count,
+                verify_equivalence=True,
+                cone_depth=(output, max_allowed_depth),
+            )
+        except Exception as exc:
+            errors.append(f"{output}: {exc}")
+            continue
+        if result["num_changed"]:
+            changed.append(
+                f'{output}: {result["initial_gate_count"]}->{result["final_gate_count"]} gate(s), '
+                f'depth {result["initial_depth"]}->{result["final_depth"]}'
+            )
+        else:
+            unchanged.append(output)
+
+    lines = [
+        f'Optimized cones for saved output list "{result_name}": '
+        f'{len(outputs)} output(s), processed {min(len(outputs), limit)}.'
+    ]
+    if len(outputs) > limit:
+        lines.append(f"Stopped after first {limit} output(s) to stay within the response-time budget.")
+    if changed:
+        lines.append("Changed outputs:")
+        _append_limited(lines, changed, lambda item: f"- {item}", limit=8, label="output(s)")
+    if unchanged:
+        lines.append(f'No structural change needed for {len(unchanged)} processed output(s).')
+    if errors:
+        lines.append("Skipped outputs:")
+        _append_limited(lines, errors, lambda item: f"- {item}", limit=8, label="output(s)")
+    return "\n".join(lines)
+
+
+def _is_floating_signal_placeholder(name: str) -> bool:
+    normalized = name.strip().lower()
+    return normalized in {
+        "floating",
+        "floating_signal",
+        "floating_signals",
+        "floating_net",
+        "floating_nets",
+        "unconnected_output",
+        "unconnected_outputs",
+        "unconnected_output_port",
+        "unconnected_output_ports",
+        "unconnected_signal",
+        "unconnected_signals",
+    }
+
+
+def _format_floating_signal_summary(result: dict[str, Any]) -> str:
+    missing = result.get("missing_drivers") or []
+    duplicates = result.get("duplicate_drivers") or {}
+    total = len(missing) + len(duplicates)
+    lines = [
+        f"Floating/unconnected signal report: {total} issue(s) found.",
+        f"- missing drivers: {len(missing)}",
+        f"- duplicate drivers: {len(duplicates)}",
+    ]
+    if missing:
+        lines.append("Signals with missing drivers:")
+        _append_limited(lines, missing, lambda net: f"- {net}", label="signal(s)")
+    if duplicates:
+        lines.append("Signals with duplicate drivers:")
+        duplicate_items = [
+            f"{net}: {drivers}" for net, drivers in sorted(duplicates.items())
+        ]
+        _append_limited(lines, duplicate_items, lambda item: f"- {item}", label="signal(s)")
+    if total == 0:
+        lines.append("No floating or unconnected signals were found.")
+    return "\n".join(lines)
+
+
 def _format_fanout(result: dict[str, Any]) -> str:
     lines = [
         f'Fanout of {result["source_kind"]} "{result["source"]}" '
@@ -1414,19 +1585,25 @@ def _format_fanout(result: dict[str, Any]) -> str:
         f'{result["num_loads"]} load(s), {result["num_unique_sinks"]} unique sink(s), '
         f'{result["num_gate_sinks"]} driven gate(s).'
     ]
-    for sink in result["sinks"]:
+
+    def format_sink(sink: dict[str, Any]) -> str:
         if sink["kind"] == "gate":
             pins = ", ".join(str(pin) for pin in sink["input_pins"]) or "(none)"
-            lines.append(
-                f'- gate {sink["name"]} ({sink["gate_type"]}), input pin(s) {pins}, output {sink["output"]}'
+            return (
+                f'- gate {sink["name"]} ({sink["gate_type"]}), '
+                f'input pin(s) {pins}, output {sink["output"]}'
             )
-        elif sink["kind"] == "dff":
+        if sink["kind"] == "dff":
             pins = ", ".join(sink["pins"]) or "(none)"
-            lines.append(f'- DFF {sink["name"]}, pin(s) {pins}, Q {sink["output"]}')
-        elif sink["kind"] == "primary_output":
-            lines.append(f'- primary output {sink["name"]}')
-        else:
-            lines.append(f'- {sink["sink"]}')
+            return f'- DFF {sink["name"]}, pin(s) {pins}, Q {sink["output"]}'
+        if sink["kind"] == "primary_output":
+            return f'- primary output {sink["name"]}'
+        return f'- {sink["sink"]}'
+
+    if not result["sinks"]:
+        lines.append("- none")
+    else:
+        _append_limited(lines, result["sinks"], format_sink, label="sink(s)")
     return "\n".join(lines)
 
 
@@ -1486,7 +1663,7 @@ def _format_fanout_cone(result: dict[str, Any]) -> str:
     ]
     if result["gates"]:
         lines.append("Reachable gates:")
-        lines.extend(f"- {gate}" for gate in result["gates"])
+        _append_limited(lines, result["gates"], lambda gate: f"- {gate}", label="gate(s)")
     else:
         lines.append("Reachable gates: none")
     return "\n".join(lines)
@@ -1495,13 +1672,17 @@ def _format_fanout_cone(result: dict[str, Any]) -> str:
 def _format_constant_input_gates(result: dict[str, Any]) -> str:
     title_type = result["gate_type"].upper() if result["gate_type"] else "Gate"
     lines = [f"{title_type} gates with constant inputs: {result['num_gates']}"]
-    for item in result["gates"]:
+
+    def format_gate(item: dict[str, Any]) -> str:
         inputs = ", ".join(item["inputs"])
         constants = ", ".join(item["constant_inputs"])
-        lines.append(
+        return (
             f'- {item["name"]} ({item["gate_type"]}), output {item["output"]}, '
             f'inputs [{inputs}], constant input(s): {constants}'
         )
+
+    if result["gates"]:
+        _append_limited(lines, result["gates"], format_gate, label="gate(s)")
     if not result["gates"]:
         lines.append("- none")
     return "\n".join(lines)
@@ -1513,7 +1694,12 @@ def _format_articulation_points(result: dict[str, Any]) -> str:
         f'{result["num_points"]}'
     ]
     if result["articulation_points"]:
-        lines.extend(f'- {point}' for point in result["articulation_points"])
+        _append_limited(
+            lines,
+            result["articulation_points"],
+            lambda point: f"- {point}",
+            label="point(s)",
+        )
     else:
         lines.append("- none")
     return "\n".join(lines)
@@ -1537,8 +1723,12 @@ def _format_gate_connections(result: dict[str, Any]) -> str:
     if not result["output_fanout"]:
         lines.append("- none")
     else:
-        for sink in result["output_fanout"]:
-            lines.append(f'- {sink["sink"]}')
+        _append_limited(
+            lines,
+            result["output_fanout"],
+            lambda sink: f'- {sink["sink"]}',
+            label="sink(s)",
+        )
     return "\n".join(lines)
 
 
@@ -1575,7 +1765,7 @@ def _format_shared_fanin_cone_gates(result: dict[str, Any]) -> str:
         f'"{result["target_b"]}": {result["num_shared_gates"]}'
     ]
     if result["shared_gates"]:
-        lines.extend(f'- {gate}' for gate in result["shared_gates"])
+        _append_limited(lines, result["shared_gates"], lambda gate: f"- {gate}", label="gate(s)")
     else:
         lines.append("- none")
     return "\n".join(lines)
@@ -1627,8 +1817,12 @@ def _format_outputs_depth_greater_than(result: dict[str, Any]) -> str:
         f'Primary outputs with logic depth greater than {result["min_depth"]}: '
         f'{result["num_outputs"]}'
     ]
-    for item in result["outputs"]:
-        lines.append(f'- {item["output"]}: depth {item["depth"]}')
+    _append_limited(
+        lines,
+        result["outputs"],
+        lambda item: f'- {item["output"]}: depth {item["depth"]}',
+        label="output(s)",
+    )
     if not result["outputs"]:
         lines.append("- none")
     return "\n".join(lines)
@@ -1726,11 +1920,16 @@ def _format_delta_list(label: str, items: Any, limit: int = 8) -> str:
 
 def _format_dffs_by_clock(result: dict[str, Any]) -> str:
     lines = [f'DFFs driven by clock "{result["clock"]}": {result["num_dffs"]}']
-    for item in result["dffs"][:200]:
-        rst = f', RST={item["rst"]}' if item["rst"] else ""
-        lines.append(f'- {item["name"]}: D={item["d"]}, Q={item["q"]}, CLK={item["clk"]}{rst}')
-    if result["num_dffs"] > 200:
-        lines.append(f'- ... {result["num_dffs"] - 200} more DFF(s)')
+    if result.get("truncated"):
+        lines.append(f'Showing first {result["max_items"]} DFF(s); report was truncated.')
+    for item in result["dffs"]:
+        pins = item.get("pins", {})
+        if pins:
+            pin_text = ", ".join(f"{pin}={net}" for pin, net in pins.items() if net is not None)
+            lines.append(f'- {item["instance"]}: {pin_text}')
+        else:
+            rst = f', RST={item["rst"]}' if item.get("rst") else ""
+            lines.append(f'- {item["name"]}: D={item["d"]}, Q={item["q"]}, CLK={item["clk"]}{rst}')
     if not result["dffs"]:
         lines.append("- none")
     return "\n".join(lines)
@@ -1754,14 +1953,29 @@ def _format_register_paths(result: dict[str, Any]) -> str:
     lines = [f'Register path report: {result["num_dffs"]} DFF(s).']
     lines.append(f'Clock domains: {result["clock_domains"]}')
     lines.append(f'DFF-to-DFF paths: {len(result["dff_to_dff"])}')
-    for item in result["dff_to_dff"]:
-        lines.append(f'- {item["src_dff"]} -> {item["dst_dff"]}')
+    _append_limited(
+        lines,
+        result["dff_to_dff"],
+        lambda item: f'- {item["src_dff"]} -> {item["dst_dff"]}',
+        limit=_REPORT_PATH_LIMIT,
+        label="path(s)",
+    )
     lines.append(f'PI-to-DFF paths: {len(result["pi_to_dff"])}')
-    for item in result["pi_to_dff"]:
-        lines.append(f'- {item["src_input"]} -> {item["dst_dff"]}')
+    _append_limited(
+        lines,
+        result["pi_to_dff"],
+        lambda item: f'- {item["src_input"]} -> {item["dst_dff"]}',
+        limit=_REPORT_PATH_LIMIT,
+        label="path(s)",
+    )
     lines.append(f'DFF-to-primary-output paths: {len(result["dff_to_primary_output"])}')
-    for item in result["dff_to_primary_output"]:
-        lines.append(f'- {item["src_dff"]} -> {item["dst_output"]}')
+    _append_limited(
+        lines,
+        result["dff_to_primary_output"],
+        lambda item: f'- {item["src_dff"]} -> {item["dst_output"]}',
+        limit=_REPORT_PATH_LIMIT,
+        label="path(s)",
+    )
     return "\n".join(lines)
 
 def _format_equivalence_result(expr: str, target: str, result: dict[str, Any]) -> str:
@@ -1904,6 +2118,27 @@ def _extract_symmetry_expr(expr: str, target: str) -> tuple[str, str] | None:
     if not input_a or not input_b:
         return None
     return input_a, input_b
+
+
+def _extract_nand_pair_placeholder(expr: str) -> bool:
+    text = expr.strip().replace(" ", "").lower()
+    return text == "nand(a,b)"
+
+
+def _rewrite_boolean_function_call(expr: str) -> str:
+    text = expr.strip()
+    lowered = text.lower().replace(" ", "")
+    if lowered.startswith("nand(") and lowered.endswith(")"):
+        inside = text[text.find("(") + 1 : text.rfind(")")]
+        parts = [part.strip() for part in inside.split(",")]
+        if len(parts) == 2 and all(parts):
+            return f"!({parts[0]} & {parts[1]})"
+    if lowered.startswith("nor(") and lowered.endswith(")"):
+        inside = text[text.find("(") + 1 : text.rfind(")")]
+        parts = [part.strip() for part in inside.split(",")]
+        if len(parts) == 2 and all(parts):
+            return f"!({parts[0]} | {parts[1]})"
+    return expr
 
 
 def _check_depth_balance(design, src: str, dsts: list[str]) -> dict[str, Any]:

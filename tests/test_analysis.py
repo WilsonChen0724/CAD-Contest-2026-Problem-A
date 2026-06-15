@@ -10,6 +10,7 @@ from eda.analysis import (
     dff_relationships,
     dff_input_logic_structures,
     fanout_cone,
+    find_path,
     find_nand_equivalent_pair,
     gate_on_max_depth_path,
     gate_type_count,
@@ -80,6 +81,30 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(report["num_paths"], 2)
         self.assertIn(["src", "U1", "n1", "U2", "dst"], report["paths"])
         self.assertIn(["src", "U_bypass", "dst"], report["paths"])
+
+    def test_path_queries_accept_bus_base_destinations(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"out[0]", "out[1]"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["src"], output="out[0]"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="out[1]"))
+
+        path = find_path(design, "src", "out")
+        report = all_paths(design, "src", "out", max_paths=4)
+
+        self.assertTrue(path)
+        self.assertEqual(report["num_paths"], 2)
+        self.assertIn(["src", "U0", "out[0]"], report["paths"])
+        self.assertIn(["src", "U1", "out[1]"], report["paths"])
+
+    def test_path_queries_return_quickly_for_missing_destinations(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        previous = "src"
+        for index in range(50):
+            output = "dst" if index == 49 else f"n{index}"
+            design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=output))
+            previous = output
+
+        self.assertEqual(find_path(design, "src", "missing_bus"), [])
+        self.assertEqual(all_paths(design, "src", "missing_bus")["paths"], [])
 
     def test_gate_type_count_reports_one_type(self) -> None:
         design = Design(module_name="top", inputs={"a", "clk"}, outputs={"y"})
