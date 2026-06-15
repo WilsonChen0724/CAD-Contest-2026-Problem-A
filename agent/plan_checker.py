@@ -17,13 +17,25 @@ SUPPORTED_OPS = {
     "find_path",
     "all_paths_pass_through",
     "report_all_paths",
+    "all_paths",
+    "report_direct_pi_po_paths",
+    "check_cut_signal",
     "max_depth",
+    "report_max_logic_depth",
+    "report_cone_depth",
     "logic_cone",
     "report_gate_counts",
     "report_gate_type_count",
+    "report_primary_inputs",
+    "report_primary_outputs",
     "report_fanout",
     "report_highest_fanout_primary_input",
     "report_gate_connections",
+    "report_gate_type_connections",
+    "report_gates_by_type",
+    "report_gate_type_count_in_cone",
+    "report_deepest_output_cone",
+    "report_largest_fanin_cone_output",
     "report_outputs_by_cone_size",
     "report_fanout_cone",
     "report_constant_input_gates",
@@ -32,18 +44,23 @@ SUPPORTED_OPS = {
     "report_articulation_points",
     "report_shared_fanin_cone_gates",
     "derive_boolean_equation",
+    "find_nand_equivalent_pair",
     "report_max_depth_to_dff_d",
+    "report_max_register_to_register_depth",
     "report_outputs_depth_greater_than",
     "report_register_paths",
+    "report_dff_input_logic_structures",
     "report_last_transform_stats",
     "find_gates",
     "same_clock_domain",
+    "report_dffs_by_clock",
     "replace_buffers_with_and",
     "remove_dangling",
     "replace_inv_buf_with_inv",
     "collapse_back_to_back_inverters",
     "replace_or_with_nand_not",
     "replace_nand_const1_with_not",
+    "replace_with_and_not",
     "insert_buffers_for_fanout",
     "insert_dedicated_buffers_for_each_load",
     "insert_buffers_for_all_high_fanout",
@@ -52,10 +69,13 @@ SUPPORTED_OPS = {
     "constant_propagation",
     "optimize_design_depth",
     "replace_xnor_nor_with_basic_gates",
+    "replace_xnor_with_nor",
+    "replace_xor_with_nand",
     "replace_and_not_with_nand",
     "merge_equivalent_gates",
     "rename_gate",
     "rename_net",
+    "reconnect_gate_input",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -63,6 +83,7 @@ SUPPORTED_OPS = {
     "check_equivalent_to_last_transform_input",
     "check_equivalence",
     "check_property",
+    "check_signal_symmetry",
     "unsupported",
 }
 
@@ -73,13 +94,25 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "find_path": {"src": str, "dst": str},
     "all_paths_pass_through": {"src": str, "dst": str, "node": str},
     "report_all_paths": {"src": str, "dst": str},
+    "all_paths": {"src": str, "dst": str},
+    "report_direct_pi_po_paths": {},
+    "check_cut_signal": {"signal": str},
     "max_depth": {"src": str, "dst": str},
+    "report_max_logic_depth": {},
+    "report_cone_depth": {"target": str},
     "logic_cone": {"target": str},
     "report_gate_counts": {},
     "report_gate_type_count": {"gate_type": str},
+    "report_primary_inputs": {},
+    "report_primary_outputs": {},
     "report_fanout": {"net": str},
     "report_highest_fanout_primary_input": {},
     "report_gate_connections": {"gate": str},
+    "report_gate_type_connections": {"gate_type": str},
+    "report_gates_by_type": {"gate_type": str},
+    "report_gate_type_count_in_cone": {"target": str, "gate_type": str},
+    "report_deepest_output_cone": {},
+    "report_largest_fanin_cone_output": {},
     "report_outputs_by_cone_size": {"min_gates": int},
     "report_fanout_cone": {"source": str},
     "report_constant_input_gates": {},
@@ -88,18 +121,23 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "report_articulation_points": {"src": str, "dst": str},
     "report_shared_fanin_cone_gates": {"target_a": str, "target_b": str},
     "derive_boolean_equation": {"target": str},
+    "find_nand_equivalent_pair": {"target": str},
     "report_max_depth_to_dff_d": {},
+    "report_max_register_to_register_depth": {},
     "report_outputs_depth_greater_than": {"min_depth": int},
     "report_register_paths": {},
+    "report_dff_input_logic_structures": {},
     "report_last_transform_stats": {},
     "find_gates": {},
     "same_clock_domain": {"dff_a": str, "dff_b": str},
+    "report_dffs_by_clock": {"clock": str},
     "replace_buffers_with_and": {"extra_input": str},
     "remove_dangling": {},
     "replace_inv_buf_with_inv": {},
     "collapse_back_to_back_inverters": {},
     "replace_or_with_nand_not": {"cone_target": str},
     "replace_nand_const1_with_not": {},
+    "replace_with_and_not": {},
     "insert_buffers_for_fanout": {"net": str, "max_fanout": int},
     "insert_dedicated_buffers_for_each_load": {"net": str},
     "insert_buffers_for_all_high_fanout": {"max_fanout": int},
@@ -108,10 +146,13 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "constant_propagation": {},
     "optimize_design_depth": {},
     "replace_xnor_nor_with_basic_gates": {},
+    "replace_xnor_with_nor": {},
+    "replace_xor_with_nand": {},
     "replace_and_not_with_nand": {},
     "merge_equivalent_gates": {},
     "rename_gate": {"old_name": str, "new_name": str},
     "rename_net": {"old_net": str, "new_net": str},
+    "reconnect_gate_input": {"gate": str, "pin": str, "new_net": str},
     "check_connectivity": {},
     "check_fanout": {"max_fanout": int},
     "check_depth": {"src": str, "dst": str, "max_depth": int},
@@ -119,15 +160,19 @@ _REQUIRED_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "check_equivalent_to_last_transform_input": {},
     "check_equivalence": {"expr": str, "target": str},
     "check_property": {"target": str, "property": str},
+    "check_signal_symmetry": {"target": str, "input_a": str, "input_b": str},
     "unsupported": {"reason": str},
 }
 
 _OPTIONAL_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "find_path": {"avoid": list},
     "report_all_paths": {"max_paths": int},
+    "all_paths": {"max_paths": int},
     "report_gate_type_connections": {"max_items": int},
     "report_dffs_by_clock": {"max_items": int},
+    "report_dff_input_logic_structures": {"max_items": int},
     "find_gates": {"gate_type": (str, type(None)), "name_contains": (str, type(None))},
+    "report_gates_by_type": {"limit": int},
     "report_constant_input_gates": {"gate_type": (str, type(None))},
     "report_register_paths": {"max_paths": int},
     "replace_buffers_with_and": {"targets": list, "targets_from": str},
@@ -184,6 +229,11 @@ def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
     if not isinstance(steps, list) or not steps:
         raise PlanValidationError(f"{tool_name}.arguments.steps must be a non-empty list.")
 
+    repaired_steps = _repair_readonly_report_with_extra_transform_steps(tool_name, steps)
+    if repaired_steps is not None:
+        normalized_steps = [_normalize_tool_step(step) for step in repaired_steps]
+        return validate_plan({"steps": normalized_steps})
+
     allowed_ops = TOOL_ALLOWED_OPS[tool_name]
     for index, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
@@ -196,6 +246,49 @@ def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
 
     normalized_steps = [_normalize_tool_step(step) for step in steps]
     return validate_plan({"steps": normalized_steps})
+
+
+def _repair_readonly_report_with_extra_transform_steps(
+    tool_name: str,
+    steps: list[Any],
+) -> list[Any] | None:
+    """
+    Recover common LLM over-planning for follow-up report prompts.
+
+    Example: after a transform has already run, a prompt such as "Report the NOR
+    count after replacing XNOR gates" should be a read-only count. Some LLMs
+    include the previous transform again, sometimes under the wrong provider
+    tool. When there is at least one valid analysis step, keep only the
+    read-only analysis steps so the report can proceed without mutating the
+    design.
+    """
+    if tool_name == "run_transform_plan":
+        return None
+    analysis_ops = TOOL_ALLOWED_OPS["run_analysis_plan"]
+    transform_ops = TOOL_ALLOWED_OPS["run_transform_plan"] - {"unsupported"}
+    has_analysis_step = any(
+        isinstance(step, dict)
+        and step.get("op") in analysis_ops
+        and step.get("op") != "unsupported"
+        for step in steps
+    )
+    has_extra_transform_step = any(
+        isinstance(step, dict)
+        and step.get("op") in transform_ops
+        and step.get("op") not in analysis_ops
+        for step in steps
+    )
+    if not has_analysis_step or not has_extra_transform_step:
+        return None
+    return [
+        step
+        for step in steps
+        if not (
+            isinstance(step, dict)
+            and step.get("op") in transform_ops
+            and step.get("op") not in analysis_ops
+        )
+    ]
 
 
 def validate_plan(plan: Any) -> dict[str, Any]:
@@ -333,6 +426,8 @@ def _matches_expected_type(value: Any, expected_type: type | tuple[type, ...]) -
 
 def _validate_numeric_bounds(op: str, args: dict[str, Any]) -> None:
     non_negative_args = {
+        "all_paths": ("max_paths",),
+        "report_gates_by_type": ("limit",),
         "report_outputs_by_cone_size": ("min_gates",),
         "report_outputs_depth_greater_than": ("min_depth",),
         "check_fanout": ("max_fanout",),
@@ -365,6 +460,12 @@ def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
 
 def _normalize_tool_step(step: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(step)
+    args = normalized.get("args")
+    if normalized.get("op") == "find_gates" and isinstance(args, dict):
+        normalized_args = dict(args)
+        if normalized_args.get("name_contains") == "":
+            normalized_args.pop("name_contains")
+        normalized["args"] = normalized_args
     if normalized.get("save_as") is None:
         normalized.pop("save_as", None)
     return normalized

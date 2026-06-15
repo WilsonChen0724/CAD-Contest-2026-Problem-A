@@ -138,6 +138,57 @@ class PlanCheckerTest(unittest.TestCase):
 
         self.assertIn("not allowed", str(ctx.exception))
 
+    def test_repairs_analysis_tool_call_with_extra_transform_step(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {"op": "replace_xnor_with_nor", "args": {}, "save_as": None},
+                    {"op": "report_gate_type_count", "args": {"gate_type": "nor"}, "save_as": None},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "report_gate_type_count", "args": {"gate_type": "nor"}}]},
+        )
+
+    def test_repairs_wrong_readonly_tool_call_with_extra_transform_step(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_design_io_plan",
+            {
+                "steps": [
+                    {"op": "replace_xnor_with_nor", "args": {}, "save_as": None},
+                    {"op": "report_gate_type_count", "args": {"gate_type": "nor"}, "save_as": None},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "report_gate_type_count", "args": {"gate_type": "nor"}}]},
+        )
+
+    def test_normalizes_empty_find_gates_name_filter(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {
+                        "op": "find_gates",
+                        "args": {"gate_type": "xor", "name_contains": ""},
+                        "save_as": None,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "find_gates", "args": {"gate_type": "xor"}}]},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,13 @@ class RulePlannerTest(unittest.TestCase):
             {"op": "report_gate_counts", "args": {}},
         )
         self.assertEqual(
+            plan_request(
+                "Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).",
+                None,
+            ),
+            {"op": "report_gate_counts", "args": {}},
+        )
+        self.assertEqual(
             plan_request("How many NOT gates are in the current design?", None),
             {"op": "report_gate_type_count", "args": {"gate_type": "not"}},
         )
@@ -50,6 +57,10 @@ class RulePlannerTest(unittest.TestCase):
         self.assertEqual(
             plan_request("Report the gate type and pin connections of gate U0.", None),
             {"op": "report_gate_connections", "args": {"gate": "U0"}},
+        )
+        self.assertEqual(
+            plan_request("List all primary outputs of this design with their bit widths.", None),
+            {"op": "report_primary_outputs", "args": {}},
         )
         self.assertEqual(
             plan_request("Determine the number of primary inputs and outputs.", None),
@@ -75,6 +86,30 @@ class RulePlannerTest(unittest.TestCase):
             plan_request("List all gates that now connect to the renamed signal renamed_sig.", None),
             {"op": "report_fanout", "args": {"net": "renamed_sig"}},
         )
+        self.assertEqual(
+            plan_request("What is the depth of the cone of n14 now?", None),
+            {"op": "report_cone_depth", "args": {"target": "n14"}},
+        )
+        self.assertEqual(
+            plan_request("Which output has the largest fanin cone?", None),
+            {"op": "report_largest_fanin_cone_output", "args": {}},
+        )
+
+    def test_maps_dff_enable_hold_reports_before_generic_gate_rules(self) -> None:
+        self.assertEqual(
+            plan_request(
+                "Report the D input logic of the flip-flops to report any existing enable or hold structures implemented through multiplexers or AND gates.",
+                None,
+            ),
+            {"op": "report_dff_input_logic_structures", "args": {}},
+        )
+        self.assertEqual(
+            plan_request(
+                "How many flip-flops were found to have enable or hold structures in their D input logic?",
+                None,
+            ),
+            {"op": "report_dff_input_logic_structures", "args": {}},
+        )
 
     def test_maps_gate_on_max_depth_path(self) -> None:
         plan = plan_request("Determine whether gate g0 lies on any maximum-depth path of the design.", None)
@@ -86,6 +121,11 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "report_register_paths", "args": {}})
 
+    def test_maps_register_to_register_depth(self) -> None:
+        plan = plan_request("What is the maximum combinational depth on any register-to-register path in this design?", None)
+
+        self.assertEqual(plan, {"op": "report_max_register_to_register_depth", "args": {}})
+
     def test_maps_remove_dangling(self) -> None:
         plan = plan_request("Remove any dangling gates and nets.", None)
 
@@ -93,6 +133,11 @@ class RulePlannerTest(unittest.TestCase):
 
     def test_maps_eliminate_unused_logic(self) -> None:
         plan = plan_request("Eliminate unused logic gates from the netlist. Ensure functional equivalence is preserved.", None)
+
+        self.assertEqual(plan, {"op": "remove_dangling", "args": {}})
+
+    def test_maps_remove_floating_nodes(self) -> None:
+        plan = plan_request("Remove floating nodes that do not affect outputs. Make sure nothing changes functionally.", None)
 
         self.assertEqual(plan, {"op": "remove_dangling", "args": {}})
 
@@ -120,6 +165,10 @@ class RulePlannerTest(unittest.TestCase):
         plan = plan_request("Insert buffers wherever needed across the design so fanout is at most 8.", None)
 
         self.assertEqual(plan, {"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": 8}})
+
+        plan = plan_request("Perform fanout optimization across the netlist with maximum fanout 4. Ensure functional equivalence is preserved.", None)
+
+        self.assertEqual(plan, {"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": 4}})
 
     def test_maps_insert_dedicated_buffers_for_each_load(self) -> None:
         plan = plan_request(
@@ -170,6 +219,10 @@ class RulePlannerTest(unittest.TestCase):
             plan_request("Change the identifier of wire n74 to renamed_wire and update all references.", None),
             {"op": "rename_net", "args": {"old_net": "n74", "new_net": "renamed_wire"}},
         )
+        self.assertEqual(
+            plan_request("Update the name of signal n7431 to renamed_wire throughout the netlist.", None),
+            {"op": "rename_net", "args": {"old_net": "n7431", "new_net": "renamed_wire"}},
+        )
 
     def test_maps_design_level_transformations(self) -> None:
         self.assertEqual(
@@ -185,8 +238,20 @@ class RulePlannerTest(unittest.TestCase):
             {"op": "replace_xnor_nor_with_basic_gates", "args": {}},
         )
         self.assertEqual(
+            plan_request("Rewrite all XNOR gates using only NOR and NOT gates. Ensure the design functionality does not change.", None),
+            {"op": "replace_xnor_with_nor", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("Report the total NOR gate count after replacing all XNOR gates.", None),
+            {"op": "report_gate_type_count", "args": {"gate_type": "nor"}},
+        )
+        self.assertEqual(
             plan_request("Remap AND and NOT gates into NAND-only logic.", None),
             {"op": "replace_and_not_with_nand", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("Reconstruct the entire netlist using only AND and NOT gates while preserving functional equivalence.", None),
+            {"op": "replace_with_and_not", "args": {}},
         )
         self.assertEqual(
             plan_request("Merge equivalent duplicate gates.", None),
@@ -230,6 +295,13 @@ class RulePlannerTest(unittest.TestCase):
             plan_request("Check functional equivalence between internal signals n1287 and n2404.", None),
             {"op": "check_equivalence", "args": {"expr": "n1287", "target": "n2404"}},
         )
+        self.assertEqual(
+            plan_request(
+                "Check whether internal signals n29498 and n29471 are functionally equivalent for all input combinations.",
+                None,
+            ),
+            {"op": "check_equivalence", "args": {"expr": "n29498", "target": "n29471"}},
+        )
 
     def test_maps_release_test31_backend_prompts(self) -> None:
         self.assertEqual(
@@ -245,8 +317,57 @@ class RulePlannerTest(unittest.TestCase):
             {"op": "report_max_depth_to_dff_d", "args": {}},
         )
         self.assertEqual(
+            plan_request("What is the maximum combinational depth from any primary input to any primary output in the entire design?", None),
+            {"op": "report_max_logic_depth", "args": {}},
+        )
+        self.assertEqual(
             plan_request("How many outputs have a logic depth greater than 4?", None),
             {"op": "report_outputs_depth_greater_than", "args": {"min_depth": 4}},
+        )
+
+    def test_maps_late_release_backend_prompts(self) -> None:
+        self.assertEqual(
+            plan_request("List all NAND gates in this design with their input and output signals.", None),
+            {"op": "report_gate_type_connections", "args": {"gate_type": "nand"}},
+        )
+        self.assertEqual(
+            plan_request("Report any AND gates with a constant 0 input in this design.", None),
+            {"op": "report_constant_input_gates", "args": {"gate_type": "and"}},
+        )
+        self.assertEqual(
+            plan_request("What Boolean function does output n25 compute? Express it in terms of the primary inputs.", None),
+            {"op": "derive_boolean_equation", "args": {"target": "n25"}},
+        )
+        self.assertEqual(
+            plan_request("Write the logic expression for n30 using only the primary input names.", None),
+            {"op": "derive_boolean_equation", "args": {"target": "n30"}},
+        )
+        self.assertEqual(
+            plan_request("How many NAND gates are now in the restructured cone of output n8?", None),
+            {"op": "report_gate_type_count_in_cone", "args": {"target": "n8", "gate_type": "nand"}},
+        )
+        self.assertEqual(
+            plan_request("Try to restructure n10 with a target depth of 4, preserving functionality. Report original if already optimal.", None),
+            {"op": "optimize_cone", "args": {"target": "n10", "minimize_gate_count": True, "max_depth": 4}},
+        )
+        self.assertEqual(
+            plan_request("Reduce the critical path depth through restructuring. Make sure nothing changes functionally.", None),
+            {"op": "optimize_design_depth", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("Are there any redundant gates in this design that can be removed without changing functionality? Remove them if found.", None),
+            {"op": "merge_equivalent_gates", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("Confirm that the design is still functionally equivalent to the original.", None),
+            {"op": "check_equivalent_to_original", "args": {}},
+        )
+        self.assertEqual(
+            plan_request(
+                "Does there exist any pair of internal signals (a, b) already in the netlist such that NAND(a, b) is equivalent to n25?",
+                None,
+            ),
+            {"op": "find_nand_equivalent_pair", "args": {"target": "n25"}},
         )
 
     def test_maps_asserted_only_when_property(self) -> None:

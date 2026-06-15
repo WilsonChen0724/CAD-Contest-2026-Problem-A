@@ -23,6 +23,9 @@ from eda.transform import (
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
     replace_or_with_nand_not,
+    replace_with_and_not,
+    replace_xnor_with_nor,
+    replace_xor_with_nand,
 )
 from eda.verify import check_design_equivalence, check_fanout
 
@@ -78,6 +81,39 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["num_changed"], 0)
         self.assertIn("U_inv", design.gates)
         self.assertEqual(design.gates["U_buf"].type, "buf")
+
+    def test_replace_with_and_not_reconstructs_supported_primitives(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y0", "y1", "y2", "y3", "y4"})
+        design.add_gate(Gate(name="U_buf", type="buf", inputs=["a"], output="y0"))
+        design.add_gate(Gate(name="U_nand", type="nand", inputs=["a", "b"], output="y1"))
+        design.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="y2"))
+        design.add_gate(Gate(name="U_xor", type="xor", inputs=["a", "b"], output="y3"))
+        design.add_gate(Gate(name="U_xnor", type="xnor", inputs=["a", "b"], output="y4"))
+        original = deepcopy(design)
+
+        result = replace_with_and_not(design)
+
+        self.assertEqual(result["num_changed"], 5)
+        self.assertTrue(all(gate.type in {"and", "not"} for gate in design.gates.values()))
+        self.assertTrue(check_design_equivalence(original, design)["ok"])
+
+    def test_xnor_to_nor_avoids_gate_net_name_collisions(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U_xnor", type="xnor", inputs=["a", "b"], output="y"))
+
+        replace_xnor_with_nor(design)
+
+        self.assertFalse(set(design.gates) & design.all_nets())
+        self.assertEqual({gate.type for gate in design.gates.values()}, {"nor"})
+
+    def test_xor_to_nand_avoids_gate_net_name_collisions(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U_xor", type="xor", inputs=["a", "b"], output="y"))
+
+        replace_xor_with_nand(design)
+
+        self.assertFalse(set(design.gates) & design.all_nets())
+        self.assertEqual({gate.type for gate in design.gates.values()}, {"nand"})
 
     def test_collapse_back_to_back_inverters(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
@@ -306,4 +342,3 @@ class TransformTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

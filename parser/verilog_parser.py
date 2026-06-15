@@ -403,7 +403,7 @@ def _add_yosys_builtin_cell(
         if "B" in connections:
             inputs.append(_net_from_connection(connections["B"], bit_names))
         output = _net_from_connection(connections["Y"], bit_names)
-        design.add_gate(Gate(name=_safe_cell_name(cell_name), type=gate_type, inputs=inputs, output=output))
+        design.add_gate(Gate(name=_unique_cell_name(design, cell_name, {output}), type=gate_type, inputs=inputs, output=output))
         return
     if cell_type == "$mux":
         base = _safe_cell_name(cell_name)
@@ -414,15 +414,24 @@ def _add_yosys_builtin_cell(
         not_select = design.make_unique_wire_name(f"{base}_not_s")
         a_term = design.make_unique_wire_name(f"{base}_a_term")
         b_term = design.make_unique_wire_name(f"{base}_b_term")
-        design.add_gate(Gate(name=design.make_unique_gate_name(f"{base}_not_s"), type="not", inputs=[select], output=not_select))
-        design.add_gate(Gate(name=design.make_unique_gate_name(f"{base}_a_term"), type="and", inputs=[input_a, not_select], output=a_term))
-        design.add_gate(Gate(name=design.make_unique_gate_name(f"{base}_b_term"), type="and", inputs=[input_b, select], output=b_term))
-        design.add_gate(Gate(name=design.make_unique_gate_name(f"{base}_or"), type="or", inputs=[a_term, b_term], output=output))
+        pending = {not_select, a_term, b_term, output}
+        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_not_s", pending), type="not", inputs=[select], output=not_select))
+        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_a_term", pending), type="and", inputs=[input_a, not_select], output=a_term))
+        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_b_term", pending), type="and", inputs=[input_b, select], output=b_term))
+        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_or", pending), type="or", inputs=[a_term, b_term], output=output))
         return
     if cell_type == "$dff":
         design.add_dff(
             DFF(
-                name=_safe_cell_name(cell_name),
+                name=_unique_cell_name(
+                    design,
+                    cell_name,
+                    {
+                        _net_from_connection(connections["Q"], bit_names),
+                        _net_from_connection(connections["D"], bit_names),
+                        _net_from_connection(connections["CLK"], bit_names),
+                    },
+                ),
                 q=_net_from_connection(connections["Q"], bit_names),
                 d=_net_from_connection(connections["D"], bit_names),
                 clk=_net_from_connection(connections["CLK"], bit_names),
@@ -432,7 +441,16 @@ def _add_yosys_builtin_cell(
     if cell_type == "$adff":
         design.add_dff(
             DFF(
-                name=_safe_cell_name(cell_name),
+                name=_unique_cell_name(
+                    design,
+                    cell_name,
+                    {
+                        _net_from_connection(connections["Q"], bit_names),
+                        _net_from_connection(connections["D"], bit_names),
+                        _net_from_connection(connections["CLK"], bit_names),
+                        _net_from_connection(connections["ARST"], bit_names),
+                    },
+                ),
                 q=_net_from_connection(connections["Q"], bit_names),
                 d=_net_from_connection(connections["D"], bit_names),
                 clk=_net_from_connection(connections["CLK"], bit_names),
@@ -485,6 +503,19 @@ def _net_from_connection(bits: list[Any], bit_names: dict[Any, str]) -> str:
 
 def _safe_cell_name(name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_$]", "_", name)
-    if not safe or safe[0].isdigit():
+    if not safe or not re.match(r"^[A-Za-z_]", safe):
         safe = "U_" + safe
     return safe
+
+
+def _unique_cell_name(design: Design, base: str, reserved: set[str] | None = None) -> str:
+    name = _safe_cell_name(base)
+    used = set(design.gates) | set(design.dffs) | design.all_nets()
+    if reserved:
+        used |= reserved
+    if name not in used:
+        return name
+    index = 1
+    while f"{name}_{index}" in used:
+        index += 1
+    return f"{name}_{index}"
