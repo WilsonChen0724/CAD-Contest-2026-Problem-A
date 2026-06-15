@@ -317,6 +317,30 @@ def rename_gate(design: Design, old_name: str, new_name: str) -> dict:
         design.dffs[new_name] = dff
         return {"old_name": old_name, "new_name": new_name, "kind": "dff"}
     raise ValueError(f'Instance not found: "{old_name}"')
+
+
+@_rebuild_graph_after_transform
+def reconnect_gate_input(design: Design, gate_name: str, pin: str, new_net: str) -> dict:
+    """Reconnect one positional primitive-gate input pin."""
+    gate = design.gates.get(gate_name)
+    if gate is None:
+        raise ValueError(f'Gate not found: "{gate_name}"')
+    index = _pin_to_input_index(pin)
+    if index >= len(gate.inputs):
+        raise ValueError(f'Gate "{gate_name}" has no input pin {pin}.')
+    old_net = gate.inputs[index]
+    gate.inputs[index] = new_net
+    if not is_constant(new_net):
+        design.wires.add(new_net)
+    return {
+        "gate": gate_name,
+        "pin": pin,
+        "pin_index": index,
+        "old_net": old_net,
+        "new_net": new_net,
+    }
+
+
 @_rebuild_graph_after_transform
 def constant_propagation(design: Design, max_changes: int | None = None) -> dict:
     """Simplify primitive gates with constant or redundant inputs."""
@@ -690,21 +714,96 @@ def optimize_design_depth(
 
 @_rebuild_graph_after_transform
 def replace_xnor_nor_with_basic_gates(design: Design) -> dict:
-    """Rewrite XNOR and NOR gates as XOR/NOT and OR/NOT structures."""
+    """Backward-compatible alias for XNOR-to-NOR-only remapping."""
+    return replace_xnor_with_nor(design)
+
+
+@_rebuild_graph_after_transform
+def replace_xnor_with_nor(design: Design) -> dict:
+    """Rewrite each 2-input XNOR as a four-NOR implementation."""
     changed: list[dict[str, Any]] = []
+    used_nets = design.all_nets() | set(design.gates) | set(design.dffs)
+    used_gates = set(design.gates) | set(design.dffs) | used_nets
     for name in sorted(list(design.gates)):
         gate = design.gates.get(name)
-        if gate is None or gate.type not in {"xnor", "nor"} or len(gate.inputs) != 2:
+        if gate is None or gate.type != "xnor" or len(gate.inputs) != 2:
             continue
-        old_type = gate.type
-        mid_net = design.make_unique_wire_name(f"{name}_{old_type}_pre")
+        input_a, input_b = gate.inputs
         out_net = gate.output
-        gate.output = mid_net
-        gate.type = "xor" if old_type == "xnor" else "or"
-        inv_name = design.make_unique_gate_name(f"{name}_{old_type}_not")
-        design.add_gate(Gate(name=inv_name, type="not", inputs=[mid_net], output=out_net))
-        changed.append({"rewritten_gate": name, "old_type": old_type, "added_gate": inv_name, "added_net": mid_net})
-    return {"changed": changed, "num_changed": len(changed)}
+
+        nor_ab = _unique_from_used(f"{name}_nor_ab", used_nets)
+        nor_a = _unique_from_used(f"{name}_nor_a", used_nets)
+        nor_b = _unique_from_used(f"{name}_nor_b", used_nets)
+        used_gates.update({nor_ab, nor_a, nor_b})
+        nor_a_name = _unique_from_used(f"{name}_nor_a", used_gates)
+        nor_b_name = _unique_from_used(f"{name}_nor_b", used_gates)
+        nor_out_name = _unique_from_used(f"{name}_nor_out", used_gates)
+
+        gate.type = "nor"
+        gate.inputs = [input_a, input_b]
+        gate.output = nor_ab
+        design.add_gate(Gate(name=nor_a_name, type="nor", inputs=[input_a, nor_ab], output=nor_a))
+        design.add_gate(Gate(name=nor_b_name, type="nor", inputs=[input_b, nor_ab], output=nor_b))
+        design.add_gate(Gate(name=nor_out_name, type="nor", inputs=[nor_a, nor_b], output=out_net))
+        changed.append(
+            {
+                "rewritten_gate": name,
+                "old_type": "xnor",
+                "added_gates": [nor_a_name, nor_b_name, nor_out_name],
+                "added_nets": [nor_ab, nor_a, nor_b],
+                "output": out_net,
+            }
+        )
+    return {
+        "changed": changed,
+        "num_changed": len(changed),
+        "added_gate_counts": {"nor": 3 * len(changed)},
+        "rewritten_gate_counts": {"xnor": len(changed), "nor": len(changed)},
+    }
+
+
+@_rebuild_graph_after_transform
+def replace_xor_with_nand(design: Design) -> dict:
+    """Rewrite each 2-input XOR as the standard four-NAND implementation."""
+    changed: list[dict[str, Any]] = []
+    used_nets = design.all_nets() | set(design.gates) | set(design.dffs)
+    used_gates = set(design.gates) | set(design.dffs) | used_nets
+    for name in sorted(list(design.gates)):
+        gate = design.gates.get(name)
+        if gate is None or gate.type != "xor" or len(gate.inputs) != 2:
+            continue
+        input_a, input_b = gate.inputs
+        out_net = gate.output
+
+        nand_ab = _unique_from_used(f"{name}_nand_ab", used_nets)
+        nand_a = _unique_from_used(f"{name}_nand_a", used_nets)
+        nand_b = _unique_from_used(f"{name}_nand_b", used_nets)
+        used_gates.update({nand_ab, nand_a, nand_b})
+        nand_a_name = _unique_from_used(f"{name}_nand_a", used_gates)
+        nand_b_name = _unique_from_used(f"{name}_nand_b", used_gates)
+        nand_out_name = _unique_from_used(f"{name}_nand_out", used_gates)
+
+        gate.type = "nand"
+        gate.inputs = [input_a, input_b]
+        gate.output = nand_ab
+        design.add_gate(Gate(name=nand_a_name, type="nand", inputs=[input_a, nand_ab], output=nand_a))
+        design.add_gate(Gate(name=nand_b_name, type="nand", inputs=[input_b, nand_ab], output=nand_b))
+        design.add_gate(Gate(name=nand_out_name, type="nand", inputs=[nand_a, nand_b], output=out_net))
+        changed.append(
+            {
+                "rewritten_gate": name,
+                "old_type": "xor",
+                "added_gates": [nand_a_name, nand_b_name, nand_out_name],
+                "added_nets": [nand_ab, nand_a, nand_b],
+                "output": out_net,
+            }
+        )
+    return {
+        "changed": changed,
+        "num_changed": len(changed),
+        "added_gate_counts": {"nand": 3 * len(changed)},
+        "rewritten_gate_counts": {"xor": len(changed), "nand": len(changed)},
+    }
 
 
 @_rebuild_graph_after_transform
@@ -728,6 +827,112 @@ def replace_and_not_with_nand(design: Design) -> dict:
             design.add_gate(Gate(name=inv_name, type="nand", inputs=[mid_net, mid_net], output=out_net))
             changed.append({"rewritten_gate": name, "old_type": "and", "added_gates": [inv_name], "added_nets": [mid_net]})
     return {"changed": changed, "num_changed": len(changed)}
+
+
+@_rebuild_graph_after_transform
+def replace_with_and_not(design: Design) -> dict:
+    """Rewrite primitive combinational gates into an equivalent AND/NOT network."""
+    changed: list[dict[str, Any]] = []
+    added_gate_counts = {"and": 0, "not": 0}
+
+    def unique_gate_name(base: str, reserved: set[str] | None = None) -> str:
+        used = set(design.gates) | set(design.dffs) | design.all_nets()
+        if reserved:
+            used |= reserved
+        return _unique_from_used(base, used)
+
+    def add_not(base: str, source: str) -> str:
+        output = design.make_unique_wire_name(f"{base}_not")
+        name = unique_gate_name(f"{base}_not", {output})
+        design.add_gate(Gate(name=name, type="not", inputs=[source], output=output))
+        added_gate_counts["not"] += 1
+        return output
+
+    def add_and(base: str, input_a: str, input_b: str) -> str:
+        output = design.make_unique_wire_name(f"{base}_and")
+        name = unique_gate_name(f"{base}_and", {output})
+        design.add_gate(Gate(name=name, type="and", inputs=[input_a, input_b], output=output))
+        added_gate_counts["and"] += 1
+        return output
+
+    def add_restore_not(base: str, source: str, output: str) -> None:
+        name = unique_gate_name(f"{base}_restore_not", {output})
+        design.add_gate(Gate(name=name, type="not", inputs=[source], output=output))
+        added_gate_counts["not"] += 1
+
+    for name in sorted(list(design.gates)):
+        gate = design.gates.get(name)
+        if gate is None:
+            continue
+        old_type = gate.type
+        old_output = gate.output
+        inputs = list(gate.inputs)
+
+        if old_type in {"and", "not"}:
+            continue
+        if old_type == "buf" and len(inputs) == 1:
+            gate.type = "and"
+            gate.inputs = [inputs[0], inputs[0]]
+        elif old_type == "nand" and len(inputs) == 2:
+            mid = design.make_unique_wire_name(f"{name}_and")
+            gate.type = "and"
+            gate.inputs = inputs
+            gate.output = mid
+            add_restore_not(name, mid, old_output)
+        elif old_type == "or" and len(inputs) == 2:
+            not_a = add_not(f"{name}_a", inputs[0])
+            not_b = add_not(f"{name}_b", inputs[1])
+            mid = design.make_unique_wire_name(f"{name}_and")
+            gate.type = "and"
+            gate.inputs = [not_a, not_b]
+            gate.output = mid
+            add_restore_not(name, mid, old_output)
+        elif old_type == "nor" and len(inputs) == 2:
+            not_a = add_not(f"{name}_a", inputs[0])
+            not_b = add_not(f"{name}_b", inputs[1])
+            gate.type = "and"
+            gate.inputs = [not_a, not_b]
+        elif old_type == "xor" and len(inputs) == 2:
+            not_a = add_not(f"{name}_a", inputs[0])
+            not_b = add_not(f"{name}_b", inputs[1])
+            a_and_not_b = add_and(f"{name}_a_not_b", inputs[0], not_b)
+            not_a_and_b = add_and(f"{name}_not_a_b", not_a, inputs[1])
+            not_term_a = add_not(f"{name}_term_a", a_and_not_b)
+            not_term_b = add_not(f"{name}_term_b", not_a_and_b)
+            mid = design.make_unique_wire_name(f"{name}_and")
+            gate.type = "and"
+            gate.inputs = [not_term_a, not_term_b]
+            gate.output = mid
+            add_restore_not(name, mid, old_output)
+        elif old_type == "xnor" and len(inputs) == 2:
+            not_a = add_not(f"{name}_a", inputs[0])
+            not_b = add_not(f"{name}_b", inputs[1])
+            a_and_b = add_and(f"{name}_a_b", inputs[0], inputs[1])
+            not_a_and_not_b = add_and(f"{name}_not_a_not_b", not_a, not_b)
+            not_term_a = add_not(f"{name}_term_a", a_and_b)
+            not_term_b = add_not(f"{name}_term_b", not_a_and_not_b)
+            mid = design.make_unique_wire_name(f"{name}_and")
+            gate.type = "and"
+            gate.inputs = [not_term_a, not_term_b]
+            gate.output = mid
+            add_restore_not(name, mid, old_output)
+        else:
+            continue
+
+        changed.append(
+            {
+                "rewritten_gate": name,
+                "old_type": old_type,
+                "new_type": gate.type,
+                "output": old_output,
+            }
+        )
+
+    return {
+        "changed": changed,
+        "num_changed": len(changed),
+        "added_gate_counts": added_gate_counts,
+    }
 
 
 @_rebuild_graph_after_transform
@@ -838,6 +1043,30 @@ def _redirect_dff_input(dff: DFF, old_net: str, new_net: str) -> None:
         dff.clk = new_net
     if dff.rst == old_net:
         dff.rst = new_net
+
+
+def _pin_to_input_index(pin: str) -> int:
+    normalized = pin.strip().upper()
+    aliases = {"A": 0, "IN": 0, "I": 0, "IN0": 0, "A1": 0, "B": 1, "IN1": 1, "A2": 1}
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized.isdigit():
+        return int(normalized)
+    if normalized.startswith("IN") and normalized[2:].isdigit():
+        return int(normalized[2:])
+    raise ValueError(f'Unsupported input pin name: "{pin}"')
+
+
+def _unique_from_used(base: str, used: set[str]) -> str:
+    if base not in used:
+        used.add(base)
+        return base
+    index = 1
+    while f"{base}_{index}" in used:
+        index += 1
+    name = f"{base}_{index}"
+    used.add(name)
+    return name
 
 
 def _simplify_constant_gate(design: Design, gate_name: str) -> dict[str, Any] | None:
@@ -1510,6 +1739,3 @@ def _cone_max_depth(design: Design, target: str) -> int:
         if path:
             depths.append(depth)
     return max(depths, default=0)
-
-
-

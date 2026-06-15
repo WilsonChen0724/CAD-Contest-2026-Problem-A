@@ -82,6 +82,18 @@ def check_property(design: Design, target: str, property_text: str) -> dict:
     return _prove_no_counterexample(engine, ~prop_expr)
 
 
+def check_signal_symmetry(design: Design, target: str, input_a: str, input_b: str) -> dict:
+    """Check whether target is unchanged when two inputs are swapped."""
+    if input_a == input_b:
+        raise ValueError("Symmetry check needs two distinct inputs.")
+    engine = _BooleanEngine()
+    target_expr = engine.net_expr(design, target)
+    try:
+        return _prove_symmetry_with_z3(target_expr, input_a, input_b)
+    except ImportError:
+        return _prove_symmetry_by_bruteforce(target_expr, input_a, input_b)
+
+
 def check_design_equivalence(before: Design, after: Design, outputs: list[str] | None = None) -> dict:
     """Check whether two designs produce the same values on selected outputs."""
     selected_outputs = sorted(outputs if outputs is not None else before.outputs & after.outputs)
@@ -446,6 +458,62 @@ def _prove_by_bruteforce(bad_condition: _ExprNode) -> dict:
     for values in product([False, True], repeat=len(variables)):
         assignment = dict(zip(variables, values))
         if bad_condition.eval(assignment):
+            return {"ok": False, "engine": "bruteforce", "counterexample": assignment}
+    return {"ok": True, "engine": "bruteforce", "counterexample": None}
+
+
+def _prove_symmetry_with_z3(expr: _ExprNode, input_a: str, input_b: str) -> dict:
+    z3 = _import_z3()
+    ctx: dict[str, Any] = {}
+    zexpr = expr.z3(ctx)
+    a_var = ctx.setdefault(input_a, z3.Bool(input_a))
+    b_var = ctx.setdefault(input_b, z3.Bool(input_b))
+    expr_ab = z3.substitute(
+        zexpr,
+        (a_var, z3.BoolVal(False)),
+        (b_var, z3.BoolVal(True)),
+    )
+    expr_ba = z3.substitute(
+        zexpr,
+        (a_var, z3.BoolVal(True)),
+        (b_var, z3.BoolVal(False)),
+    )
+    solver = z3.Solver()
+    solver.add(expr_ab != expr_ba)
+    outcome = solver.check()
+    if outcome == z3.unsat:
+        return {"ok": True, "engine": "z3", "counterexample": None}
+    if outcome == z3.unknown:
+        return {"ok": False, "engine": "z3", "counterexample": None, "reason": str(solver.reason_unknown())}
+    model = solver.model()
+    counterexample = {
+        name: bool(model.eval(var, model_completion=True))
+        for name, var in sorted(ctx.items())
+        if name not in {input_a, input_b}
+    }
+    counterexample[f"{input_a}/{input_b}"] = "0/1 vs 1/0"
+    return {"ok": False, "engine": "z3", "counterexample": counterexample}
+
+
+def _prove_symmetry_by_bruteforce(expr: _ExprNode, input_a: str, input_b: str) -> dict:
+    variables = sorted(expr.vars() - {input_a, input_b})
+    if len(variables) > 12:
+        return {
+            "ok": False,
+            "engine": "bruteforce",
+            "counterexample": None,
+            "reason": "z3-solver is not installed and brute-force fallback is limited to 12 variables.",
+        }
+    for values in product([False, True], repeat=len(variables)):
+        assignment = dict(zip(variables, values))
+        first = dict(assignment)
+        first[input_a] = False
+        first[input_b] = True
+        second = dict(assignment)
+        second[input_a] = True
+        second[input_b] = False
+        if expr.eval(first) != expr.eval(second):
+            assignment[f"{input_a}/{input_b}"] = "0/1 vs 1/0"
             return {"ok": False, "engine": "bruteforce", "counterexample": assignment}
     return {"ok": True, "engine": "bruteforce", "counterexample": None}
 

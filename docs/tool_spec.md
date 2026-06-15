@@ -192,6 +192,27 @@ Depth convention:
 - DFF is a sequential boundary and is not counted in combinational depth.
 - The result should include one longest path when available.
 
+### report_cone_depth
+
+Report the maximum structural depth inside one target fanin cone.
+
+Input:
+
+```json
+{
+  "op": "report_cone_depth",
+  "args": {
+    "target": "n14"
+  }
+}
+```
+
+Rules:
+
+- Sources are primary inputs, DFF Q pins, constants, and undriven boundary nets.
+- Each primitive gate in the cone counts as 1 level.
+- Output includes the cone depth, cone gate count, and one example longest path.
+
 ### logic_cone
 
 Return the transitive fanin cone of an output or internal net.
@@ -284,6 +305,24 @@ Rules:
 - Stop at DFF input pins and primary outputs.
 - Return reachable gates, reached nets, primary-output endpoints, and DFF sinks.
 
+### report_primary_outputs
+
+List primary output names grouped with inferred bit widths.
+
+Input:
+
+```json
+{
+  "op": "report_primary_outputs",
+  "args": {}
+}
+```
+
+Rules:
+
+- Scalar outputs are reported as 1 bit.
+- Expanded bus bits such as `out[0]` and `out[1]` are grouped into one bus width.
+
 ### report_gate_connections
 
 Report one gate or DFF instance's type, pin connections, and output fanout.
@@ -312,6 +351,20 @@ Input:
   "args": {
     "min_gates": 100
   }
+}
+```
+
+### report_largest_fanin_cone_output
+
+Report the primary output or outputs with the largest structural fanin cone by
+gate count.
+
+Input:
+
+```json
+{
+  "op": "report_largest_fanin_cone_output",
+  "args": {}
 }
 ```
 
@@ -399,6 +452,26 @@ Input:
 }
 ```
 
+### report_max_register_to_register_depth
+
+Report the maximum combinational depth from any DFF Q pin to any downstream DFF
+D pin.
+
+Input:
+
+```json
+{
+  "op": "report_max_register_to_register_depth",
+  "args": {}
+}
+```
+
+Rules:
+
+- DFF Q pins and primary inputs are depth-0 boundaries for the combinational
+  logic feeding a destination D pin.
+- The reported source DFF is the register whose Q pin starts the example path.
+
 ### report_outputs_depth_greater_than
 
 Report primary outputs whose structural logic depth is greater than a threshold.
@@ -447,6 +520,28 @@ Rules:
 - `max_paths` is optional.
 - Traversal starts at DFF Q pins and stops at downstream DFF D pins.
 - Output may be capped to avoid path explosion on large designs.
+
+### report_dff_input_logic_structures
+
+Report DFF D-input logic that structurally resembles enable or hold logic.
+
+Input:
+
+```json
+{
+  "op": "report_dff_input_logic_structures",
+  "args": {
+    "max_items": 200
+  }
+}
+```
+
+Rules:
+
+- `max_items` is optional.
+- The current implementation is structural and heuristic.
+- It flags direct AND gating and mux-like OR-of-two-AND structures, including
+  hold-like cases where one data term is the DFF Q net.
 
 ### report_constant_input_gates
 

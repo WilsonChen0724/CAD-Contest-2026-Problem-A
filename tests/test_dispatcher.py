@@ -62,6 +62,21 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("y0: 2 gates", body)
         self.assertNotIn("y1: 1 gates", body)
 
+    def test_dispatcher_reports_output_widths_cone_depth_and_largest_cone(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"out[0]", "out[1]", "done"})
+        state.design.add_gate(Gate(name="U0", type="and", inputs=["a", "b"], output="n0"))
+        state.design.add_gate(Gate(name="U1", type="buf", inputs=["n0"], output="out[0]"))
+        state.design.add_gate(Gate(name="U2", type="buf", inputs=["a"], output="done"))
+
+        outputs = dispatch_plan(state, {"op": "report_primary_outputs", "args": {}})
+        depth = dispatch_plan(state, {"op": "report_cone_depth", "args": {"target": "out[0]"}})
+        largest = dispatch_plan(state, {"op": "report_largest_fanin_cone_output", "args": {}})
+
+        self.assertIn("out: 2 bit(s) [1:0]", outputs)
+        self.assertIn('fanin cone of "out[0]" is 2', depth)
+        self.assertIn("Largest primary-output fanin cone size: 2", largest)
+
     def test_dispatcher_reports_same_clock_domain(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"clk", "clk2"}, outputs={"out"})
@@ -80,6 +95,20 @@ class DispatcherTest(unittest.TestCase):
 
         self.assertIn("Yes", same)
         self.assertIn("No", different)
+
+    def test_dispatcher_reports_dff_input_logic_and_register_depth(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "en", "clk"}, outputs={"q0"})
+        state.design.add_dff(DFF(name="FF0", d="a", q="q_src", clk="clk"))
+        state.design.add_gate(Gate(name="U_and", type="and", inputs=["q_src", "en"], output="d0"))
+        state.design.add_dff(DFF(name="FF1", d="d0", q="q0", clk="clk"))
+
+        d_logic = dispatch_plan(state, {"op": "report_dff_input_logic_structures", "args": {}})
+        depth = dispatch_plan(state, {"op": "report_max_register_to_register_depth", "args": {}})
+
+        self.assertIn("1 of 2 DFF(s) matched", d_logic)
+        self.assertIn("AND gate U_and", d_logic)
+        self.assertIn("register-to-register path is 1", depth)
 
     def test_dispatcher_reports_structural_gate_data(self) -> None:
         state = CurrentState()
@@ -104,6 +133,26 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("FF0", fanout)
         self.assertIn('Gate "U0": type=and', connections)
         self.assertIn("GATE:U1", connections)
+
+    def test_dispatcher_reports_saved_gate_list_connections(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})
+        state.design.add_gate(Gate(name="U0", type="nand", inputs=["a", "b"], output="y0"))
+        state.design.add_gate(Gate(name="U1", type="nand", inputs=["a", "a"], output="y1"))
+
+        body = dispatch_plan(
+            state,
+            {
+                "steps": [
+                    {"op": "find_gates", "args": {"gate_type": "nand"}, "save_as": "nand_gates"},
+                    {"op": "report_gate_connections", "args": {"gate": "nand_gates"}},
+                ]
+            },
+        )
+
+        self.assertIn("Matched gates: 2", body)
+        self.assertIn("Gate connection report for saved gate list: 2", body)
+        self.assertIn("U0: type=nand", body)
 
     def test_dispatcher_checks_current_design_against_original_snapshot(self) -> None:
         state = CurrentState()
@@ -357,6 +406,19 @@ class DispatcherTest(unittest.TestCase):
 
         self.assertIn("Equivalent", equivalence)
         self.assertIn("Property holds", prop)
+
+    def test_dispatcher_recovers_symmetry_shorthand_equivalence(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
+        state.design.add_gate(Gate(name="U1", type="xor", inputs=["a", "b"], output="z"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "check_equivalence", "args": {"expr": "eq_z[a<->b]", "target": "z"}},
+        )
+
+        self.assertIn("symmetric", body)
+        self.assertIn("Yes", body)
 
     def test_dispatcher_formats_formal_counterexamples(self) -> None:
         state = CurrentState()
