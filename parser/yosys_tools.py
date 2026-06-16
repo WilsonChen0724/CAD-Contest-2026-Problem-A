@@ -8,21 +8,30 @@ import tempfile
 from pathlib import Path
 
 
-def run_yosys_script(script: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run_yosys_script(script: str, cwd: Path | None = None, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     """Run a Yosys script with the local OSS CAD Suite environment when present."""
     yosys, env = _resolve_yosys()
     with tempfile.TemporaryDirectory() as tmp:
         work_dir = Path(tmp)
         script_path = work_dir / "run.ys"
         script_path.write_text(script, encoding="utf-8")
-        return subprocess.run(
-            [str(yosys), "-q", "-s", str(script_path)],
-            cwd=cwd or work_dir,
-            env=env,
-            text=True,
-            capture_output=True,
-        )
-
+        command = [str(yosys), "-q", "-s", str(script_path)]
+        try:
+            return subprocess.run(
+                command,
+                cwd=cwd or work_dir,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            timeout_text = "unknown" if timeout is None else f"{timeout:.1f}"
+            message = f"Yosys timed out after {timeout_text} seconds."
+            stderr = (stderr + "\n" + message).strip()
+            return subprocess.CompletedProcess(command, 124, stdout, stderr)
 
 def quote_yosys_path(path: str | Path) -> str:
     """Quote a filesystem path for use in a Yosys script."""

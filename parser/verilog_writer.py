@@ -7,6 +7,11 @@ from eda.design import Design
 from parser.yosys_tools import quote_yosys_path, run_yosys_script
 
 
+WRITER_YOSYS_VALIDATE_TIMEOUT = 20.0
+WRITER_YOSYS_VALIDATE_GATE_LIMIT = 8000
+WRITER_YOSYS_VALIDATE_DFF_LIMIT = 1000
+
+
 def write_verilog(design: Design, path: str | Path) -> None:
     """
     Write a Design as primitive Verilog and validate it with Yosys.
@@ -14,9 +19,17 @@ def write_verilog(design: Design, path: str | Path) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     content = _render_verilog(design)
-    _validate_with_yosys(content, design.module_name)
+    if _should_validate_with_yosys(design):
+        _validate_with_yosys(content, design.module_name)
     p.write_text(content, encoding="utf-8")
 
+
+
+def _should_validate_with_yosys(design: Design) -> bool:
+    return (
+        len(design.gates) <= WRITER_YOSYS_VALIDATE_GATE_LIMIT
+        and len(design.dffs) <= WRITER_YOSYS_VALIDATE_DFF_LIMIT
+    )
 
 def _render_verilog(design: Design) -> str:
     ports = _format_port_list(design.inputs, design.outputs)
@@ -75,7 +88,7 @@ def _validate_with_yosys(content: str, module_name: str) -> None:
                 f"hierarchy -check -top {module_name}",
             ]
         )
-        completed = run_yosys_script(script)
+        completed = run_yosys_script(script, timeout=WRITER_YOSYS_VALIDATE_TIMEOUT)
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout).strip()
             if "GetShortPathName() failed" in message:

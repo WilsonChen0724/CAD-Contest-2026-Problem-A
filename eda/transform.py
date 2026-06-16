@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from math import ceil
 from functools import wraps
 from pathlib import Path
@@ -575,6 +576,7 @@ def optimize_cone(
     target: str,
     max_depth: int | None = None,
     minimize_gate_count: bool = True,
+    allow_yosys_abc: bool = True,
 ) -> dict:
     """
     Locally simplify a target fanin cone with function-preserving rewrites.
@@ -617,10 +619,28 @@ def optimize_cone(
         )
 
     final_gates = logic_cone(design, resolved_target)
+    if allow_yosys_abc:
+        abc_result = _try_yosys_abc_for_small_cone(
+            design,
+            target=target,
+            resolved_target=resolved_target,
+            max_depth=max_depth,
+            initial_gate_count=len(initial_gates),
+            initial_depth=initial_depth,
+            current_gate_count=len(final_gates),
+            current_depth=final_depth,
+        )
+        if abc_result is not None:
+            abc_result["changed"] = changed + abc_result.get("changed", [])
+            abc_result["num_changed"] = len(abc_result["changed"])
+            abc_result["target_resolution"] = resolved
+            return abc_result
+
     return {
         "target": target,
         "resolved_target": resolved_target,
         "target_resolution": resolved,
+        "engine": "local_cleanup",
         "max_depth": max_depth,
         "initial_gate_count": len(initial_gates),
         "final_gate_count": len(final_gates),
@@ -631,6 +651,226 @@ def optimize_cone(
         "num_changed": len(changed),
     }
 
+
+def _try_yosys_abc_for_small_cone(
+    design: Design,
+    target: str,
+    resolved_target: str,
+    max_depth: int | None,
+    initial_gate_count: int,
+    initial_depth: int,
+    current_gate_count: int,
+    current_depth: int,
+) -> dict[str, Any] | None:
+    if current_gate_count < 8 or current_gate_count > 1500:
+        return None
+
+    try:
+        candidate, abc_summary = _optimize_cone_with_yosys_abc(
+            design,
+            resolved_target=resolved_target,
+            max_depth=max_depth,
+            current_gate_count=current_gate_count,
+        )
+    except Exception:
+        return None
+
+    if resolved_target not in candidate.all_nets():
+        return None
+    candidate_depth = _cone_max_depth(candidate, resolved_target)
+    candidate_gates = logic_cone(candidate, resolved_target)
+    improved_depth = candidate_depth < current_depth
+    improved_gate_count = candidate_depth == current_depth and len(candidate_gates) < current_gate_count
+    if not (improved_depth or improved_gate_count):
+        return None
+
+    _replace_design_contents(design, candidate)
+    return {
+        "target": target,
+        "resolved_target": resolved_target,
+        "engine": "local_plus_cone_local_yosys_abc",
+        "max_depth": max_depth,
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": len(candidate_gates),
+        "removed_gate_count": initial_gate_count - len(candidate_gates),
+        "initial_depth": initial_depth,
+        "final_depth": candidate_depth,
+        "changed": [{"rule": "cone_local_yosys_abc", "summary": abc_summary}],
+        "num_changed": 1,
+    }
+
+
+def _optimize_cone_with_yosys_abc(
+    design: Design,
+    *,
+    resolved_target: str,
+    max_depth: int | None,
+    current_gate_count: int,
+) -> tuple[Design, dict[str, Any]]:
+    cone_gate_names = set(logic_cone(design, resolved_target))
+    if not cone_gate_names:
+        raise ValueError("Target cone is empty.")
+    if _cone_has_external_internal_fanout(design, cone_gate_names, resolved_target):
+        raise ValueError("Cone has shared internal fanout; multi-output cone extraction is not enabled.")
+
+    cone_design, boundary_inputs = _build_cone_design(design, resolved_target, cone_gate_names)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        raw_input = tmp_dir / "cone_input.v"
+        yosys_input = tmp_dir / "cone_yosys_input.v"
+        optimized_output = tmp_dir / "cone_optimized.v"
+        write_verilog(cone_design, raw_input)
+        _write_yosys_abc_input(raw_input, yosys_input)
+        script = _build_yosys_abc_cone_script(
+            input_path=yosys_input,
+            output_path=optimized_output,
+            top_module=cone_design.module_name,
+            max_depth=max_depth,
+        )
+        optimized_cone, reason = _run_yosys_depth_attempt(
+            script,
+            tmp_dir=tmp_dir,
+            output_path=optimized_output,
+            timeout=_cone_yosys_abc_timeout(current_gate_count),
+            label="cone_local_yosys_abc",
+        )
+        if optimized_cone is None:
+            raise RuntimeError(reason)
+
+    candidate = deepcopy(design)
+    _splice_optimized_cone(
+        candidate,
+        resolved_target=resolved_target,
+        old_cone_gate_names=cone_gate_names,
+        optimized_cone=optimized_cone,
+        boundary_inputs=boundary_inputs,
+    )
+    rebuild_graph(candidate)
+    connectivity = check_connectivity(candidate)
+    if not connectivity.get("ok"):
+        raise RuntimeError(
+            "cone-local Yosys/ABC failed connectivity check: "
+            f"{_summarize_connectivity_failure(connectivity)}"
+        )
+    return candidate, {
+        "engine": "cone_local_yosys_abc",
+        "boundary_inputs": boundary_inputs,
+        "optimized_cone_gates": len(optimized_cone.gates),
+    }
+
+
+def _cone_has_external_internal_fanout(
+    design: Design,
+    cone_gate_names: set[str],
+    resolved_target: str,
+) -> bool:
+    rebuild_graph(design)
+    for gate_name in cone_gate_names:
+        gate = design.gates[gate_name]
+        if gate.output == resolved_target:
+            continue
+        for sink in design.fanouts.get(gate.output, []):
+            if sink.startswith("GATE:") and sink.split(":", 1)[1] in cone_gate_names:
+                continue
+            return True
+    return False
+
+
+def _build_cone_design(
+    design: Design,
+    resolved_target: str,
+    cone_gate_names: set[str],
+) -> tuple[Design, list[str]]:
+    boundary_inputs: list[str] = []
+    boundary_seen: set[str] = set()
+    for gate_name in sorted(cone_gate_names):
+        gate = design.gates[gate_name]
+        for net in gate.inputs:
+            if is_constant(net):
+                continue
+            driver = design.drivers.get(net)
+            if driver and driver.startswith("GATE:") and driver.split(":", 1)[1] in cone_gate_names:
+                continue
+            if net not in boundary_seen:
+                boundary_seen.add(net)
+                boundary_inputs.append(net)
+
+    cone_design = Design(module_name="cone_opt", inputs=set(boundary_inputs), outputs={resolved_target})
+    for gate_name in sorted(cone_gate_names):
+        gate = design.gates[gate_name]
+        cone_design.add_gate(
+            Gate(
+                name=gate.name,
+                type=gate.type,
+                inputs=list(gate.inputs),
+                output=gate.output,
+                attrs=dict(gate.attrs),
+            )
+        )
+    rebuild_graph(cone_design)
+    return cone_design, boundary_inputs
+
+
+def _splice_optimized_cone(
+    design: Design,
+    *,
+    resolved_target: str,
+    old_cone_gate_names: set[str],
+    optimized_cone: Design,
+    boundary_inputs: list[str],
+) -> None:
+    boundary = set(boundary_inputs)
+    old_internal_outputs = {
+        design.gates[name].output
+        for name in old_cone_gate_names
+        if name in design.gates and design.gates[name].output != resolved_target
+    }
+    for gate_name in old_cone_gate_names:
+        design.gates.pop(gate_name, None)
+
+    net_map: dict[str, str] = {net: net for net in boundary}
+    net_map[resolved_target] = resolved_target
+    for constant in ("1'b0", "1'b1", "1'bx", "1'bz", "0", "1"):
+        net_map[constant] = constant
+
+    for gate_name in sorted(optimized_cone.gates):
+        gate = optimized_cone.gates[gate_name]
+        mapped_inputs = [_map_cone_net(design, net_map, net, resolved_target) for net in gate.inputs]
+        mapped_output = _map_cone_net(design, net_map, gate.output, resolved_target)
+        new_gate_name = design.make_unique_gate_name(f"{resolved_target}_cone_abc_{gate.name}")
+        design.add_gate(
+            Gate(
+                name=new_gate_name,
+                type=gate.type,
+                inputs=mapped_inputs,
+                output=mapped_output,
+                attrs=dict(gate.attrs),
+            )
+        )
+
+    for net in old_internal_outputs:
+        if net not in boundary and net not in design.outputs:
+            design.wires.discard(net)
+    rebuild_graph(design)
+
+
+def _map_cone_net(design: Design, net_map: dict[str, str], net: str, resolved_target: str) -> str:
+    if net in net_map:
+        return net_map[net]
+    if is_constant(net):
+        net_map[net] = net
+        return net
+    mapped = design.make_unique_wire_name(f"{resolved_target}_cone_{net}")
+    net_map[net] = mapped
+    return mapped
+
+
+def _cone_yosys_abc_timeout(gate_count: int) -> float:
+    if gate_count <= 100:
+        return 15.0
+    if gate_count <= 500:
+        return 25.0
+    return 40.0
 
 def _resolve_optimization_cone_target(design: Design, target: str) -> dict[str, Any]:
     if target not in design.all_nets():
@@ -745,28 +985,32 @@ def optimize_design_depth(
 
     gate_count = len(design.gates)
     has_fanout_buffers = any("__fanout_buf_" in net for net in design.all_nets())
-    if max_outputs is None and (gate_count > 10000 or has_fanout_buffers):
-        result = _optimize_design_depth_fast_cleanup(design, max_depth=max_depth)
-        result["engine"] = "large_design_bounded_cleanup"
-        result["fallback_reason"] = "Skipped full-design Yosys/ABC for a large or fanout-buffered design."
-        return result
+    adaptive_k = _adaptive_depth_topk(gate_count, has_fanout_buffers)
+    effective_max_outputs = max_outputs if max_outputs is not None else adaptive_k
 
-    if max_outputs is None and gate_count > 2000:
-        return _optimize_design_depth_locally(
-            design,
-            max_depth=max_depth,
-            max_outputs=16,
-            engine="topk_critical_cones",
-            bounded_reason="medium design: optimized the largest critical cones only",
-        )
+    if max_outputs is None and gate_count <= 2000 and not has_fanout_buffers:
+        try:
+            return _optimize_design_depth_with_yosys_abc(design, max_depth=max_depth)
+        except Exception as exc:
+            result = _optimize_design_depth_locally(
+                design,
+                max_depth=max_depth,
+                max_outputs=effective_max_outputs,
+                engine="topk_after_yosys_fallback",
+                bounded_reason=f"Yosys/ABC failed; optimized top {effective_max_outputs} critical cone target(s) with cheap local cleanup",
+                allow_cone_yosys=False,
+            )
+            result["fallback_reason"] = str(exc)
+            return result
 
-    try:
-        return _optimize_design_depth_with_yosys_abc(design, max_depth=max_depth)
-    except Exception as exc:
-        result = _optimize_design_depth_locally(design, max_depth=max_depth, max_outputs=max_outputs)
-        result["engine"] = "local_fallback"
-        result["fallback_reason"] = str(exc)
-        return result
+    return _optimize_design_depth_locally(
+        design,
+        max_depth=max_depth,
+        max_outputs=effective_max_outputs,
+        engine="adaptive_topk_critical_cones",
+        bounded_reason=f"adaptive top-K selected {effective_max_outputs} critical cone target(s) with cheap local cleanup",
+        allow_cone_yosys=False,
+    )
 
 
 @_rebuild_graph_after_transform
@@ -1472,9 +1716,24 @@ def _referenced_as_internal_net(design: Design, net: str) -> bool:
     return False
 
 
+def _adaptive_depth_topk(gate_count: int, has_fanout_buffers: bool) -> int:
+    if gate_count <= 2000:
+        k = 32
+    elif gate_count <= 8000:
+        k = 32
+    elif gate_count <= 20000:
+        k = 16
+    else:
+        k = 8
+    if has_fanout_buffers:
+        k = min(k, 8)
+    return k
+
+
 def _optimize_design_depth_with_yosys_abc(design: Design, max_depth: int | None = None) -> dict:
     initial_gate_count = len(design.gates)
     initial_depth = _design_max_depth(design)
+    attempts: list[str] = []
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -1484,34 +1743,58 @@ def _optimize_design_depth_with_yosys_abc(design: Design, max_depth: int | None 
         write_verilog(design, raw_input)
         _write_yosys_abc_input(raw_input, yosys_input)
 
-        script = _build_yosys_abc_depth_script(
+        full_script = _build_yosys_abc_depth_script(
             input_path=yosys_input,
             output_path=optimized_output,
             top_module=design.module_name,
             max_depth=max_depth,
             use_delay_target=max_depth is not None,
         )
-        completed = run_yosys_script(script, cwd=tmp_dir)
-        if completed.returncode != 0 and max_depth is not None:
-            script = _build_yosys_abc_depth_script(
+        optimized, reason = _run_yosys_depth_attempt(
+            full_script,
+            tmp_dir=tmp_dir,
+            output_path=optimized_output,
+            timeout=_yosys_abc_timeout(initial_gate_count, cheap=False),
+            label="full_yosys_abc",
+        )
+        if optimized is None:
+            attempts.append(reason)
+            if max_depth is not None:
+                fallback_script = _build_yosys_abc_depth_script(
+                    input_path=yosys_input,
+                    output_path=optimized_output,
+                    top_module=design.module_name,
+                    max_depth=max_depth,
+                    use_delay_target=False,
+                )
+                optimized, reason = _run_yosys_depth_attempt(
+                    fallback_script,
+                    tmp_dir=tmp_dir,
+                    output_path=optimized_output,
+                    timeout=_yosys_abc_timeout(initial_gate_count, cheap=False),
+                    label="full_yosys_abc_no_delay_target",
+                )
+                if optimized is None:
+                    attempts.append(reason)
+
+        if optimized is None:
+            cheap_script = _build_yosys_abc_cheap_depth_script(
                 input_path=yosys_input,
                 output_path=optimized_output,
                 top_module=design.module_name,
-                max_depth=max_depth,
-                use_delay_target=False,
             )
-            completed = run_yosys_script(script, cwd=tmp_dir)
-        if completed.returncode != 0:
-            message = (completed.stderr or completed.stdout or "unknown Yosys/ABC error").strip()
-            raise RuntimeError(message)
-        if not optimized_output.exists():
-            raise RuntimeError("Yosys/ABC did not produce an optimized Verilog file.")
+            optimized, reason = _run_yosys_depth_attempt(
+                cheap_script,
+                tmp_dir=tmp_dir,
+                output_path=optimized_output,
+                timeout=_yosys_abc_timeout(initial_gate_count, cheap=True),
+                label="cheap_yosys_abc",
+            )
+            if optimized is None:
+                attempts.append(reason)
 
-        optimized = parse_verilog(optimized_output)
-        _prune_unreferenced_wires(optimized)
-        connectivity = check_connectivity(optimized)
-        if not connectivity.get("ok"):
-            raise RuntimeError(f"Yosys/ABC optimized design failed connectivity check: {connectivity}")
+    if optimized is None:
+        raise RuntimeError("; ".join(attempts) or "Yosys/ABC failed without a detailed reason.")
 
     final_depth = _design_max_depth(optimized)
     final_gate_count = len(optimized.gates)
@@ -1544,26 +1827,84 @@ def _optimize_design_depth_with_yosys_abc(design: Design, max_depth: int | None 
     }
 
 
+def _run_yosys_depth_attempt(
+    script: str,
+    *,
+    tmp_dir: Path,
+    output_path: Path,
+    timeout: float,
+    label: str,
+) -> tuple[Design | None, str]:
+    if output_path.exists():
+        output_path.unlink()
+    completed = run_yosys_script(script, cwd=tmp_dir, timeout=timeout)
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "unknown Yosys/ABC error").strip()
+        return None, f"{label} failed: {message}"
+    if not output_path.exists():
+        return None, f"{label} failed: Yosys/ABC did not produce an optimized Verilog file."
+    try:
+        optimized = parse_verilog(output_path)
+        _prune_unreferenced_wires(optimized)
+        connectivity = check_connectivity(optimized)
+    except Exception as exc:
+        return None, f"{label} failed while parsing/checking candidate: {exc}"
+    if not connectivity.get("ok"):
+        return None, f"{label} failed connectivity check: {_summarize_connectivity_failure(connectivity)}"
+    return optimized, ""
+
+
+def _yosys_abc_timeout(gate_count: int, *, cheap: bool) -> float:
+    if cheap:
+        if gate_count <= 2000:
+            return 30.0
+        if gate_count <= 8000:
+            return 45.0
+        return 60.0
+    if gate_count <= 2000:
+        return 90.0
+    if gate_count <= 8000:
+        return 120.0
+    return 150.0
+
+
+def _summarize_connectivity_failure(connectivity: dict[str, Any]) -> str:
+    missing = connectivity.get("missing_drivers") or []
+    duplicates = connectivity.get("duplicate_drivers") or {}
+    pieces: list[str] = []
+    if missing:
+        sample = ", ".join(str(item) for item in missing[:8])
+        suffix = "" if len(missing) <= 8 else f", +{len(missing) - 8} more"
+        pieces.append(f"missing_drivers=[{sample}{suffix}]")
+    if duplicates:
+        sample_items = list(duplicates.items())[:4]
+        sample = ", ".join(f"{net}: {drivers}" for net, drivers in sample_items)
+        suffix = "" if len(duplicates) <= 4 else f", +{len(duplicates) - 4} more"
+        pieces.append(f"duplicate_drivers={{{sample}{suffix}}}")
+    return "; ".join(pieces) or str(connectivity)
+
 def _optimize_design_depth_locally(
     design: Design,
     max_depth: int | None = None,
     max_outputs: int | None = None,
     engine: str = "local",
     bounded_reason: str | None = None,
+    allow_cone_yosys: bool = False,
 ) -> dict:
-    reports = _optimization_target_cone_sizes(design)
-    outputs = [name for name, _ in sorted(reports.items(), key=lambda item: item[1]["num_gates"], reverse=True)]
-    initial_gate_count = len(design.gates)
-    initial_depth = _design_max_depth(design)
-
-    if max_outputs is None and (len(outputs) > 128 or len(design.gates) > 2000):
-        return _optimize_design_depth_with_bounded_cleanup(
+    expensive_depth = len(design.gates) > 10000
+    if expensive_depth:
+        return _optimize_design_depth_large_topk_cleanup(
             design,
             max_depth=max_depth,
-            outputs=outputs,
-            initial_gate_count=initial_gate_count,
-            initial_depth=initial_depth,
+            max_outputs=max_outputs or _adaptive_depth_topk(len(design.gates), False),
+            engine=engine,
+            bounded_reason=bounded_reason,
         )
+
+    reports = _optimization_target_cone_sizes(design)
+    outputs = [name for name, _ in sorted(reports.items(), key=lambda item: (item[1].get("depth", 0), item[1].get("num_gates", 0), item[0]), reverse=True)]
+    initial_gate_count = len(design.gates)
+    initial_depth = _design_max_depth(design)
 
     selected_outputs = outputs[:max_outputs] if max_outputs is not None else outputs
     changed: list[dict[str, Any]] = []
@@ -1573,15 +1914,25 @@ def _optimize_design_depth_locally(
         if output not in design.all_nets():
             skipped_dynamic.append({"target": output, "reason": "target no longer exists after earlier local rewrites"})
             continue
+        cone_size = reports.get(output, {}).get("num_gates", 0)
+        if len(design.gates) > 10000 and cone_size > 2000:
+            skipped_dynamic.append({"target": output, "reason": f"skipped large cone with {cone_size} gate(s)"})
+            continue
         try:
-            result = optimize_cone(design, output, max_depth=max_depth, minimize_gate_count=True)
+            result = optimize_cone(
+                design,
+                output,
+                max_depth=max_depth,
+                minimize_gate_count=True,
+                allow_yosys_abc=allow_cone_yosys,
+            )
         except ValueError as exc:
             skipped_dynamic.append({"target": output, "reason": str(exc)})
             continue
         if result.get("num_changed", 0):
             changed.append(result)
 
-    final_depth = _design_max_depth(design)
+    final_depth = _design_max_depth(design) if not expensive_depth else None
     result = {
         "engine": engine,
         "max_depth": max_depth,
@@ -1599,6 +1950,44 @@ def _optimize_design_depth_locally(
     if bounded_reason is not None:
         result["bounded_reason"] = bounded_reason
     return result
+
+
+def _optimize_design_depth_large_topk_cleanup(
+    design: Design,
+    max_depth: int | None,
+    max_outputs: int,
+    engine: str,
+    bounded_reason: str | None,
+) -> dict:
+    initial_gate_count = len(design.gates)
+    targets = _large_design_depth_targets(design, max_outputs)
+    cleanup_result = _optimize_design_depth_fast_cleanup(design, max_depth=max_depth)
+    cleanup_result.update(
+        {
+            "engine": engine,
+            "max_outputs": max_outputs,
+            "attempted_outputs": targets,
+            "skipped_outputs": [
+                {"target": target, "reason": "large design: selected by adaptive top-K, but skipped expensive per-cone rewrite"}
+                for target in targets
+            ],
+            "bounded_reason": bounded_reason or "large design: adaptive top-K selected targets and applied cheap safe cleanup",
+        }
+    )
+    cleanup_result["initial_gate_count"] = initial_gate_count
+    cleanup_result["final_gate_count"] = len(design.gates)
+    return cleanup_result
+
+
+def _large_design_depth_targets(design: Design, max_outputs: int) -> list[str]:
+    sinks = set(design.outputs)
+    sinks.update(dff.d for dff in design.dffs.values() if not is_constant(dff.d))
+    def score(net: str) -> tuple[int, int, str]:
+        driver = design.drivers.get(net, "")
+        driven_by_gate = 1 if driver.startswith("GATE:") else 0
+        fanout = len(design.fanouts.get(net, []))
+        return (-driven_by_gate, -fanout, net)
+    return sorted((net for net in sinks if net in design.all_nets()), key=score)[:max_outputs]
 
 
 def _optimize_design_depth_fast_cleanup(
@@ -1769,6 +2158,47 @@ def _build_yosys_abc_depth_script(
 
 
 
+def _build_yosys_abc_cone_script(
+    input_path: Path,
+    output_path: Path,
+    top_module: str,
+    max_depth: int | None,
+) -> str:
+    abc_pass = f"abc -D {max(1, max_depth or 1)}" if max_depth is not None else "abc -fast"
+    return "\n".join(
+        [
+            f"read_verilog -sv -noopt {quote_yosys_path(input_path)}",
+            f"hierarchy -check -top {top_module}",
+            "proc",
+            "flatten",
+            "opt_clean",
+            "opt -full",
+            "techmap",
+            "opt -full",
+            abc_pass,
+            "opt_clean",
+            f"write_verilog -noattr -simple-lhs {quote_yosys_path(output_path)}",
+        ]
+    )
+
+def _build_yosys_abc_cheap_depth_script(
+    input_path: Path,
+    output_path: Path,
+    top_module: str,
+) -> str:
+    return "\n".join(
+        [
+            f"read_verilog -sv -noopt {quote_yosys_path(input_path)}",
+            f"hierarchy -check -top {top_module}",
+            "proc",
+            "flatten",
+            "opt_clean",
+            "abc -fast",
+            "opt_clean",
+            f"write_verilog -noattr -simple-lhs {quote_yosys_path(output_path)}",
+        ]
+    )
+
 def _prune_unreferenced_wires(design: Design) -> None:
     referenced = set(design.inputs) | set(design.outputs)
     for gate in design.gates.values():
@@ -1798,15 +2228,8 @@ def _replace_design_contents(target: Design, source: Design) -> None:
 
 
 def _design_max_depth(design: Design) -> int:
-    sources = _depth_sources(design)
-    sinks = _depth_sinks(design)
-    max_seen = 0
-    for source in sorted(sources):
-        for sink in sorted(sinks):
-            depth, path = max_depth(design, source, sink)
-            if path:
-                max_seen = max(max_seen, depth)
-    return max_seen
+    profile = _fast_depth_profile(design)
+    return profile["max_depth"]
 
 
 def _depth_sources(design: Design) -> set[str]:
@@ -1818,22 +2241,83 @@ def _depth_sinks(design: Design) -> set[str]:
 
 
 def _optimization_target_cone_sizes(design: Design) -> dict[str, dict[str, Any]]:
-    reports = primary_output_cone_sizes(design)
-    for target in sorted({dff.d for dff in design.dffs.values() if not is_constant(dff.d)}):
-        if target in reports:
-            continue
-        cone_gates = logic_cone(design, target)
-        reports[target] = {
+    profile = _fast_depth_profile(design)
+    report: dict[str, dict[str, Any]] = {}
+    for target, depth in profile["endpoint_depths"].items():
+        report[target] = {
             "target": target,
-            "num_gates": len(cone_gates),
+            "depth": depth,
+            "num_gates": 0,
             "num_nets": 0,
         }
-    return reports
+    return report
+
+
 def _cone_max_depth(design: Design, target: str) -> int:
-    sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
-    depths = []
-    for source in sorted(sources):
-        depth, path = max_depth(design, source, target)
-        if path:
-            depths.append(depth)
-    return max(depths, default=0)
+    profile = _fast_depth_profile(design)
+    return profile["net_depths"].get(target, 0)
+
+
+def _fast_depth_profile(design: Design) -> dict[str, Any]:
+    rebuild_graph(design)
+    constants = {"1'b0", "1'b1", "0", "1"}
+    sources = _depth_sources(design) | constants
+    all_nets = design.all_nets() | constants
+    net_depth: dict[str, int] = {net: 0 for net in sources}
+
+    # Treat undriven non-constant nets as structural boundaries. Connectivity
+    # checks report them elsewhere; depth estimation should stay bounded.
+    for net in all_nets:
+        driver = design.drivers.get(net)
+        if driver is None or not driver.startswith("GATE:"):
+            net_depth.setdefault(net, 0)
+
+    gate_best_input: dict[str, int] = {}
+    gate_remaining: dict[str, int] = {}
+    ready: list[str] = []
+    for gate_name, gate in design.gates.items():
+        remaining = 0
+        best = 0
+        for input_net in gate.inputs:
+            if input_net in net_depth:
+                best = max(best, net_depth[input_net])
+            else:
+                remaining += 1
+        gate_best_input[gate_name] = best
+        gate_remaining[gate_name] = remaining
+        if remaining == 0:
+            ready.append(gate_name)
+
+    processed: set[str] = set()
+    while ready:
+        gate_name = ready.pop()
+        if gate_name in processed:
+            continue
+        processed.add(gate_name)
+        gate = design.gates[gate_name]
+        output_depth = gate_best_input[gate_name] + 1
+        if output_depth <= net_depth.get(gate.output, -1):
+            continue
+        net_depth[gate.output] = output_depth
+        for sink in design.fanouts.get(gate.output, []):
+            if not sink.startswith("GATE:"):
+                continue
+            sink_gate_name = sink.split(":", 1)[1]
+            if sink_gate_name in processed:
+                continue
+            gate_best_input[sink_gate_name] = max(gate_best_input.get(sink_gate_name, 0), output_depth)
+            gate_remaining[sink_gate_name] = max(0, gate_remaining.get(sink_gate_name, 0) - 1)
+            if gate_remaining[sink_gate_name] == 0:
+                ready.append(sink_gate_name)
+
+    endpoints = sorted(net for net in _depth_sinks(design) if net in net_depth)
+    endpoint_depths = {net: net_depth[net] for net in endpoints}
+    max_depth_value = max(endpoint_depths.values(), default=0)
+    return {
+        "net_depths": net_depth,
+        "endpoint_depths": endpoint_depths,
+        "max_depth": max_depth_value,
+        "processed_gates": len(processed),
+        "unprocessed_gates": len(design.gates) - len(processed),
+    }
+
