@@ -455,7 +455,14 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
     if (
         ("replace" in low or "rewrite" in low or "remap" in low or "convert" in low)
         and "xor" in low
-        and ("nand-only" in low or "nand only" in low or ("nand" in low and "only" in low))
+        and (
+            "nand-only" in low
+            or "nand only" in low
+            or "4-nand" in low
+            or "four-nand" in low
+            or "nand circuit" in low
+            or ("nand" in low and "only" in low)
+        )
     ):
         return {"op": "replace_xor_with_nand", "args": {}}
 
@@ -503,6 +510,11 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
     """
     if "paths of length 0" in low or "direct wire connection" in low:
         return {"op": "report_direct_pi_po_paths", "args": {}}
+
+    if ("successor" in low or "successors" in low or "driven by" in low) and "gate" in low:
+        gate = _extract_after_keyword(text, "gate") or _extract_after_keyword(text, "by")
+        if gate:
+            return {"op": "report_fanout", "args": {"net": gate}}
 
     if "cut" in low and ("primary input" in low or "primary output" in low):
         signal = _extract_after_keyword(text, "wire") or _extract_after_keyword(text, "signal")
@@ -800,20 +812,31 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
             return {"op": "all_paths_pass_through", "args": {"src": src, "dst": dst, "node": node}}
 
     if (
-        ("all paths" in low or "every path" in low or "list paths" in low or "enumerate paths" in low)
-        and "from" in low
-        and "to" in low
+        (
+            "all paths" in low
+            or "every path" in low
+            or "list paths" in low
+            or "enumerate paths" in low
+            or "enumeration of paths" in low
+        )
+        and (("from" in low and "to" in low) or "between" in low)
     ):
         endpoints = _extract_src_dst(text)
         if endpoints:
             src, dst = endpoints
-            limit = _extract_limit_int(text)
+            limit = _extract_path_limit_int(text)
             args: dict[str, Any] = {"src": src, "dst": dst}
             if limit is not None:
                 args["max_paths"] = limit
             return {"op": "report_all_paths", "args": args}
 
-    if "maximum logic depth" in low or "max logic depth" in low or "max depth" in low:
+    if (
+        "maximum logic depth" in low
+        or "max logic depth" in low
+        or "max depth" in low
+        or "critical path depth" in low
+        or "longest combinational path depth" in low
+    ):
         endpoints = _extract_src_dst(text)
         if endpoints:
             src, dst = endpoints
@@ -867,7 +890,16 @@ def _plan_verification(text: str, low: str) -> dict[str, Any] | None:
         plan when fanout is requested without a numeric limit. Returns None when
         this is not a verification request.
     """
-    if "check" not in low and "verify" not in low and "prove" not in low and "confirm" not in low:
+    if (
+        "check" not in low
+        and "verify" not in low
+        and "prove" not in low
+        and "confirm" not in low
+        and "equivalent" not in low
+        and "equivalence" not in low
+        and "identical logic" not in low
+        and "same logic" not in low
+    ):
         return None
 
     if "connectivity" in low or "connection" in low or "floating" in low or "driver" in low:
@@ -893,6 +925,12 @@ def _plan_verification(text: str, low: str) -> dict[str, Any] | None:
         equivalence = _extract_equivalence(text)
         if equivalence:
             expr, target = equivalence
+            return {"op": "check_equivalence", "args": {"expr": expr, "target": target}}
+
+    if "identical logic" in low or "same logic" in low or "same logical" in low:
+        signal_pair = _extract_signal_pair(text)
+        if signal_pair:
+            expr, target = signal_pair
             return {"op": "check_equivalence", "args": {"expr": expr, "target": target}}
 
     if "property" in low or "asserted only when" in low or "only when" in low:
@@ -1097,6 +1135,7 @@ def _extract_src_dst(text: str) -> tuple[str, str] | None:
     if src and dst:
         return src, dst
     patterns = [
+        rf"\bbetween\s+({_SIGNAL_RE})\s+and\s+({_SIGNAL_RE})",
         rf"\bconnecting\s+(?:primary\s+)?input\s+({_SIGNAL_RE})\s+to\s+(?:primary\s+)?output\s+({_SIGNAL_RE})",
         rf"\boriginating\s+at\s+(?:primary\s+)?input\s+({_SIGNAL_RE}).*?\bterminating\s+at\s+(?:primary\s+)?output\s+({_SIGNAL_RE})",
         rf"\bfrom\s+(?:primary\s+)?input\s+({_SIGNAL_RE})\s+to\s+(?:primary\s+)?output\s+({_SIGNAL_RE})",
@@ -1264,6 +1303,15 @@ def _extract_connection_instance(text: str) -> str | None:
 
 def _extract_signal_equivalence_pair(text: str) -> tuple[str, str] | None:
     match = re.search(
+        rf"\b(?:determine\s+whether\s+)?signals?\s+({_SIGNAL_RE})\s+and\s+({_SIGNAL_RE})\s+"
+        rf"(?:are\s+)?functionally\s+equivalent",
+        text,
+        flags=re.I,
+    )
+    if match:
+        return match.group(1), match.group(2)
+
+    match = re.search(
         rf"\b(?:internal\s+)?signals?\s+({_SIGNAL_RE})\s+and\s+({_SIGNAL_RE})\s+"
         rf"(?:are\s+)?functionally\s+equivalent",
         text,
@@ -1285,6 +1333,13 @@ def _extract_signal_equivalence_pair(text: str) -> tuple[str, str] | None:
         text,
         flags=re.I,
     )
+    if match:
+        return match.group(1), match.group(2)
+    return None
+
+
+def _extract_signal_pair(text: str) -> tuple[str, str] | None:
+    match = re.search(rf"\b({_SIGNAL_RE})\s+and\s+({_SIGNAL_RE})\b", text, flags=re.I)
     if match:
         return match.group(1), match.group(2)
     return None
@@ -1380,6 +1435,19 @@ def _extract_limit_int(text: str) -> int | None:
         if match:
             return int(match.group(1))
     return _extract_last_int(text)
+
+
+def _extract_path_limit_int(text: str) -> int | None:
+    patterns = [
+        r"\b(?:first|show|list|enumerate|report|limit(?:ed)?\s+to|up\s+to|at\s+most|no\s+more\s+than)\s+(\d+)\s+(?:paths?|path\b)",
+        r"\b(?:paths?|path)\s*(?:<=|<|=)\s*(\d+)",
+        r"\b(?:max(?:imum)?|limit|bound)\s+(?:number\s+of\s+)?paths?\D+(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def _extract_first_int(text: str) -> int | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Any
 
 from runtime.state import CurrentState
@@ -81,6 +82,9 @@ from eda.verify import (
     check_property,
     check_signal_symmetry,
 )
+
+DEFAULT_COMPLETE_PATH_LIMIT = 300000
+ALL_PATHS_STDOUT_LIMIT = 20
 
 SUPPORTED_OPS = {
     "begin_testcase",
@@ -346,19 +350,18 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "report_all_paths":
         _require_design(state)
-        return _format_all_paths(
-            all_paths(
-                state.design,
-                src=args["src"],
-                dst=args["dst"],
-                max_paths=_positive_int_or_default(args.get("max_paths"), 200),
-            )
+        result = all_paths(
+            state.design,
+            src=args["src"],
+            dst=args["dst"],
+            max_paths=_positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT),
         )
+        return _format_all_paths(result, state=state)
 
     if op == "all_paths":
         _require_design(state)
         result = enumerate_paths(state.design, args["src"], args["dst"], max_paths=args.get("max_paths", 100))
-        return _format_all_paths(result)
+        return _format_all_paths(result, state=state)
 
     if op == "check_cut_signal":
         _require_design(state)
@@ -1386,19 +1389,51 @@ def _format_gate_type_count(result: dict[str, Any]) -> str:
     return f'{result["gate_type"].upper()} gate count: {result["count"]}'
 
 
-def _format_all_paths(result: dict[str, Any]) -> str:
+def _format_all_paths(result: dict[str, Any], state: CurrentState | None = None) -> str:
+    paths = result["paths"]
+    should_write_file = bool(paths) and (
+        result.get("truncated") or len(paths) > ALL_PATHS_STDOUT_LIMIT
+    )
+    artifact_path = _write_all_paths_artifact(result, state) if should_write_file else None
+    shown_paths = paths[:ALL_PATHS_STDOUT_LIMIT] if artifact_path else paths
     lines = [
         f'Combinational paths from "{result["src"]}" to "{result["dst"]}": '
         f'{result["num_paths"]}'
     ]
+    if artifact_path:
+        lines.append(f'Full path listing written to {artifact_path}.')
+        lines.append(f'Showing first {len(shown_paths)} path(s) in this response.')
     if result.get("truncated"):
         max_paths = result.get("max_paths", result.get("num_paths", 0))
-        lines.append(f'Showing first {max_paths} path(s); enumeration was truncated.')
-    for index, path in enumerate(result["paths"], 1):
+        lines.append(f'Enumeration was truncated after {max_paths} path(s).')
+    for index, path in enumerate(shown_paths, 1):
         lines.append(f'{index}. ' + " -> ".join(path))
-    if not result["paths"]:
+    if not paths:
         lines.append("- none")
     return "\n".join(lines)
+
+
+def _write_all_paths_artifact(result: dict[str, Any], state: CurrentState | None) -> Path:
+    output_dir = state.output_dir if state is not None else Path("output")
+    report_dir = output_dir / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    case_name = state.testcase if state is not None and state.testcase else "current"
+    src = _safe_filename_token(str(result["src"]))
+    dst = _safe_filename_token(str(result["dst"]))
+    path = report_dir / f"{_safe_filename_token(case_name)}_{src}_to_{dst}_paths.txt"
+    lines = [
+        f'Combinational paths from "{result["src"]}" to "{result["dst"]}": {result["num_paths"]}',
+    ]
+    if result.get("truncated"):
+        lines.append(f'Enumeration was truncated after {result.get("max_paths", result["num_paths"])} path(s).')
+    for index, item in enumerate(result["paths"], 1):
+        lines.append(f'{index}. ' + " -> ".join(item))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _safe_filename_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "item"
 
 def _format_gate_type_connections(result: dict[str, Any]) -> str:
     lines = [

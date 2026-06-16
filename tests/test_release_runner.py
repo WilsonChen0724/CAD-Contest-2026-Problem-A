@@ -50,8 +50,17 @@ class ReleaseRunnerTest(unittest.TestCase):
         self.assertEqual(_timeout_for_prompt("This is the beginning of testcase test25.", 60.0, 300.0), 60.0)
         self.assertEqual(_timeout_for_prompt("Please load the design from test25.v.", 60.0, 300.0), 60.0)
         self.assertEqual(_timeout_for_prompt("Please write the current design to test25_out.v.", 60.0, 300.0), 60.0)
+        self.assertEqual(_timeout_for_prompt("Output the design as top.v.", 60.0, 300.0), 60.0)
         self.assertEqual(_timeout_for_prompt("Perform depth optimization on the combinational logic.", 60.0, 300.0), 300.0)
         self.assertEqual(_timeout_for_prompt("What Boolean function does output n8 compute?", 60.0, 300.0), 300.0)
+        self.assertEqual(
+            _timeout_for_prompt("Find all paths from input n0 to output n8 in the design.", 60.0, 300.0),
+            300.0,
+        )
+        self.assertEqual(
+            _timeout_for_prompt("Report all primary outputs whose logic cone contains more than 100 gates.", 60.0, 300.0),
+            300.0,
+        )
 
     def test_copies_generated_netlist_to_planner_output_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

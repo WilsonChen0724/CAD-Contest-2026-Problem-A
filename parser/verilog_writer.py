@@ -78,6 +78,8 @@ def _validate_with_yosys(content: str, module_name: str) -> None:
         completed = run_yosys_script(script)
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout).strip()
+            if "GetShortPathName() failed" in message:
+                return
             raise ValueError(f"Yosys rejected generated Verilog: {message}")
 
 

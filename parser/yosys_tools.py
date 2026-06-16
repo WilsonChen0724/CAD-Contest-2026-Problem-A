@@ -12,11 +12,12 @@ def run_yosys_script(script: str, cwd: Path | None = None) -> subprocess.Complet
     """Run a Yosys script with the local OSS CAD Suite environment when present."""
     yosys, env = _resolve_yosys()
     with tempfile.TemporaryDirectory() as tmp:
-        script_path = Path(tmp) / "run.ys"
+        work_dir = Path(tmp)
+        script_path = work_dir / "run.ys"
         script_path.write_text(script, encoding="utf-8")
         return subprocess.run(
             [str(yosys), "-q", "-s", str(script_path)],
-            cwd=cwd,
+            cwd=cwd or work_dir,
             env=env,
             text=True,
             capture_output=True,
