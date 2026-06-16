@@ -541,6 +541,37 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(state.design.gates["U_buf"].type, "not")
         self.assertEqual(state.design.gates["U_or"].type, "nand")
 
+    def test_dispatcher_skips_large_cone_optimization_before_expensive_rewrite(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        previous = "a"
+        for index in range(10001):
+            output = "y" if index == 10000 else f"n{index}"
+            state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=output))
+            previous = output
+
+        body = dispatch_plan(state, {"op": "optimize_cone", "args": {"target": "y"}})
+
+        self.assertIn("Skipped cone optimization", body)
+        self.assertIn("large design", body)
+        self.assertEqual(len(state.design.gates), 10001)
+
+    def test_dispatcher_skips_large_original_equivalence_check(self) -> None:
+        state = CurrentState()
+        state.original_design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        previous = "a"
+        for index in range(10001):
+            output = "y" if index == 10000 else f"n{index}"
+            state.original_design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=output))
+            previous = output
+        state.design = deepcopy(state.original_design)
+
+        with patch("runtime.dispatcher.check_design_equivalence", side_effect=AssertionError("too expensive")):
+            body = dispatch_plan(state, {"op": "check_equivalent_to_original", "args": {}})
+
+        self.assertIn("Skipped full equivalence check", body)
+        self.assertIn("large design", body)
+
     def test_dispatcher_runs_formal_checks(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
