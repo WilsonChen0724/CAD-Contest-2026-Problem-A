@@ -120,7 +120,7 @@ VERIFY_OPS = {
 TOOL_ALLOWED_OPS = {
     "run_design_io_plan": IO_OPS | {"unsupported"},
     "run_analysis_plan": ANALYSIS_OPS | {"unsupported"},
-    "run_transform_plan": TRANSFORM_OPS | {"unsupported"},
+    "run_transform_plan": TRANSFORM_OPS | ANALYSIS_OPS | VERIFY_OPS | {"unsupported"},
     "run_verify_plan": VERIFY_OPS | {"report_last_transform_stats", "unsupported"},
 }
 OP_DESCRIPTIONS = {
@@ -137,7 +137,7 @@ OP_DESCRIPTIONS = {
     "max_depth": "Compute maximum combinational gate depth from src to dst.",
     "report_max_logic_depth": "Report the maximum combinational logic depth in the whole design.",
     "report_cone_depth": "Report maximum structural depth and an example path inside one target fanin cone. Args: target.",
-    "logic_cone": "Report the transitive fanin cone of a target net or primary output.",
+    "logic_cone": "Report the transitive fanin cone of a target net or primary output, including the total number of gates in that cone.",
     "report_gate_counts": "Report total gate counts broken down by primitive gate type.",
     "report_gate_type_count": "Report the current count for one gate type such as not, nand, buf, or dff. Args: gate_type.",
     "report_gate_type_connections": "List gates of one type with their input and output signals. Args: gate_type; optional max_items.",
@@ -147,7 +147,7 @@ OP_DESCRIPTIONS = {
     "report_highest_fanout_primary_input": "Report which primary input has the largest direct fanout. Args: none.",
     "report_gate_connections": "Report one gate or DFF instance's type, pins, output net, and output fanout. Args: gate.",
     "report_gates_by_type": "List gates of a given primitive type with input and output signals. Args: gate_type such as nand, nor, dff; optional limit.",
-    "report_gate_type_count_in_cone": "Count gates of a primitive type in one target fanin cone. Use for questions like how many NAND gates are in the cone of output n8. Args: target, gate_type.",
+    "report_gate_type_count_in_cone": "Count gates of one explicit primitive type in one target fanin cone. Use only for questions like how many NAND gates are in the cone of output n8. For total gates in a cone, use logic_cone instead. Args: target, gate_type.",
     "report_deepest_output_cone": "Report output bit(s) with the deepest fanin logic depth.",
     "report_largest_fanin_cone_output": "Report primary output bit(s) with the largest structural fanin cone by gate count.",
     "report_outputs_by_cone_size": "Report primary outputs whose fanin cones exceed a gate-count threshold.",
@@ -215,8 +215,8 @@ def openai_domain_tools() -> list[dict[str, Any]]:
         ),
         _tool(
             "run_transform_plan",
-            "Run design-modifying transformations. Use for buffer insertion, dangling removal, gate rewrites, depth balancing, constant propagation, fanout optimization, equivalent-gate merge, and cone/design-depth optimization. Prefer function-preserving operations when requested.",
-            sorted(TRANSFORM_OPS | {"unsupported"}),
+            "Run design-modifying transformations and immediate read-only follow-up reports/checks. Use for buffer insertion, dangling removal, gate rewrites, depth balancing, constant propagation, fanout optimization, equivalent-gate merge, and cone/design-depth optimization. Prefer function-preserving operations when requested.",
+            sorted(TRANSFORM_OPS | ANALYSIS_OPS | VERIFY_OPS | {"unsupported"}),
         ),
         _tool(
             "run_verify_plan",

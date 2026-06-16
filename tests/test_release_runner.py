@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from scripts.run_release_testcases import (
+    _append_timeout_response,
     _copy_generated_netlist,
     _expand_case_range,
     _expand_selected_cases,
@@ -65,6 +66,18 @@ class ReleaseRunnerTest(unittest.TestCase):
 
             copied = result_root / "test01_out.v"
             self.assertEqual(copied.read_text(encoding="utf-8"), "module top; endmodule\n")
+
+    def test_timeout_response_is_visible_in_stdout_log(self) -> None:
+        stdout_lines: list[str] = []
+
+        _append_timeout_response(stdout_lines, 6, "TimeoutExpired: response 6 exceeded 300.0 seconds.")
+
+        self.assertEqual(
+            "".join(stdout_lines),
+            "#RESPONSE 6\n"
+            "Error: TimeoutExpired: response 6 exceeded 300.0 seconds.\n"
+            "#END 6\n",
+        )
 
 
 if __name__ == "__main__":

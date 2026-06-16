@@ -134,6 +134,100 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn('Gate "U0": type=and', connections)
         self.assertIn("GATE:U1", connections)
 
+    def test_gate_connection_report_accepts_net_names_as_fanout_report(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="renamed_sig"))
+        state.design.add_gate(Gate(name="U1", type="buf", inputs=["renamed_sig"], output="y"))
+
+        body = dispatch_plan(state, {"op": "report_gate_connections", "args": {"gate": "renamed_sig"}})
+
+        self.assertIn('Fanout of net "renamed_sig"', body)
+        self.assertIn("U1", body)
+
+    def test_last_transform_equivalence_without_snapshot_is_non_error_response(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="y"))
+
+        body = dispatch_plan(state, {"op": "check_equivalent_to_last_transform_input", "args": {}})
+
+        self.assertIn("No previous successful transform input snapshot", body)
+
+    def test_dffs_by_clock_formatter_uses_pin_map_shape(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "clk"}, outputs={"q"})
+        state.design.add_dff(DFF(name="FF0", d="a", q="q", clk="clk"))
+
+        body = dispatch_plan(state, {"op": "report_dffs_by_clock", "args": {"clock": "clk"}})
+
+        self.assertIn('DFFs driven by clock "clk": 1', body)
+        self.assertIn("FF0", body)
+        self.assertIn("CLK=clk", body)
+
+    def test_dispatcher_summarizes_large_fanout_reports(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src"}, outputs={f"y{i}" for i in range(125)})
+        for index in range(125):
+            state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=["src"], output=f"y{index}"))
+
+        body = dispatch_plan(state, {"op": "report_fanout", "args": {"net": "src"}})
+
+        self.assertIn("125 load(s)", body)
+        self.assertIn("... 5 more sink(s) omitted", body)
+        self.assertIn("U119", body)
+        self.assertNotIn("U124", body)
+
+    def test_report_fanout_handles_floating_signal_placeholder(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="y"))
+
+        body = dispatch_plan(
+            state,
+            {
+                "op": "report_fanout",
+                "args": {"net": "floating_signals"},
+                "save_as": "floating_signals_report",
+            },
+        )
+
+        self.assertIn("Floating/unconnected signal report: 0 issue(s) found.", body)
+        self.assertIn("No floating or unconnected signals were found.", body)
+        self.assertIn("floating_signals_report", state.previous_results)
+
+    def test_report_fanout_placeholder_lists_missing_drivers(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="y"))
+        state.design.wires.add("floating_wire")
+
+        body = dispatch_plan(
+            state,
+            {"op": "report_fanout", "args": {"net": "floating_signals"}},
+        )
+
+        self.assertIn("Floating/unconnected signal report: 1 issue(s) found.", body)
+        self.assertIn("- missing drivers: 1", body)
+        self.assertIn("- floating_wire", body)
+
+    def test_dispatcher_summarizes_large_logic_cones(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src"}, outputs={"y"})
+        previous = "src"
+        for index in range(205):
+            output = "y" if index == 204 else f"n{index}"
+            state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=output))
+            previous = output
+
+        body = dispatch_plan(state, {"op": "logic_cone", "args": {"target": "y"}})
+
+        self.assertIn('Logic cone of "y" contains 205 gates', body)
+        self.assertIn("Showing first 200 gate(s).", body)
+        self.assertIn("... 5 more gate(s) omitted", body)
+        self.assertIn("U199", body)
+        self.assertNotIn("U95", body)
+
     def test_dispatcher_reports_saved_gate_list_connections(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})
@@ -363,6 +457,39 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("4 -> 1 gate", body)
         self.assertEqual(set(state.design.gates), {"U_and"})
 
+    def test_dispatcher_optimizes_saved_output_list(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_buf", type="buf", inputs=["a"], output="n_buf"))
+        state.design.add_gate(Gate(name="U_not0", type="not", inputs=["n_buf"], output="n_inv"))
+        state.design.add_gate(Gate(name="U_not1", type="not", inputs=["n_inv"], output="n_clean"))
+        state.design.add_gate(Gate(name="U_and", type="and", inputs=["n_clean", "b"], output="y"))
+
+        body = dispatch_plan(
+            state,
+            {
+                "steps": [
+                    {
+                        "op": "report_outputs_depth_greater_than",
+                        "args": {"min_depth": 1},
+                        "save_as": "outputs_with_high_depth",
+                    },
+                    {
+                        "op": "optimize_cone",
+                        "args": {
+                            "target": "outputs_with_high_depth",
+                            "max_depth": 1,
+                            "minimize_gate_count": True,
+                        },
+                    },
+                ]
+            },
+        )
+
+        self.assertIn('Optimized cones for saved output list "outputs_with_high_depth"', body)
+        self.assertIn("y: 4->1 gate(s)", body)
+        self.assertEqual(set(state.design.gates), {"U_and"})
+
     def test_multi_step_transform_plan_operates_on_evolving_state(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
@@ -419,6 +546,19 @@ class DispatcherTest(unittest.TestCase):
 
         self.assertIn("symmetric", body)
         self.assertIn("Yes", body)
+
+    def test_dispatcher_recovers_nand_pair_placeholder_equivalence(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
+        state.design.add_gate(Gate(name="U1", type="nand", inputs=["a", "b"], output="z"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "check_equivalence", "args": {"expr": "NAND(a,b)", "target": "z"}},
+        )
+
+        self.assertIn("NAND(a, b) is equivalent", body)
+        self.assertIn('"z"', body)
 
     def test_dispatcher_formats_formal_counterexamples(self) -> None:
         state = CurrentState()

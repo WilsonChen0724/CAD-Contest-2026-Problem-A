@@ -229,6 +229,10 @@ def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
     if not isinstance(steps, list) or not steps:
         raise PlanValidationError(f"{tool_name}.arguments.steps must be a non-empty list.")
 
+    steps = _drop_empty_tool_steps(steps)
+    if not steps:
+        raise PlanValidationError(f"{tool_name}.arguments.steps must contain at least one operation step.")
+
     repaired_steps = _repair_readonly_report_with_extra_transform_steps(tool_name, steps)
     if repaired_steps is not None:
         normalized_steps = [_normalize_tool_step(step) for step in repaired_steps]
@@ -291,6 +295,18 @@ def _repair_readonly_report_with_extra_transform_steps(
     ]
 
 
+def _drop_empty_tool_steps(steps: list[Any]) -> list[Any]:
+    return [
+        step
+        for step in steps
+        if not (
+            isinstance(step, dict)
+            and set(step) <= {"save_as"}
+            and step.get("save_as") is None
+        )
+    ]
+
+
 def validate_plan(plan: Any) -> dict[str, Any]:
     """
     Validate one tool plan or one multi-step plan.
@@ -317,15 +333,17 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         steps = plan["steps"]
         if not isinstance(steps, list) or not steps:
             raise PlanValidationError("steps must be a non-empty list.")
-        for index, step in enumerate(steps, start=1):
+        normalized_steps = [_normalize_tool_step(step) if isinstance(step, dict) else step for step in steps]
+        for index, step in enumerate(normalized_steps, start=1):
             try:
                 _validate_single_step(step)
             except PlanValidationError as exc:
                 raise PlanValidationError(f"Invalid step {index}: {exc}") from exc
-        return plan
+        return {"steps": normalized_steps}
 
-    _validate_single_step(plan)
-    return plan
+    normalized_plan = _normalize_tool_step(plan)
+    _validate_single_step(normalized_plan)
+    return normalized_plan
 
 
 def is_unsupported_plan(plan: dict[str, Any]) -> bool:
@@ -461,10 +479,23 @@ def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
 def _normalize_tool_step(step: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(step)
     args = normalized.get("args")
-    if normalized.get("op") == "find_gates" and isinstance(args, dict):
+    if isinstance(args, dict):
         normalized_args = dict(args)
-        if normalized_args.get("name_contains") == "":
+        optional_args = _OPTIONAL_ARGS.get(str(normalized.get("op")), {})
+        for key in list(normalized_args):
+            if key in optional_args and normalized_args[key] is None:
+                normalized_args.pop(key)
+        if normalized.get("op") == "find_gates" and normalized_args.get("name_contains") == "":
             normalized_args.pop("name_contains")
+        if normalized.get("op") == "find_path":
+            if isinstance(normalized_args.get("avoid"), str):
+                normalized_args["avoid"] = [normalized_args["avoid"]]
+            if "avoiding" in normalized_args and "avoid" not in normalized_args:
+                avoiding = normalized_args.pop("avoiding")
+                normalized_args["avoid"] = [avoiding] if isinstance(avoiding, str) else avoiding
+        if normalized.get("op") == "report_gate_type_count_in_cone" and normalized_args.get("gate_type") == "":
+            normalized["op"] = "logic_cone"
+            normalized_args = {"target": normalized_args.get("target")}
         normalized["args"] = normalized_args
     if normalized.get("save_as") is None:
         normalized.pop("save_as", None)
