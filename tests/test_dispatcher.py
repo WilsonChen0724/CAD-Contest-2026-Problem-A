@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import tempfile
 import unittest
 from unittest.mock import patch
+from pathlib import Path
 
 from eda.design import DFF, Design, Gate
 from eda.verify import check_fanout
@@ -47,6 +49,28 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn('Combinational paths from "src" to "dst": 2', paths)
         self.assertIn("U_bypass", paths)
         self.assertIn("NOT gate count: 1", count)
+
+    def test_dispatcher_writes_large_all_paths_report_to_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = CurrentState(output_dir=Path(tmp) / "output")
+            state.testcase = "test_paths"
+            state.design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+            for index in range(25):
+                state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=["src"], output=f"n{index}"))
+                state.design.add_gate(Gate(name=f"V{index}", type="buf", inputs=[f"n{index}"], output="dst"))
+
+            body = dispatch_plan(
+                state,
+                {"op": "report_all_paths", "args": {"src": "src", "dst": "dst"}},
+            )
+
+            report_path = state.output_dir / "reports" / "test_paths_src_to_dst_paths.txt"
+            report = report_path.read_text(encoding="utf-8")
+            self.assertIn(f"Full path listing written to {report_path}", body)
+            self.assertIn("Showing first 20 path(s)", body)
+            self.assertIn('Combinational paths from "src" to "dst": 25', report)
+            self.assertIn("25. src -> U", report)
+
     def test_dispatcher_reports_outputs_by_cone_size(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})

@@ -1,0 +1,534 @@
+A_release testcase_0510 problem classification
+
+Scope: test01-test40 prompt.txt files under A_release testcase_0510/testcase/.
+Counting rule: every actionable prompt line is counted once; the testcase header line is excluded. Load/write lines are included because they are explicit requested actions.
+Total actionable requests: 419
+Total categories: 21
+
+Summary
+- Design load / load netlist: 40
+- Output write / write netlist: 40
+- Gate count, gate type, gate listing, and pin query: 51
+- Primary I/O interface query: 6
+- Sequential, DFF, and register-path analysis: 9
+- Whole-netlist functional equivalence check: 9
+- Internal-signal functional equivalence query: 14
+- Boolean function and property derivation: 9
+- Path existence, cut, and articulation query: 36
+- Path enumeration and direct PI-to-PO connection listing: 29
+- Reachability and transitive fanout query: 8
+- Fanin, fanout, and cone structural analysis: 41
+- Logic depth and critical-path metric query: 37
+- Buffer insertion and fanout-limit repair: 7
+- Identifier rename and reference update: 8
+- Constant-input detection and constant propagation: 18
+- Back-to-back inverter collapse: 10
+- Unused, dangling, floating, and redundant cleanup: 17
+- Technology mapping and gate decomposition: 17
+- Depth optimization and critical-path restructuring: 9
+- Equivalent or duplicate gate merge: 4
+
+Details
+
+[Design load / load netlist]
+Count: 40
+Description: Load the specified Verilog netlist as the baseline for later analysis or transformation.
+- test01:2: Please load the design from the file test01.v located in the directory testcase/test01/.
+- test02:2: Please load the design from the file test02.v located in the directory testcase/test02/.
+- test03:2: Please load the design from the file test03.v located in the directory testcase/test03/.
+- test04:2: Please load the design from the file test04.v located in the directory testcase/test04/.
+- test05:2: Please load the design from the file test05.v located in the directory testcase/test05/.
+- test06:2: Please load the design from the file test06.v located in the directory testcase/test06/.
+- test07:2: Please load the design from the file test07.v located in the directory testcase/test07/.
+- test08:2: Please load the design from the file test08.v located in the directory testcase/test08/.
+- test09:2: Please load the design from the file test09.v located in the directory testcase/test09/.
+- test10:2: Please load the design from the file test10.v located in the directory testcase/test10/.
+- test11:2: Please load the design from the file test11.v located in the directory testcase/test11/.
+- test12:2: Please load the design from the file test12.v located in the directory testcase/test12/.
+- test13:2: Please load the design from the file test13.v located in the directory testcase/test13/.
+- test14:2: Please load the design from the file test14.v located in the directory testcase/test14/.
+- test15:2: Please load the design from the file test15.v located in the directory testcase/test15/.
+- test16:2: Please load the design from the file test16.v located in the directory testcase/test16/.
+- test17:2: Please load the design from the file test17.v located in the directory testcase/test17/.
+- test18:2: Please load the design from the file test18.v located in the directory testcase/test18/.
+- test19:2: Please load the design from the file test19.v located in the directory testcase/test19/.
+- test20:2: Please load the design from the file test20.v located in the directory testcase/test20/.
+- test21:2: Please load the design from the file test21.v located in the directory testcase/test21/.
+- test22:2: Please load the design from the file test22.v located in the directory testcase/test22/.
+- test23:2: Please load the design from the file test23.v located in the directory testcase/test23/.
+- test24:2: Please load the design from the file test24.v located in the directory testcase/test24/.
+- test25:2: Please load the design from the file test25.v located in the directory testcase/test25/.
+- test26:2: Please load the design from the file test26.v located in the directory testcase/test26/.
+- test27:2: Please load the design from the file test27.v located in the directory testcase/test27/.
+- test28:2: Please load the design from the file test28.v located in the directory testcase/test28/.
+- test29:2: Please load the design from the file test29.v located in the directory testcase/test29/.
+- test30:2: Please load the design from the file test30.v located in the directory testcase/test30/.
+- test31:2: Please load the design from the file test31.v located in the directory testcase/test31/.
+- test32:2: Please load the design from the file test32.v located in the directory testcase/test32/.
+- test33:2: Please load the design from the file test33.v located in the directory testcase/test33/.
+- test34:2: Please load the design from the file test34.v located in the directory testcase/test34/.
+- test35:2: Please load the design from the file test35.v located in the directory testcase/test35/.
+- test36:2: Please load the design from the file test36.v located in the directory testcase/test36/.
+- test37:2: Please load the design from the file test37.v located in the directory testcase/test37/.
+- test38:2: Please load the design from the file test38.v located in the directory testcase/test38/.
+- test39:2: Please load the design from the file test39.v located in the directory testcase/test39/.
+- test40:2: Please load the design from the file test40.v located in the directory testcase/test40/.
+
+[Output write / write netlist]
+Count: 40
+Description: Write the current netlist state to the testcase-specific *_out.v file.
+- test01:3: Please write the current design to the output file test01_out.v.
+- test02:4: Please write the current design to the output file test02_out.v.
+- test03:4: Please write the current design to the output file test03_out.v.
+- test04:4: Please write the current design to the output file test04_out.v.
+- test05:4: Please write the current design to the output file test05_out.v.
+- test06:5: Please write the current design to the output file test06_out.v.
+- test07:6: Please write the current design to the output file test07_out.v.
+- test08:7: Please write the current design to the output file test08_out.v.
+- test09:8: Please write the current design to the output file test09_out.v.
+- test10:9: Please write the current design to the output file test10_out.v.
+- test11:10: Please write the current design to the output file test11_out.v.
+- test12:11: Please write the current design to the output file test12_out.v.
+- test13:12: Please write the current design to the output file test13_out.v.
+- test14:13: Please write the current design to the output file test14_out.v.
+- test15:14: Please write the current design to the output file test15_out.v.
+- test16:15: Please write the current design to the output file test16_out.v.
+- test17:16: Please write the current design to the output file test17_out.v.
+- test18:17: Please write the current design to the output file test18_out.v.
+- test19:18: Please write the current design to the output file test19_out.v.
+- test20:19: Please write the current design to the output file test20_out.v.
+- test21:5: Please write the current design to the output file test21_out.v.
+- test22:5: Please write the current design to the output file test22_out.v.
+- test23:6: Please write the current design to the output file test23_out.v.
+- test24:7: Please write the current design to the output file test24_out.v.
+- test25:9: Please write the current design to the output file test25_out.v.
+- test26:8: Please write the current design to the output file test26_out.v.
+- test27:8: Please write the current design to the output file test27_out.v.
+- test28:8: Please write the current design to the output file test28_out.v.
+- test29:9: Please write the current design to the output file test29_out.v.
+- test30:9: Please write the current design to the output file test30_out.v.
+- test31:20: Please write the current design to the output file test31_out.v.
+- test32:20: Please write the current design to the output file test32_out.v.
+- test33:20: Please write the current design to the output file test33_out.v.
+- test34:12: Please write the current design to the output file test34_out.v.
+- test35:20: Please write the current design to the output file test35_out.v.
+- test36:17: Please write the current design to the output file test36_out.v.
+- test37:18: Please write the current design to the output file test37_out.v.
+- test38:20: Please write the current design to the output file test38_out.v.
+- test39:20: Please write the current design to the output file test39_out.v.
+- test40:19: Please write the current design to the output file test40_out.v.
+
+[Gate count, gate type, gate listing, and pin query]
+Count: 51
+Description: Count gates, list specific gate types, query a gate type, or report pin connections.
+- test02:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test06:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test07:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test08:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test09:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test10:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test11:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test12:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test13:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test14:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test15:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test16:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test17:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test18:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test19:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test20:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test20:18: Compute the total gate count of the design.
+- test21:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test22:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test23:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test24:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test25:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test26:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test27:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test28:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test29:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test30:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test31:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test31:18: What type of gate is g0? Report its gate type and pin connections.
+- test32:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test32:8: How many NOT gates are currently in the design?
+- test33:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test33:6: How many NOR gates are now in the design after the XNOR-to-NOR conversion?
+- test33:10: How many NAND gates are now in the restructured cone of output n8?
+- test34:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test35:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test35:9: List all NAND gates in this design with their input and output signals.
+- test36:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test36:9: What type of gate is g0? Report its gate type and pin connections.
+- test37:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test37:4: Report the number of each gate type in the cone of n8.
+- test37:6: How many NAND gates are now in the restructured cone of output n8?
+- test38:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test38:18: Report the number of each gate type in the cone of n14.
+- test39:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test39:10: List all XOR gates in this design.
+- test39:19: How many NAND gates are now in the design after the XOR-to-NAND conversion?
+- test40:3: Please count all the gates in this design and report the total count broken down by gate type (AND, OR, NOT, NAND, NOR, XOR, XNOR, BUF, DFF).
+- test40:6: How many NOT gates are currently in the design?
+- test40:10: List all XOR gates in this design.
+- test40:14: What type of gate is g0? Report its gate type and pin connections.
+
+[Primary I/O interface query]
+Count: 6
+Description: Query primary input/output counts, names, or bit widths.
+- test32:5: Determine the number of primary inputs and outputs.
+- test33:16: Please list all the primary inputs of this design with their bit widths.
+- test37:10: How many primary inputs and primary outputs does this design have?
+- test37:11: List all primary outputs of this design with their bit widths.
+- test39:17: Please list all the primary inputs of this design with their bit widths.
+- test40:9: List all primary outputs of this design with their bit widths.
+
+[Sequential, DFF, and register-path analysis]
+Count: 9
+Description: Analyze DFFs, clocks, D-pin logic, enable/hold structures, or register-to-register paths.
+- test31:16: What is the maximum logic depth from any primary input to any DFF D-pin in this design?
+- test32:6: List all register-to-register paths in this design through combinational logic.
+- test35:17: List all flip-flops driven by clock n0.
+- test36:10: What is the maximum logic depth from any primary input to any DFF D-pin in this design?
+- test36:12: List all flip-flops driven by clock n0.
+- test37:9: List all register-to-register paths in this design through combinational logic.
+- test40:11: What is the maximum combinational depth on any register-to-register path in this design?
+- test40:12: Report the D input logic of the flip-flops to report any existing enable or hold structures implemented through multiplexers or AND gates.
+- test40:13: How many flip-flops were found to have enable or hold structures in their D input logic?
+
+[Whole-netlist functional equivalence check]
+Count: 9
+Description: Explicitly verify the current netlist against the original or pre-transformation netlist.
+- test31:6: Prove that the transformed design is equivalent to the pre-transformation netlist.
+- test32:11: Verify functional equivalence between the current design and the original loaded netlist.
+- test33:14: Check whether the current netlist is functionally equivalent to the netlist as last loaded from disk.
+- test34:6: Check whether the current netlist is functionally equivalent to the netlist as last loaded from disk.
+- test35:11: Prove that the transformed design is equivalent to the pre-transformation netlist.
+- test36:5: Verify functional equivalence between the current design and the original loaded netlist.
+- test37:8: Check whether the current netlist is functionally equivalent to the netlist as last loaded from disk.
+- test38:14: Confirm that the design is still functionally equivalent to the original.
+- test40:8: Verify functional equivalence between the current design and the original loaded netlist.
+
+[Internal-signal functional equivalence query]
+Count: 14
+Description: Compare internal signals for identical Boolean values across all inputs.
+- test17:15: Determine whether signals n2122 and n2116 are functionally equivalent.
+- test18:14: Determine whether signals n848 and n1080 are functionally equivalent.
+- test18:15: Verify that n1039 and n1046 produce identical logic values for all inputs.
+- test18:16: Check functional equivalence between internal signals n1035 and n1029.
+- test19:15: Determine whether signals n296 and n269 are functionally equivalent.
+- test19:16: Verify that n273 and n275 produce identical logic values for all inputs.
+- test19:17: Check functional equivalence between internal signals n270 and n243.
+- test20:15: Determine whether signals n13082 and n13083 are functionally equivalent.
+- test20:16: Verify that n2257 and n2184 produce identical logic values for all inputs.
+- test20:17: Check functional equivalence between internal signals n2233 and n2193.
+- test31:19: Check functional equivalence between internal signals n1287 and n2404.
+- test33:11: Check whether internal signals n55146 and n55104 are functionally equivalent for all input combinations. Report yes or no.
+- test35:12: Check whether internal signals n29498 and n29471 are functionally equivalent for all input combinations. Report yes or no.
+- test35:13: Does there exist any pair of internal signals (a, b) already in the netlist such that NAND(a, b) is equivalent to n25?
+
+[Boolean function and property derivation]
+Count: 9
+Description: Derive Boolean equations/expressions or decide output constancy, input dependency, symmetry, and related properties.
+- test31:8: Is output n16 always 0 regardless of all inputs? Report yes or no.
+- test31:10: Derive the Boolean equation for output n16 in terms of its primary inputs.
+- test33:13: Does output n8 depend on input n1? Report yes or no.
+- test34:7: Write the logic expression for n30 using only the primary input names.
+- test35:16: What Boolean function does output n25 compute? Express it in terms of the primary inputs.
+- test36:11: Check whether the function at n11 is symmetric with respect to inputs n3 and n9[0].
+- test37:13: What Boolean function does output n8 compute? Express it in terms of the primary inputs.
+- test37:17: Check whether the function at n8 is symmetric with respect to inputs n3 and n4[0].
+- test39:11: Derive the Boolean equation for output n12 in terms of its primary inputs.
+
+[Path existence, cut, and articulation query]
+Count: 36
+Description: Check whether a combinational path exists, avoids a node, must pass a gate, or whether a wire/cut/articulation point exists.
+- test06:4: Determine whether a combinational path from n0[0] to n4 exists that does not traverse node n719.
+- test07:4: Determine whether a combinational path from n0[0] to n5 exists that does not traverse node n95.
+- test07:5: Verify whether a path connecting input n0[1] to output n6 exists while avoiding n94.
+- test08:4: Determine whether a combinational path from n0[0] to n9 exists that does not traverse node n14.
+- test08:5: Verify whether a path connecting input n0[1] to output n10 exists while avoiding n14.
+- test09:4: Determine whether a combinational path from n0 to n117[0] exists that does not traverse node n1816.
+- test09:5: Verify whether a path connecting input n1 to output n117[1] exists while avoiding n1646.
+- test10:4: Determine whether a combinational path from n12 to n25[0] exists that does not traverse node n1127.
+- test10:5: Verify whether a path connecting input n13 to output n25[1] exists while avoiding n4156.
+- test11:4: Determine whether a combinational path from n29 to n31[0] exists that does not traverse node n1552.
+- test11:5: Verify whether a path connecting input n30 to output n31[1] exists while avoiding n1592.
+- test12:4: Determine whether a combinational path from n24[0] to n26[0] exists that does not traverse node n86984.
+- test12:5: Verify whether a path connecting input n24[1] to output n26[1] exists while avoiding n87234.
+- test13:4: Determine whether a combinational path from n2 to n5[0] exists that does not traverse node n58.
+- test13:5: Verify whether a path connecting input n3 to output n5[1] exists while avoiding n208.
+- test14:4: Determine whether a combinational path from n61 to n63[0] exists that does not traverse node n4363.
+- test14:5: Verify whether a path connecting input n0[0] to output n63[1] exists while avoiding n141.
+- test15:4: Determine whether a combinational path from n0[0] to n3 exists that does not traverse node n207.
+- test15:5: Verify whether a path connecting input n0[1] to output n4 exists while avoiding n29.
+- test16:4: Determine whether a combinational path from n6 to n33[0] exists that does not traverse node n16010.
+- test16:5: Verify whether a path connecting input n7 to output n33[1] exists while avoiding n15819.
+- test17:4: Determine whether a combinational path from n7 to n42[0] exists that does not traverse node n1034.
+- test17:5: Verify whether a path connecting input n8 to output n42[1] exists while avoiding n2116.
+- test18:4: Determine whether a combinational path from n0[0] to n12 exists that does not traverse node n1038.
+- test18:5: Verify whether a path connecting input n0[1] to output n13 exists while avoiding n1080.
+- test19:4: Determine whether a combinational path from n3 to n17[0] exists that does not traverse node n269.
+- test19:5: Verify whether a path connecting input n4 to output n17[1] exists while avoiding n269.
+- test20:4: Determine whether a combinational path from n13 to n25[0] exists that does not traverse node n2240.
+- test20:5: Verify whether a path connecting input n14 to output n25[1] exists while avoiding n13083.
+- test32:4: Determine whether gate g0 lies on any maximum-depth path of the design. Report yes or no.
+- test32:9: Does every path from input n2 to output n12 pass through gate g0? Report yes or no.
+- test33:15: Determine whether wire n55104 is a cut between any primary input and any primary output. Report yes or no.
+- test34:8: Does a combinational path from n2 to n30 exist that avoids n4552?
+- test35:6: Does a combinational path exist from primary input n2 to primary output n25? Report yes or no.
+- test36:4: Determine whether wire n10239 is a cut between any primary input and any primary output. Report yes or no.
+- test38:12: Find all articulation points in the combinational graph between n2 and n14.
+
+[Path enumeration and direct PI-to-PO connection listing]
+Count: 29
+Description: Enumerate all PI-to-PO paths or find length-0 direct wire connections.
+- test08:6: List every path originating at primary input n0[1] and terminating at primary output n10.
+- test09:6: List every path originating at primary input n1 and terminating at primary output n117[1].
+- test09:7: Provide a complete enumeration of paths between n2 and n117[0].
+- test10:6: List every path originating at primary input n13 and terminating at primary output n25[1].
+- test10:7: Provide a complete enumeration of paths between n14 and n25[0].
+- test11:6: List every path originating at primary input n30 and terminating at primary output n31[1].
+- test11:7: Provide a complete enumeration of paths between n0[0] and n31[0].
+- test12:6: List every path originating at primary input n24[1] and terminating at primary output n26[1].
+- test12:7: Provide a complete enumeration of paths between n24[2] and n26[0].
+- test13:6: List every path originating at primary input n3 and terminating at primary output n5[1].
+- test13:7: Provide a complete enumeration of paths between n4 and n5[0].
+- test14:6: List every path originating at primary input n0[0] and terminating at primary output n63[1].
+- test14:7: Provide a complete enumeration of paths between n0[1] and n63[0].
+- test15:6: List every path originating at primary input n0[1] and terminating at primary output n4.
+- test15:7: Provide a complete enumeration of paths between n0[2] and n3.
+- test16:6: List every path originating at primary input n7 and terminating at primary output n33[1].
+- test16:7: Provide a complete enumeration of paths between n8 and n33[0].
+- test17:6: List every path originating at primary input n8 and terminating at primary output n42[1].
+- test17:7: Provide a complete enumeration of paths between n9 and n42[0].
+- test18:6: List every path originating at primary input n0[1] and terminating at primary output n13.
+- test18:7: Provide a complete enumeration of paths between n0[2] and n12.
+- test19:6: List every path originating at primary input n4 and terminating at primary output n17[1].
+- test19:7: Provide a complete enumeration of paths between n5 and n17[0].
+- test20:6: List every path originating at primary input n14 and terminating at primary output n25[1].
+- test20:7: Provide a complete enumeration of paths between n15 and n25[0].
+- test32:19: Find all combinational paths from primary input n2 to primary output n12 and list each path showing the gates traversed.
+- test33:4: Find all paths of length 0 (direct wire connections from PI to PO).
+- test33:12: List every path originating at primary input n3 and terminating at primary output n9.
+- test38:11: Find all paths of length 0 (direct wire connections from PI to PO).
+
+[Reachability and transitive fanout query]
+Count: 8
+Description: Determine reachable gates from a signal or report transitive fanout.
+- test15:13: Compute the transitive fanout cone of input n0[0].
+- test16:14: Compute the transitive fanout cone of input n6.
+- test17:14: Compute the transitive fanout cone of input n7.
+- test18:13: Compute the transitive fanout cone of input n0[0].
+- test19:14: Compute the transitive fanout cone of input n3.
+- test20:14: Compute the transitive fanout cone of input n13.
+- test31:4: Determine all gates reachable from n2.
+- test32:12: What is the transitive fanout of primary input n0? List all gates reachable from n0.
+
+[Fanin, fanout, and cone structural analysis]
+Count: 41
+Description: Analyze fanin cones, fanout, shared cones, largest/deepest cones, gate successors, and gate connections.
+- test03:3: How many gates are in the fanin cone of primary output n15?
+- test04:3: Compute the maximum logic depth of the fanin cone of output n3.
+- test05:3: What is the fanout of primary input n5? List all gates that n5 drives directly.
+- test12:10: Determine the number of gates driven by g0.
+- test13:11: Determine the number of gates driven by g0.
+- test14:11: Determine the number of gates driven by g0.
+- test14:12: Enumerate the immediate successors of gate g0.
+- test15:10: Determine the number of gates driven by g0.
+- test15:11: Enumerate the immediate successors of gate g0.
+- test15:12: Compute the transitive fanin cone of output n3.
+- test16:11: Determine the number of gates driven by g0.
+- test16:12: Enumerate the immediate successors of gate g0.
+- test16:13: Compute the transitive fanin cone of output n33[0].
+- test17:11: Determine the number of gates driven by g0.
+- test17:12: Enumerate the immediate successors of gate g0.
+- test17:13: Compute the transitive fanin cone of output n42[0].
+- test18:10: Determine the number of gates driven by g0.
+- test18:11: Enumerate the immediate successors of gate g0.
+- test18:12: Compute the transitive fanin cone of output n12.
+- test19:11: Determine the number of gates driven by g0.
+- test19:12: Enumerate the immediate successors of gate g0.
+- test19:13: Compute the transitive fanin cone of output n17[0].
+- test20:11: Determine the number of gates driven by g0.
+- test20:12: Enumerate the immediate successors of gate g0.
+- test20:13: Compute the transitive fanin cone of output n25[0].
+- test31:7: What is the fanout of primary input n0? List every gate that n0 drives directly.
+- test31:9: Report all gates shared between the fanin cones of n16 and n17.
+- test31:11: Report every gate connected to the output of g0.
+- test32:13: How many gates are in the logic cone of output n12?
+- test34:10: Which output bit has the deepest fanin logic cone?
+- test34:11: What is the fanout of primary input n0? List every gate that n0 drives directly.
+- test35:7: Report every gate connected to the output of g0.
+- test35:8: Which output bit has the deepest fanin logic cone?
+- test36:13: Which primary input has the highest fanout in this design?
+- test36:15: What is the maximum fanout of n1 now?
+- test36:16: What is the fanout of primary input n0? List every gate that n0 drives directly.
+- test37:16: Report every gate connected to the output of g0.
+- test38:5: What is the maximum fanout of n1 now?
+- test38:6: Which primary input has the highest fanout in this design?
+- test38:19: Compute the fanin logic cone of output n14 and list all gates that contribute to this output.
+- test40:15: Which output has the largest fanin cone?
+
+[Logic depth and critical-path metric query]
+Count: 37
+Description: Compute maximum logic depth, critical path depth, cone depth, or depth-threshold counts.
+- test10:8: Compute the maximum logic depth from input n12 to output n25[0].
+- test11:8: Compute the maximum logic depth from input n29 to output n31[0].
+- test11:9: Determine the longest combinational path depth from n30 to n31[1].
+- test12:8: Compute the maximum logic depth from input n24[0] to output n26[0].
+- test12:9: Determine the longest combinational path depth from n24[1] to n26[1].
+- test13:8: Compute the maximum logic depth from input n2 to output n5[0].
+- test13:9: Determine the longest combinational path depth from n3 to n5[1].
+- test13:10: Calculate the critical path depth between n4 and n5[0].
+- test14:8: Compute the maximum logic depth from input n61 to output n63[0].
+- test14:9: Determine the longest combinational path depth from n0[0] to n63[1].
+- test14:10: Calculate the critical path depth between n0[1] and n63[0].
+- test15:8: Compute the maximum logic depth from input n0[0] to output n3.
+- test15:9: Determine the longest combinational path depth from n0[1] to n4.
+- test16:8: Compute the maximum logic depth from input n6 to output n33[0].
+- test16:9: Determine the longest combinational path depth from n7 to n33[1].
+- test16:10: Calculate the critical path depth between n8 and n33[0].
+- test17:8: Compute the maximum logic depth from input n7 to output n42[0].
+- test17:9: Determine the longest combinational path depth from n8 to n42[1].
+- test17:10: Calculate the critical path depth between n9 and n42[0].
+- test18:8: Compute the maximum logic depth from input n0[0] to output n12.
+- test18:9: Determine the longest combinational path depth from n0[1] to n13.
+- test19:8: Compute the maximum logic depth from input n3 to output n17[0].
+- test19:9: Determine the longest combinational path depth from n4 to n17[1].
+- test19:10: Calculate the critical path depth between n5 and n17[0].
+- test20:8: Compute the maximum logic depth from input n13 to output n25[0].
+- test20:9: Determine the longest combinational path depth from n14 to n25[1].
+- test20:10: Calculate the critical path depth between n15 and n25[0].
+- test22:4: Reduce the critical path depth through restructuring. Make sure nothing changes functionally. The cost function is the maximum logic depth of the final design; smaller is better.
+- test23:5: Reduce the critical path depth through restructuring. Make sure nothing changes functionally. The cost function is the maximum logic depth of the final design; smaller is better.
+- test31:17: How many outputs have a logic depth greater than 4?
+- test34:9: What is the maximum combinational depth from any primary input to any primary output in the entire design?
+- test35:15: What is the maximum combinational logic depth in the design now?
+- test38:8: What is the maximum combinational logic depth in the design now?
+- test39:7: How many outputs have a logic depth greater than 4?
+- test39:9: What is the maximum combinational logic depth in the design now?
+- test40:17: What is the depth of the cone of n14 now?
+- test40:18: What is the maximum combinational logic depth in the design now?
+
+[Buffer insertion and fanout-limit repair]
+Count: 7
+Description: Insert BUF gates to limit fanout or dedicated-buffer each load, then report the result.
+- test21:4: Insert buffers wherever needed so that no gate drives more than 4 loads. Make sure nothing changes functionally.
+- test31:14: Please insert a BUF gate on signal n2 so that each load of n2 is driven through a dedicated buffer. Ensure the design functionality does not change.
+- test31:15: How many BUF gates were added by the buffer insertion just performed?
+- test36:14: Insert buffers wherever needed so that no signal drives more than 16 loads. Make sure nothing changes functionally. The cost function is the total gate count of the final design; smaller is better.
+- test38:4: Try to insert buffers on the reset signal n1 to reduce its fanout to at most 4 loads per driver. Ensure the design functionality does not change.
+- test39:12: Please insert a BUF gate on signal n2 so that each load of n2 is driven through a dedicated buffer. Ensure the design functionality does not change.
+- test39:13: How many BUF gates were added by the buffer insertion just performed?
+
+[Identifier rename and reference update]
+Count: 8
+Description: Rename a gate, wire, or signal and update all references.
+- test24:5: Rename gate g0 to renamed_gate. Ensure functional equivalence is preserved.
+- test25:6: Change the identifier of gate g0 to renamed_gate and update all references. Ensure the design functionality does not change.
+- test25:7: Change the identifier of wire n74 to renamed_wire and update all references. Ensure the design functionality does not change.
+- test31:12: Try to rename internal signal n1289 to renamed_sig and update all references to it. Ensure the design functionality does not change.
+- test31:13: List all gates that now connect to the renamed signal renamed_sig.
+- test32:10: Rename wire n1214 to renamed_wire. Ensure functional equivalence is preserved.
+- test35:10: Update the name of signal n7431 to renamed_wire throughout the netlist. Ensure the design functionality does not change.
+- test38:13: Update the name of signal n440 to renamed_wire throughout the netlist. Ensure the design functionality does not change.
+
+[Constant-input detection and constant propagation]
+Count: 18
+Description: Find constant-input gates, propagate constants, or turn NAND(1, x) into an inverter.
+- test32:7: Try to replace all 2-input NAND gates that have one input tied to constant 1 with inverters. Ensure the design functionality does not change.
+- test32:16: Report any NAND gates with constant inputs (0 or 1) in this design.
+- test32:17: Simplify the reported NAND gates by propagating their constant inputs. Ensure the design functionality does not change.
+- test32:18: How many NAND gates were eliminated by constant propagation?
+- test36:6: Report any AND gates with a constant 0 input in this design.
+- test36:7: Simplify the reported AND gates by propagating their constant 0 input. Ensure the design functionality does not change.
+- test36:8: How many AND gates were eliminated by constant-0 propagation?
+- test37:12: List all gates with one or more inputs tied to 1'b1.
+- test38:15: Report any NAND gates with constant inputs (0 or 1) in this design.
+- test38:16: Simplify the reported NAND gates by propagating their constant inputs. Ensure the design functionality does not change.
+- test38:17: How many NAND gates were eliminated by constant propagation?
+- test39:4: Report any OR gates with a constant 1 input in this design.
+- test39:5: Simplify the reported OR gates by propagating their constant 1 input. Ensure the design functionality does not change.
+- test39:6: How many OR gates were eliminated by constant-1 propagation?
+- test39:14: Report any NOR gates with constant inputs in this design.
+- test39:15: Simplify the reported NOR gates by propagating their constant inputs. Ensure the design functionality does not change.
+- test39:16: How many NOR gates were eliminated by constant propagation?
+- test40:5: Try to replace all 2-input NAND gates that have one input tied to constant 1 with inverters. Ensure the design functionality does not change.
+
+[Back-to-back inverter collapse]
+Count: 10
+Description: Find NOT-followed-by-NOT pairs and collapse them into direct wires.
+- test26:5: Find all back-to-back inverter pairs and collapse them into a wire. Ensure functional equivalence is preserved.
+- test27:5: Find all back-to-back inverter pairs and collapse them into a wire. Make sure nothing changes functionally.
+- test28:6: Find all back-to-back inverter pairs and collapse them into a wire. Ensure functional equivalence is preserved.
+- test29:6: Find all back-to-back inverter pairs and collapse them into a wire. Ensure functional equivalence is preserved.
+- test30:6: Find all back-to-back inverter pairs and collapse them into a wire. Ensure functional equivalence is preserved.
+- test31:5: Find all back-to-back inverter pairs and collapse them into a wire. Ensure functional equivalence is preserved.
+- test35:14: Find all pairs of back-to-back inverters (NOT followed by NOT) in this design and collapse them into direct wire connections. Ensure the design functionality does not change.
+- test38:7: Find all pairs of back-to-back inverters (NOT followed by NOT) in this design and collapse them into direct wire connections. Ensure the design functionality does not change.
+- test39:8: Find all pairs of back-to-back inverters (NOT followed by NOT) in this design and collapse them into direct wire connections. Ensure the design functionality does not change.
+- test40:7: Find all pairs of back-to-back inverters (NOT followed by NOT) in this design and collapse them into direct wire connections. Ensure the design functionality does not change.
+
+[Unused, dangling, floating, and redundant cleanup]
+Count: 17
+Description: Remove or report dangling, unused, floating, unconnected, or redundant gates/nets.
+- test23:4: Trim unused wires and gates. Make sure nothing changes functionally.
+- test24:4: Remove all dangling gates that do not contribute to any primary output. Ensure functional equivalence is preserved.
+- test25:5: Eliminate unused logic gates from the netlist. Ensure functional equivalence is preserved.
+- test26:6: Remove all dangling gates and nets not connected to any primary output. Make sure nothing changes functionally.
+- test27:6: Delete all gates that do not contribute to any primary output. Make sure nothing changes functionally.
+- test28:5: Sweep out dangling gates. Make sure nothing changes functionally.
+- test29:5: Prune the netlist of unused gates. Make sure nothing changes functionally.
+- test30:5: Remove floating nodes that do not affect outputs. Make sure nothing changes functionally.
+- test32:14: Check if there are any dangling gates in this design that do not contribute to any primary output. Remove them if found. Ensure the design functionality does not change.
+- test32:15: How many dangling gates were removed?
+- test33:7: Check if there are any dangling gates in this design that do not contribute to any primary output. Remove them if found. Ensure the design functionality does not change.
+- test33:8: How many dangling gates were removed?
+- test37:7: Prune the netlist of unused gates. Make sure nothing changes functionally.
+- test37:14: Check if there are any floating inputs or unconnected output ports in this design.
+- test37:15: How many floating signals were found?
+- test38:9: Are there any redundant gates in this design that can be removed without changing functionality? Remove them if found. Ensure the design functionality does not change.
+- test38:10: How many redundant gates were removed?
+
+[Technology mapping and gate decomposition]
+Count: 17
+Description: Map a netlist, cone, or gate type into a required library such as AND/NOT, NAND/NOT, NOR/NOT, or decomposed XOR/XNOR.
+- test25:4: Replace all 2-input OR gates in the cone of n11[0] with equivalent logic built only from NAND and NOT gates. Ensure the design functionality does not change.
+- test26:4: Convert the logic cone of n10 to use only NOR and NOT gates while preserving functional equivalence.
+- test27:4: Decompose all XOR gates in the fanin cone of n15 into AND, OR, and NOT gates without changing functionality.
+- test28:4: Reconstruct the entire netlist using only AND and NOT gates while preserving functional equivalence.
+- test29:4: Reconstruct the entire netlist using only AND and NOT gates while preserving functional equivalence.
+- test30:4: Reconstruct the entire netlist using only AND and NOT gates while preserving functional equivalence.
+- test33:5: Convert every XNOR gate in this design to an equivalent NOR-only circuit. Ensure the design functionality does not change.
+- test33:9: Try to restructure the logic cone of output n8 using only NAND and NOT gates while preserving functional equivalence. Ensure the design functionality does not change.
+- test34:4: Reconstruct the entire netlist using only AND and NOT gates while preserving functional equivalence. Ensure the design functionality does not change.
+- test34:5: How many AND gates are now in the reconstructed netlist?
+- test35:4: Try to replace all XNOR gates in this design with equivalent NOR-only implementations. Ensure the design functionality does not change.
+- test35:5: How many NOR gates were added by replacing the XNOR gates?
+- test35:18: Try to replace all XOR gates in this design with equivalent NAND-only implementations. Each 2-input XOR can be realized with 4 NAND gates. Ensure the design functionality does not change.
+- test35:19: How many NAND gates were added by replacing the XOR gates?
+- test37:5: Try to restructure the logic cone of output n8 using only NAND and NOT gates while preserving functional equivalence. Ensure the design functionality does not change.
+- test39:18: Convert every XOR gate in this design to an equivalent 4-NAND circuit. Ensure the design functionality does not change.
+- test40:4: Remap the entire design to use only NAND and NOT gates. Make sure nothing changes functionally.
+
+[Depth optimization and critical-path restructuring]
+Count: 9
+Description: Restructure logic with the goal of reducing maximum depth, critical path depth, or cone depth.
+- test24:6: Optimize the logic to minimize maximum path depth. Ensure functional equivalence is preserved. The cost function is the maximum logic depth of the final design; smaller is better.
+- test25:8: Perform depth optimization on the combinational logic while ensuring the cone of n11[0] continues to use only NAND and NOT gates. Ensure functional equivalence is preserved. The cost function is the maximum logic depth of the final design; smaller is better.
+- test26:7: Reduce critical path depth through logic restructuring, ensuring the cone of n10 maintains only NOR and NOT gates. Preserve functional equivalence. Report original if already optimal. The cost function is the maximum logic depth of the final design; smaller is better.
+- test27:7: Optimize the logic to minimize maximum path depth, ensuring the cone of n15 contains only AND, OR, and NOT gates. Make sure nothing changes functionally. The cost function is the maximum logic depth of the final design; smaller is better.
+- test28:7: Minimize the maximum logic depth of the design, ensuring the netlist remains AND and NOT only. Make sure nothing changes functionally. The cost function is the maximum logic depth of the final design; smaller is better.
+- test29:8: Minimize the critical path depth of the design, ensuring the netlist remains AND and NOT only. Make sure nothing changes functionally. The cost function is the maximum logic depth of the final design; smaller is better.
+- test30:8: Minimize the critical path depth of the design, ensuring the netlist remains AND and NOT only. Make sure nothing changes functionally. The cost function is the maximum logic depth of the final design; smaller is better.
+- test33:19: Optimize the depth of the cone of n8 while ensuring the cone of n8 maintains only NAND and NOT gates. Preserve functional equivalence. Report original if already optimal. The cost function is the depth of the cone of n8; smaller is better.
+- test40:16: Optimize the logic cone of output n14 while ensuring the netlist remains NAND and NOT only. Preserve functional equivalence. Report original if already optimal. The cost function is the depth of the cone of n14; smaller is better.
+
+[Equivalent or duplicate gate merge]
+Count: 4
+Description: Merge functionally equivalent gate pairs or structural duplicates.
+- test29:7: Find and merge all gate pairs in the design that are functionally equivalent (produce the same function). Make sure nothing changes functionally.
+- test30:7: Find and merge all gate pairs in the design that are functionally equivalent (produce the same function). Make sure nothing changes functionally.
+- test33:17: Try to merge any pairs of gates in this design that compute the same Boolean function on the same inputs (structural duplicates). Ensure the design functionality does not change.
+- test33:18: How many gates were merged as structural duplicates?

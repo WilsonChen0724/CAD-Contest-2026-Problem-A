@@ -6,10 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from eda.design import Design, Gate
+from eda.design import DFF, Design, Gate
 from eda.graph import rebuild_graph
 from eda.analysis import max_depth
 from eda.transform import (
+    _adaptive_depth_topk,
     balance_depth_with_buffers,
     collapse_back_to_back_inverters,
     constant_propagation,
@@ -211,6 +212,39 @@ class TransformTest(unittest.TestCase):
         self.assertTrue(check_design_equivalence(before, design)["ok"])
 
 
+    def test_optimize_cone_uses_cone_local_yosys_abc_result(self) -> None:
+        design = Design(inputs={"a", "b", "c", "d", "e", "f", "g", "h", "i"}, outputs={"y"})
+        previous = "a"
+        for index, input_net in enumerate(["b", "c", "d", "e", "f", "g", "h", "i"]):
+            output = "y" if index == 7 else f"n{index}"
+            design.add_gate(Gate(name=f"U{index}", type="and", inputs=[previous, input_net], output=output))
+            previous = output
+        rebuild_graph(design)
+
+        def fake_run_yosys_script(script: str, cwd: Path | None = None, timeout: float | None = None):
+            if "write_verilog" in script and cwd is not None:
+                out_path = Path(cwd) / "cone_optimized.v"
+                out_path.write_text(
+                    "module cone_opt(a, b, c, d, e, f, g, h, i, y);\n"
+                    "input a, b, c, d, e, f, g, h, i;\n"
+                    "output y;\n"
+                    "and U_opt(y, a, b, c, d, e, f, g, h, i);\n"
+                    "endmodule\n",
+                    encoding="utf-8",
+                )
+            return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with patch("eda.transform.run_yosys_script", side_effect=fake_run_yosys_script), patch(
+            "parser.verilog_writer.run_yosys_script", side_effect=fake_run_yosys_script
+        ):
+            result = optimize_cone(design, "y")
+
+        self.assertEqual(result["engine"], "local_plus_cone_local_yosys_abc")
+        self.assertEqual(result["final_depth"], 1)
+        self.assertEqual(result["final_gate_count"], 1)
+        self.assertEqual(len(design.gates), 1)
+        self.assertEqual(next(iter(design.gates.values())).output, "y")
+
     def test_optimize_design_depth_uses_yosys_abc_result(self) -> None:
         design = Design(inputs={"a", "b"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
@@ -233,7 +267,7 @@ class TransformTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-        def fake_run_yosys_script(_script: str, cwd: Path | None = None):
+        def fake_run_yosys_script(_script: str, cwd: Path | None = None, timeout: float | None = None):
             out_path = Path(cwd or tempfile.gettempdir()) / "optimized.v"
             out_path.write_text(
                 "module top(a, b, y); input a, b; output y; and U_opt(y, a, b); endmodule\n",
@@ -252,6 +286,16 @@ class TransformTest(unittest.TestCase):
         self.assertTrue(result["target_met"])
         self.assertEqual(set(design.gates), {"U_opt"})
 
+    def test_adaptive_depth_topk_thresholds(self) -> None:
+        self.assertEqual(_adaptive_depth_topk(2000, False), 32)
+        self.assertEqual(_adaptive_depth_topk(8000, False), 32)
+        self.assertEqual(_adaptive_depth_topk(20000, False), 16)
+        self.assertEqual(_adaptive_depth_topk(20001, False), 8)
+        self.assertEqual(_adaptive_depth_topk(2000, True), 8)
+        self.assertEqual(_adaptive_depth_topk(8000, True), 8)
+        self.assertEqual(_adaptive_depth_topk(20000, True), 8)
+        self.assertEqual(_adaptive_depth_topk(20001, True), 8)
+
     def test_optimize_design_depth_falls_back_when_yosys_fails(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
@@ -261,13 +305,13 @@ class TransformTest(unittest.TestCase):
         with patch("eda.transform.write_verilog", side_effect=RuntimeError("Yosys missing")):
             result = optimize_design_depth(design)
 
-        self.assertEqual(result["engine"], "local_fallback")
+        self.assertEqual(result["engine"], "topk_after_yosys_fallback")
         self.assertIn("Yosys missing", result["fallback_reason"])
         self.assertEqual(result["final_depth"], 1)
         self.assertEqual(set(design.gates), {"U1"})
         self.assertEqual(design.gates["U1"].inputs, ["a"])
 
-    def test_optimize_design_depth_skips_yosys_for_fanout_buffered_design(self) -> None:
+    def test_optimize_design_depth_uses_adaptive_topk_for_fanout_buffered_design(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n__fanout_buf_0"))
         design.add_gate(Gate(name="U1", type="buf", inputs=["n__fanout_buf_0"], output="y"))
@@ -277,8 +321,42 @@ class TransformTest(unittest.TestCase):
             result = optimize_design_depth(design)
 
         yosys_abc.assert_not_called()
-        self.assertEqual(result["engine"], "local_fallback")
-        self.assertIn("Skipped full-design Yosys/ABC", result["fallback_reason"])
+        self.assertEqual(result["engine"], "adaptive_topk_critical_cones")
+        self.assertEqual(result["max_outputs"], 8)
+        self.assertIn("adaptive top-K", result["bounded_reason"])
+
+    def test_optimize_design_depth_uses_adaptive_topk_for_large_design(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        previous = "a"
+        for index in range(10001):
+            out = "y" if index == 10000 else f"n{index}"
+            design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=out))
+            previous = out
+        rebuild_graph(design)
+
+        with patch("eda.transform._optimize_design_depth_with_yosys_abc") as yosys_abc:
+            result = optimize_design_depth(design)
+
+        yosys_abc.assert_not_called()
+        self.assertEqual(result["engine"], "adaptive_topk_critical_cones")
+        self.assertEqual(result["max_outputs"], 16)
+        self.assertIsNone(result["initial_depth"])
+        self.assertIsNone(result["final_depth"])
+
+    def test_optimize_cone_resolves_dff_q_to_d_input_cone(self) -> None:
+        design = Design(inputs={"a"}, outputs={"q"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="mid"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["mid"], output="d"))
+        design.dffs["FF0"] = DFF(name="FF0", q="q", d="d", clk="clk", rst=None)
+        rebuild_graph(design)
+
+        result = optimize_cone(design, "q")
+
+        self.assertEqual(result["resolved_target"], "d")
+        self.assertEqual(result["target_resolution"]["kind"], "dff_q_to_d")
+        self.assertEqual(result["final_gate_count"], 0)
+        self.assertEqual(design.dffs["FF0"].d, "a")
+
     def test_rename_net_updates_references_and_preserves_function(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))
@@ -342,3 +420,4 @@ class TransformTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

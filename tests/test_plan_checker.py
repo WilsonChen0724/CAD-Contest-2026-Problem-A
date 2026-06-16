@@ -142,6 +142,17 @@ class PlanCheckerTest(unittest.TestCase):
             {"steps": [{"op": "find_path", "args": {"src": "n4", "dst": "n17[1]", "avoid": ["n269"]}}]},
         )
 
+    def test_normalizes_optional_null_args(self) -> None:
+        plan = validate_plan({"op": "optimize_cone", "args": {"target": "y", "max_depth": None}})
+
+        self.assertEqual(plan, {"op": "optimize_cone", "args": {"target": "y"}})
+
+        domain_plan = validate_domain_tool_plan(
+            "run_transform_plan",
+            {"steps": [{"op": "optimize_cone", "args": {"target": "y", "max_depth": None}}]},
+        )
+        self.assertEqual(domain_plan, {"steps": [{"op": "optimize_cone", "args": {"target": "y"}}]})
+
     def test_rejects_bool_where_integer_is_required(self) -> None:
         with self.assertRaisesRegex(PlanValidationError, "wrong type"):
             validate_plan({"op": "check_fanout", "args": {"max_fanout": True}})

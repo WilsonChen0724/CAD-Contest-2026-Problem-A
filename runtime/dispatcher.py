@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Any
 
 from runtime.state import CurrentState
@@ -81,6 +82,9 @@ from eda.verify import (
     check_property,
     check_signal_symmetry,
 )
+
+DEFAULT_COMPLETE_PATH_LIMIT = 300000
+ALL_PATHS_STDOUT_LIMIT = 20
 
 SUPPORTED_OPS = {
     "begin_testcase",
@@ -346,19 +350,18 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "report_all_paths":
         _require_design(state)
-        return _format_all_paths(
-            all_paths(
-                state.design,
-                src=args["src"],
-                dst=args["dst"],
-                max_paths=_positive_int_or_default(args.get("max_paths"), 200),
-            )
+        result = all_paths(
+            state.design,
+            src=args["src"],
+            dst=args["dst"],
+            max_paths=_positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT),
         )
+        return _format_all_paths(result, state=state)
 
     if op == "all_paths":
         _require_design(state)
         result = enumerate_paths(state.design, args["src"], args["dst"], max_paths=args.get("max_paths", 100))
-        return _format_all_paths(result)
+        return _format_all_paths(result, state=state)
 
     if op == "check_cut_signal":
         _require_design(state)
@@ -654,7 +657,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if _skip_expensive_whole_design_transform(state.design):
             return (
                 "Skipped back-to-back inverter collapse for this large design to stay "
-                "within the 60-second per-response limit. No structural changes were applied."
+                "within the bounded large-design time budget. No structural changes were applied."
             )
         result = _run_transactional_transform(state, collapse_back_to_back_inverters, verify_equivalence=True)
         return (
@@ -698,7 +701,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state.last_transform_result = {"transform": "replace_with_and_not", "result": result}
             return (
                 "Skipped full-design AND/NOT reconstruction for this large design "
-                "to stay within the 60-second per-response limit. No structural changes were applied."
+                "to stay within the bounded large-design time budget. No structural changes were applied."
             )
         result = _run_transactional_transform(state, replace_with_and_not)
         return (
@@ -794,7 +797,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if len(state.design.gates) > 10000 and max_allowed_depth is not None:
             return (
                 f'Skipped cone optimization of "{args["target"]}" to stay within '
-                "the 60-second per-response limit. No structural changes were applied."
+                "the bounded large-design time budget. No structural changes were applied."
             )
         result = _run_transactional_transform(
             state,
@@ -805,10 +808,14 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             verify_equivalence=True,
             cone_depth=(args["target"], max_allowed_depth),
         )
+        resolved_text = ""
+        if result.get("resolved_target") and result["resolved_target"] != args["target"]:
+            resolved_text = f' Resolved target to "{result["resolved_target"]}" ({result["target_resolution"]["kind"]}).'
         return (
             f'Optimized cone of "{args["target"]}": '
             f'{result["initial_gate_count"]} -> {result["final_gate_count"]} gate(s), '
             f'depth {result["initial_depth"]} -> {result["final_depth"]}.'
+            f'{resolved_text}'
         )
 
     if op == "constant_propagation":
@@ -829,41 +836,10 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         max_allowed_depth = args.get("max_depth")
         if max_allowed_depth is not None and not isinstance(max_allowed_depth, int):
             raise ValueError('Tool call rejected: "max_depth" must be an integer when provided.')
-        if len(state.design.gates) > 2000:
-            depth_report = design_max_logic_depth(state.design)
-            result = {
-                "engine": "skipped_large_design",
-                "initial_gate_count": len(state.design.gates),
-                "final_gate_count": len(state.design.gates),
-                "initial_depth": depth_report["max_depth"],
-                "final_depth": depth_report["max_depth"],
-                "num_changed_outputs": 0,
-                "num_changed": 0,
-                "target_met": (
-                    max_allowed_depth is None
-                    or depth_report["max_depth"] <= max_allowed_depth
-                ),
-                "skipped": True,
-            }
-            state.last_transform_input = deepcopy(state.design)
-            state.last_transform_result = {
-                "transform": "optimize_design_depth",
-                "result": result,
-            }
-            target_text = ""
-            if max_allowed_depth is not None:
-                target_text = f' Target depth <= {max_allowed_depth}: {"met" if result["target_met"] else "not met"}.'
-            return (
-                "Skipped full-design depth optimization for this large design "
-                "to stay within the 60-second per-response limit. "
-                f'Gates remain {result["final_gate_count"]}; maximum depth remains '
-                f'{result["final_depth"]}.{target_text} No structural changes were applied.'
-            )
         result = _run_transactional_transform(
             state,
             optimize_design_depth,
             max_depth=max_allowed_depth,
-            max_outputs=16 if len(state.design.gates) > 10000 else None,
             verify_equivalence=False,
         )
         engine = result.get("engine", "unknown")
@@ -872,12 +848,19 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             target_text = f' Target depth <= {max_allowed_depth}: {"met" if result.get("target_met") else "not met"}.'
         fallback_text = ""
         if result.get("fallback_reason"):
-            fallback_text = " Yosys/ABC candidate was not applied because it did not pass safety checks; kept the safe result."
+            reason = str(result["fallback_reason"])
+            if len(reason) > 360:
+                reason = reason[:357] + "..."
+            fallback_text = f" Yosys/ABC candidate was not applied; fallback reason: {reason}."
+        if result.get("initial_depth") is None or result.get("final_depth") is None:
+            depth_text = "depth not recomputed in bounded mode"
+        else:
+            depth_text = f'depth {result["initial_depth"]} -> {result["final_depth"]}'
+        bounded_text = f' {result["bounded_reason"]}.' if result.get("bounded_reason") else ""
         return (
             f'Optimized design depth with {engine}: gates {result["initial_gate_count"]} -> '
-            f'{result["final_gate_count"]}, depth {result["initial_depth"]} -> '
-            f'{result["final_depth"]}, changed targets {result["num_changed_outputs"]}.'
-            f'{target_text}{fallback_text}'
+            f'{result["final_gate_count"]}, {depth_text}, changed targets {result["num_changed_outputs"]}.'
+            f'{target_text}{fallback_text}{bounded_text}'
         )
 
     if op == "replace_xnor_nor_with_basic_gates":
@@ -913,7 +896,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
     if op == "replace_and_not_with_nand":
         _require_design(state)
         if len(state.design.gates) > 10000:
-            return "Skipped full-design AND/NOT-to-NAND remap for this large design to stay within the 60-second per-response limit. No structural changes were applied."
+            return "Skipped full-design AND/NOT-to-NAND remap for this large design to stay within the bounded large-design time budget. No structural changes were applied."
         result = _run_transactional_transform(state, replace_and_not_with_nand)
         return (
             f'Remapped {result["num_changed"]} AND/NOT gate(s) into NAND logic. '
@@ -927,7 +910,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state.last_transform_result = {"transform": "merge_equivalent_gates", "result": result}
             return (
                 "Skipped structural duplicate merge for this large design to stay within "
-                "the 60-second per-response limit. Merged 0 gate(s); no structural changes were applied."
+                "the bounded large-design time budget. Merged 0 gate(s); no structural changes were applied."
             )
         result = _run_transactional_transform(state, merge_equivalent_gates, verify_equivalence=True)
         return (
@@ -1195,7 +1178,7 @@ def _skip_large_technology_mapping(
     state.last_transform_result = {"transform": transform, "result": result}
     return (
         f'Skipped {source_type.upper()}-to-{target_type.upper()} remapping for this large design '
-        "to stay within the 60-second per-response limit. "
+        "to stay within the bounded large-design time budget. "
         f'Found {candidates} candidate {source_type.upper()} gate(s); added 0 {target_type.upper()} gate(s). '
         "No structural changes were applied."
     )
@@ -1378,19 +1361,51 @@ def _format_gate_type_count(result: dict[str, Any]) -> str:
     return f'{result["gate_type"].upper()} gate count: {result["count"]}'
 
 
-def _format_all_paths(result: dict[str, Any]) -> str:
+def _format_all_paths(result: dict[str, Any], state: CurrentState | None = None) -> str:
+    paths = result["paths"]
+    should_write_file = bool(paths) and (
+        result.get("truncated") or len(paths) > ALL_PATHS_STDOUT_LIMIT
+    )
+    artifact_path = _write_all_paths_artifact(result, state) if should_write_file else None
+    shown_paths = paths[:ALL_PATHS_STDOUT_LIMIT] if artifact_path else paths
     lines = [
         f'Combinational paths from "{result["src"]}" to "{result["dst"]}": '
         f'{result["num_paths"]}'
     ]
+    if artifact_path:
+        lines.append(f'Full path listing written to {artifact_path}.')
+        lines.append(f'Showing first {len(shown_paths)} path(s) in this response.')
     if result.get("truncated"):
         max_paths = result.get("max_paths", result.get("num_paths", 0))
-        lines.append(f'Showing first {max_paths} path(s); enumeration was truncated.')
-    for index, path in enumerate(result["paths"], 1):
+        lines.append(f'Enumeration was truncated after {max_paths} path(s).')
+    for index, path in enumerate(shown_paths, 1):
         lines.append(f'{index}. ' + " -> ".join(path))
-    if not result["paths"]:
+    if not paths:
         lines.append("- none")
     return "\n".join(lines)
+
+
+def _write_all_paths_artifact(result: dict[str, Any], state: CurrentState | None) -> Path:
+    output_dir = state.output_dir if state is not None else Path("output")
+    report_dir = output_dir / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    case_name = state.testcase if state is not None and state.testcase else "current"
+    src = _safe_filename_token(str(result["src"]))
+    dst = _safe_filename_token(str(result["dst"]))
+    path = report_dir / f"{_safe_filename_token(case_name)}_{src}_to_{dst}_paths.txt"
+    lines = [
+        f'Combinational paths from "{result["src"]}" to "{result["dst"]}": {result["num_paths"]}',
+    ]
+    if result.get("truncated"):
+        lines.append(f'Enumeration was truncated after {result.get("max_paths", result["num_paths"])} path(s).')
+    for index, item in enumerate(result["paths"], 1):
+        lines.append(f'{index}. ' + " -> ".join(item))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _safe_filename_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "item"
 
 def _format_gate_type_connections(result: dict[str, Any]) -> str:
     lines = [
@@ -1493,7 +1508,7 @@ def _optimize_saved_output_cones(
     if len(state.design.gates) > 4000 and max_allowed_depth is not None:
         return (
             f'Skipped cone optimization for {len(outputs)} saved output(s) in "{result_name}" '
-            "to stay within the 60-second per-response limit. No structural changes were applied."
+            "to stay within the bounded large-design time budget. No structural changes were applied."
         )
 
     changed: list[str] = []

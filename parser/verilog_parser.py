@@ -59,8 +59,14 @@ def parse_verilog(path: str | Path) -> Design:
                 f"write_json {quote_yosys_path(yosys_json)}",
             ]
         )
-        completed = run_yosys_script(script, cwd=source_path.parent)
+        # Keep Yosys away from release directories with spaces on Windows.
+        # The input/output paths in the script are absolute temp paths, so cwd
+        # is not needed and can trigger OSS CAD Suite GetShortPathName errors.
+        completed = run_yosys_script(script)
         if completed.returncode != 0:
+            raw_message = (completed.stderr or completed.stdout or "").strip()
+            if "GetShortPathName() failed" in raw_message:
+                return _parse_gate_level_verilog_direct(text, top_module)
             raise ValueError(
                 _format_yosys_parse_error(
                     source_path,
@@ -73,6 +79,95 @@ def parse_verilog(path: str | Path) -> Design:
         data = json.loads(yosys_json.read_text(encoding="utf-8"))
 
     return _yosys_json_to_design(data, top_module)
+
+
+def _parse_gate_level_verilog_direct(text: str, top_module: str) -> Design:
+    """Fallback parser for the contest's flattened gate-level Verilog subset."""
+    design = Design(module_name=top_module)
+    stripped_text = _strip_verilog_comments(text)
+    for raw_statement in stripped_text.split(";"):
+        statement = raw_statement.strip()
+        if not statement or statement.startswith("module "):
+            continue
+        if statement == "endmodule" or statement.endswith("endmodule"):
+            continue
+
+        decl_match = re.match(r"^(input|output|wire)\b\s*(.*)$", statement, flags=re.S | re.I)
+        if decl_match:
+            kind, body = decl_match.groups()
+            nets = _parse_declaration_nets(body)
+            if kind.lower() == "input":
+                design.inputs.update(nets)
+            elif kind.lower() == "output":
+                design.outputs.update(nets)
+            else:
+                design.wires.update(nets)
+            continue
+
+        primitive_match = _PRIMITIVE_RE.match(statement)
+        if primitive_match:
+            gate_type, inst_name, pin_text = primitive_match.groups()
+            pins = _split_pin_list(pin_text)
+            input_count = len(pins) - 1
+            if gate_type in {"not", "buf"} and input_count != 1:
+                raise ValueError(f"Primitive {inst_name} ({gate_type}) expects one input")
+            if gate_type not in {"not", "buf"} and input_count < 2:
+                raise ValueError(f"Primitive {inst_name} ({gate_type}) expects at least two inputs")
+            design.add_gate(Gate(name=inst_name, type=gate_type, output=pins[0], inputs=pins[1:]))
+            continue
+
+        dff_match = _DFF_RE.match(statement)
+        if dff_match:
+            _, inst_name, pin_text = dff_match.groups()
+            pins = _normalize_dff_pins(inst_name, pin_text)
+            dff = DFF(
+                name=inst_name,
+                q=pins[0],
+                d=pins[1],
+                clk=pins[2] if len(pins) >= 3 else None,
+                rst=pins[3] if len(pins) >= 4 else None,
+                attrs={"cell_type": "dff"},
+            )
+            design.add_dff(dff)
+            continue
+
+        raise ValueError(f"Verilog parse error: unsupported statement: {statement[:120]}")
+
+    rebuild_graph(design)
+    return design
+
+
+def _strip_verilog_comments(text: str) -> str:
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//.*", "", text)
+
+
+def _parse_declaration_nets(body: str) -> set[str]:
+    body = re.sub(r"\b(?:wire|reg|logic|signed)\b", " ", body, flags=re.I)
+    body = re.sub(r"\s+", " ", body).strip()
+    range_match = re.match(r"^\[(\d+)\s*:\s*(\d+)\]\s*(.*)$", body)
+    indexes: list[int] | None = None
+    if range_match:
+        left, right, body = range_match.groups()
+        start, end = int(left), int(right)
+        step = 1 if end >= start else -1
+        indexes = list(range(start, end + step, step))
+
+    nets: set[str] = set()
+    for raw_name in body.split(","):
+        name = raw_name.strip()
+        if not name:
+            continue
+        name = re.sub(r"\s*=.*$", "", name).strip()
+        name = name.strip()
+        if not name:
+            continue
+        if indexes is None:
+            nets.add(name)
+        else:
+            for index in indexes:
+                nets.add(f"{name}[{index}]")
+    return nets
 
 
 def _find_top_module(text: str) -> str:

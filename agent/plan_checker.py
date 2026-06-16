@@ -380,10 +380,19 @@ def _validate_single_step(step: Any) -> None:
     if not isinstance(args, dict):
         raise PlanValidationError("Field 'args' must be a JSON object.")
 
+    _normalize_optional_null_args(op, args)
+
     if "save_as" in step and step["save_as"] is not None and not isinstance(step["save_as"], str):
         raise PlanValidationError("Field 'save_as' must be a string or null.")
 
     _validate_args(op, args)
+
+
+def _normalize_optional_null_args(op: str, args: dict[str, Any]) -> None:
+    optional = _OPTIONAL_ARGS.get(op, {})
+    for key in list(args):
+        if key in optional and args[key] is None:
+            del args[key]
 
 
 def _validate_args(op: str, args: dict[str, Any]) -> None:
@@ -479,21 +488,20 @@ def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
 def _normalize_tool_step(step: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(step)
     args = normalized.get("args")
+    op = normalized.get("op")
     if isinstance(args, dict):
         normalized_args = dict(args)
-        optional_args = _OPTIONAL_ARGS.get(str(normalized.get("op")), {})
-        for key in list(normalized_args):
-            if key in optional_args and normalized_args[key] is None:
-                normalized_args.pop(key)
-        if normalized.get("op") == "find_gates" and normalized_args.get("name_contains") == "":
+        if isinstance(op, str):
+            _normalize_optional_null_args(op, normalized_args)
+        if op == "find_gates" and normalized_args.get("name_contains") == "":
             normalized_args.pop("name_contains")
-        if normalized.get("op") == "find_path":
+        if op == "find_path":
             if isinstance(normalized_args.get("avoid"), str):
                 normalized_args["avoid"] = [normalized_args["avoid"]]
             if "avoiding" in normalized_args and "avoid" not in normalized_args:
                 avoiding = normalized_args.pop("avoiding")
                 normalized_args["avoid"] = [avoiding] if isinstance(avoiding, str) else avoiding
-        if normalized.get("op") == "report_gate_type_count_in_cone" and normalized_args.get("gate_type") == "":
+        if op == "report_gate_type_count_in_cone" and normalized_args.get("gate_type") == "":
             normalized["op"] = "logic_cone"
             normalized_args = {"target": normalized_args.get("target")}
         normalized["args"] = normalized_args
