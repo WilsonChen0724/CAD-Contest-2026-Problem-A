@@ -23,6 +23,7 @@ _DFF_RE = re.compile(
 _NAMED_PIN_RE = re.compile(r"^\s*\.([A-Za-z_][A-Za-z0-9_$]*)\s*\((.*)\)\s*$", re.S)
 _MODULE_RE = re.compile(r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\(", re.S)
 _WRAPPER_PREFIX = "__cada_"
+PARSER_YOSYS_TIMEOUT = 20.0
 
 
 def parse_verilog(path: str | Path) -> Design:
@@ -62,7 +63,7 @@ def parse_verilog(path: str | Path) -> Design:
         # Keep Yosys away from release directories with spaces on Windows.
         # The input/output paths in the script are absolute temp paths, so cwd
         # is not needed and can trigger OSS CAD Suite GetShortPathName errors.
-        completed = run_yosys_script(script)
+        completed = run_yosys_script(script, timeout=PARSER_YOSYS_TIMEOUT)
         if completed.returncode != 0:
             raw_message = (completed.stderr or completed.stdout or "").strip()
             if "GetShortPathName() failed" in raw_message:

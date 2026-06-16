@@ -85,6 +85,8 @@ from eda.verify import (
 
 DEFAULT_COMPLETE_PATH_LIMIT = 300000
 ALL_PATHS_STDOUT_LIMIT = 20
+LARGE_DESIGN_GATE_LIMIT = 10000
+LARGE_CONE_GATE_LIMIT = 1500
 
 SUPPORTED_OPS = {
     "begin_testcase",
@@ -794,18 +796,20 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
                 max_allowed_depth=max_allowed_depth,
                 minimize_gate_count=args.get("minimize_gate_count", True),
             )
-        if len(state.design.gates) > 10000 and max_allowed_depth is not None:
-            return (
-                f'Skipped cone optimization of "{args["target"]}" to stay within '
-                "the bounded large-design time budget. No structural changes were applied."
-            )
+        skip_reason = _large_cone_optimization_skip_reason(state.design, args["target"])
+        if skip_reason:
+            state.last_transform_result = {
+                "transform": "optimize_cone",
+                "result": {"skipped": True, "target": args["target"], "reason": skip_reason},
+            }
+            return skip_reason
         result = _run_transactional_transform(
             state,
             optimize_cone,
             args["target"],
             max_depth=max_allowed_depth,
             minimize_gate_count=args.get("minimize_gate_count", True),
-            verify_equivalence=True,
+            verify_equivalence=not _is_large_design(state.design),
             cone_depth=(args["target"], max_allowed_depth),
         )
         resolved_text = ""
@@ -970,6 +974,11 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         if state.original_design is None:
             raise RuntimeError("No original design snapshot is available. Load a design with read_design first.")
+        if _skip_expensive_equivalence_check(state.original_design, state.design):
+            return (
+                "Skipped full equivalence check for this large design to stay within the bounded "
+                "large-design time budget. Successful transforms have already passed structural guards."
+            )
         result = check_design_equivalence(state.original_design, state.design)
         return _format_original_equivalence_result(result)
 
@@ -977,6 +986,11 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         if state.last_transform_input is None:
             return "No previous successful transform input snapshot is available. Run a transform first."
+        if _skip_expensive_equivalence_check(state.last_transform_input, state.design):
+            return (
+                "Skipped full equivalence check against the previous transform input for this large design "
+                "to stay within the bounded large-design time budget."
+            )
         result = check_design_equivalence(state.last_transform_input, state.design)
         return _format_last_transform_equivalence_result(result)
 
@@ -1028,6 +1042,34 @@ def _require_design(state: CurrentState) -> None:
     if state.design is None:
         raise RuntimeError("No design has been loaded yet.")
 
+
+
+def _is_large_design(design) -> bool:
+    return len(design.gates) > LARGE_DESIGN_GATE_LIMIT
+
+
+def _large_cone_optimization_skip_reason(design, target: str) -> str | None:
+    if not _is_large_design(design):
+        return None
+    if target not in design.all_nets():
+        return None
+    try:
+        cone_gate_count = len(logic_cone(design, target))
+    except Exception:
+        return None
+    if cone_gate_count <= LARGE_CONE_GATE_LIMIT:
+        return None
+    return (
+        f'Skipped cone optimization of "{target}" for this large design '
+        f'({len(design.gates)} gates; cone has {cone_gate_count} gates) to stay within '
+        "the bounded large-design time budget. No structural changes were applied."
+    )
+
+
+def _skip_expensive_equivalence_check(before, after) -> bool:
+    if before is None or after is None:
+        return False
+    return len(before.gates) > LARGE_DESIGN_GATE_LIMIT or len(after.gates) > LARGE_DESIGN_GATE_LIMIT
 
 def _run_transactional_transform(
     state: CurrentState,

@@ -17,6 +17,8 @@ ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_VERSION = "2023-06-01"
+DEFAULT_LLM_REQUEST_TIMEOUT = 20.0
+DEFAULT_LLM_MAX_ATTEMPTS = 2
 
 
 class LLMNotConfiguredError(RuntimeError):
@@ -79,6 +81,8 @@ def _call_openai(prompt: str, user_request: str, settings: dict[str, Any]) -> di
             "Content-Type": "application/json",
         },
         provider="OpenAI",
+        max_attempts=_as_int(settings.get("max_attempts"), default=DEFAULT_LLM_MAX_ATTEMPTS),
+        request_timeout=_as_float(settings.get("request_timeout"), default=DEFAULT_LLM_REQUEST_TIMEOUT),
     )
     return _extract_openai_domain_tool_plan(response_data)
 
@@ -109,6 +113,8 @@ def _call_anthropic(prompt: str, user_request: str, settings: dict[str, Any]) ->
             "Content-Type": "application/json",
         },
         provider="Anthropic",
+        max_attempts=_as_int(settings.get("max_attempts"), default=DEFAULT_LLM_MAX_ATTEMPTS),
+        request_timeout=_as_float(settings.get("request_timeout"), default=DEFAULT_LLM_REQUEST_TIMEOUT),
     )
     return _extract_anthropic_domain_tool_plan(response_data)
 
@@ -119,7 +125,8 @@ def _post_json(
     *,
     headers: dict[str, str],
     provider: str,
-    max_attempts: int = 3,
+    max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS,
+    request_timeout: float = DEFAULT_LLM_REQUEST_TIMEOUT,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -130,7 +137,7 @@ def _post_json(
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except TimeoutError as exc:
             last_error = exc

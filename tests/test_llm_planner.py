@@ -156,6 +156,30 @@ class LLMPlannerTest(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(len(calls), 2)
 
+    def test_post_json_uses_bounded_default_timeout(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return b"{\"ok\": true}"
+
+        seen_timeouts = []
+
+        def fake_urlopen(request, timeout):
+            del request
+            seen_timeouts.append(timeout)
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = _post_json("https://example.test", {"hello": "world"}, headers={}, provider="OpenAI")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen_timeouts, [20.0])
+
     def test_api_key_placeholder_falls_back_to_environment_value(self) -> None:
         self.assertEqual(_resolve_api_key("<YOUR_API_KEY>", "real-key"), "real-key")
         self.assertEqual(_resolve_api_key("config-key", "real-key"), "config-key")
