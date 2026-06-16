@@ -24,6 +24,11 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "report_all_paths", "args": {"src": "A", "dst": "B"}})
 
+    def test_maps_complete_path_enumeration_between_two_signals(self) -> None:
+        plan = plan_request("Provide a complete enumeration of paths between n0[1] and n63[0].", None)
+
+        self.assertEqual(plan, {"op": "report_all_paths", "args": {"src": "n0[1]", "dst": "n63[0]"}})
+
     def test_maps_primary_output_cone_size_report(self) -> None:
         plan = plan_request("Report all primary outputs whose logic cone contains more than 100 gates.", None)
 
@@ -296,6 +301,14 @@ class RulePlannerTest(unittest.TestCase):
             {"op": "check_equivalence", "args": {"expr": "n1287", "target": "n2404"}},
         )
         self.assertEqual(
+            plan_request("Determine whether signals n13082 and n13083 are functionally equivalent.", None),
+            {"op": "check_equivalence", "args": {"expr": "n13082", "target": "n13083"}},
+        )
+        self.assertEqual(
+            plan_request("Verify that n2257 and n2184 produce identical logic values for all inputs.", None),
+            {"op": "check_equivalence", "args": {"expr": "n2257", "target": "n2184"}},
+        )
+        self.assertEqual(
             plan_request(
                 "Check whether internal signals n29498 and n29471 are functionally equivalent for all input combinations.",
                 None,
@@ -353,6 +366,22 @@ class RulePlannerTest(unittest.TestCase):
         self.assertEqual(
             plan_request("Reduce the critical path depth through restructuring. Make sure nothing changes functionally.", None),
             {"op": "optimize_design_depth", "args": {}},
+        )
+        self.assertEqual(
+            plan_request("Calculate the critical path depth between n15 and n25[0].", None),
+            {"op": "max_depth", "args": {"src": "n15", "dst": "n25[0]"}},
+        )
+        self.assertEqual(
+            plan_request("Determine the number of gates driven by g0.", None),
+            {"op": "report_fanout", "args": {"net": "g0"}},
+        )
+        self.assertEqual(
+            plan_request("Enumerate the immediate successors of gate g0.", None),
+            {"op": "report_fanout", "args": {"net": "g0"}},
+        )
+        self.assertEqual(
+            plan_request("Convert every XOR gate in this design to an equivalent 4-NAND circuit. Ensure the design functionality does not change.", None),
+            {"op": "replace_xor_with_nand", "args": {}},
         )
         self.assertEqual(
             plan_request("Are there any redundant gates in this design that can be removed without changing functionality? Remove them if found.", None),

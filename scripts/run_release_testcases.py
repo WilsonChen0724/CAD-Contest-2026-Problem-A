@@ -286,8 +286,25 @@ def _is_basic_operation_prompt(prompt: str) -> bool:
     design_file_hint = any(hint in text for hint in (".v", "verilog", "netlist", "design", "file"))
     if words & {"load", "read"} and design_file_hint:
         return True
-    write_file_hint = any(hint in text for hint in (".v", "netlist", "current design", "modified design"))
-    if words & {"write", "save", "output"} and write_file_hint:
+    write_intent = words & {"write", "save", "dump", "emit"} or "write out" in text
+    output_file_hint = ".v" in text or re.search(r"\b[a-z0-9_./\\-]+_out\.v\b", text) is not None
+    design_write_hint = any(
+        phrase in text
+        for phrase in (
+            "current design",
+            "modified design",
+            "the design",
+            "this design",
+            "output netlist",
+            "write netlist",
+            "save netlist",
+        )
+    )
+    output_design_intent = bool(
+        re.search(r"\boutput\s+(?:the\s+)?(?:(?:current|modified)\s+)?design\b", text)
+        or re.search(r"\boutput\s+(?:the\s+)?(?:current\s+)?netlist\b", text)
+    )
+    if (write_intent or output_design_intent) and (output_file_hint or design_write_hint):
         return True
     return False
 def _copy_generated_netlist(release_dir: Path, result_root: Path, case_name: str) -> None:
