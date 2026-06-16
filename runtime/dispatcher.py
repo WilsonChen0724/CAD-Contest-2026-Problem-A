@@ -623,10 +623,14 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             verify_equivalence=True,
             cone_depth=(args["target"], max_allowed_depth),
         )
+        resolved_text = ""
+        if result.get("resolved_target") and result["resolved_target"] != args["target"]:
+            resolved_text = f' Resolved target to "{result["resolved_target"]}" ({result["target_resolution"]["kind"]}).'
         return (
             f'Optimized cone of "{args["target"]}": '
             f'{result["initial_gate_count"]} -> {result["final_gate_count"]} gate(s), '
             f'depth {result["initial_depth"]} -> {result["final_depth"]}.'
+            f'{resolved_text}'
         )
 
     if op == "constant_propagation":
@@ -661,11 +665,15 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         fallback_text = ""
         if result.get("fallback_reason"):
             fallback_text = " Yosys/ABC candidate was not applied because it did not pass safety checks; kept the safe result."
+        if result.get("initial_depth") is None or result.get("final_depth") is None:
+            depth_text = "depth not recomputed in bounded mode"
+        else:
+            depth_text = f'depth {result["initial_depth"]} -> {result["final_depth"]}'
+        bounded_text = f' {result["bounded_reason"]}.' if result.get("bounded_reason") else ""
         return (
             f'Optimized design depth with {engine}: gates {result["initial_gate_count"]} -> '
-            f'{result["final_gate_count"]}, depth {result["initial_depth"]} -> '
-            f'{result["final_depth"]}, changed targets {result["num_changed_outputs"]}.'
-            f'{target_text}{fallback_text}'
+            f'{result["final_gate_count"]}, {depth_text}, changed targets {result["num_changed_outputs"]}.'
+            f'{target_text}{fallback_text}{bounded_text}'
         )
 
     if op == "replace_xnor_nor_with_basic_gates":

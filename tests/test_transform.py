@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from eda.design import Design, Gate
+from eda.design import DFF, Design, Gate
 from eda.graph import rebuild_graph
 from eda.analysis import max_depth
 from eda.transform import (
@@ -241,8 +241,40 @@ class TransformTest(unittest.TestCase):
             result = optimize_design_depth(design)
 
         yosys_abc.assert_not_called()
-        self.assertEqual(result["engine"], "local_fallback")
+        self.assertEqual(result["engine"], "large_design_bounded_cleanup")
         self.assertIn("Skipped full-design Yosys/ABC", result["fallback_reason"])
+
+    def test_optimize_design_depth_uses_fast_cleanup_for_large_design(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        previous = "a"
+        for index in range(10001):
+            out = "y" if index == 10000 else f"n{index}"
+            design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=out))
+            previous = out
+        rebuild_graph(design)
+
+        with patch("eda.transform._optimize_design_depth_with_yosys_abc") as yosys_abc:
+            result = optimize_design_depth(design)
+
+        yosys_abc.assert_not_called()
+        self.assertEqual(result["engine"], "large_design_bounded_cleanup")
+        self.assertIsNone(result["initial_depth"])
+        self.assertIsNone(result["final_depth"])
+
+    def test_optimize_cone_resolves_dff_q_to_d_input_cone(self) -> None:
+        design = Design(inputs={"a"}, outputs={"q"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="mid"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["mid"], output="d"))
+        design.dffs["FF0"] = DFF(name="FF0", q="q", d="d", clk="clk", rst=None)
+        rebuild_graph(design)
+
+        result = optimize_cone(design, "q")
+
+        self.assertEqual(result["resolved_target"], "d")
+        self.assertEqual(result["target_resolution"]["kind"], "dff_q_to_d")
+        self.assertEqual(result["final_gate_count"], 0)
+        self.assertEqual(design.dffs["FF0"].d, "a")
+
     def test_rename_net_updates_references_and_preserves_function(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))

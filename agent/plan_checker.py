@@ -269,10 +269,19 @@ def _validate_single_step(step: Any) -> None:
     if not isinstance(args, dict):
         raise PlanValidationError("Field 'args' must be a JSON object.")
 
+    _normalize_optional_null_args(op, args)
+
     if "save_as" in step and step["save_as"] is not None and not isinstance(step["save_as"], str):
         raise PlanValidationError("Field 'save_as' must be a string or null.")
 
     _validate_args(op, args)
+
+
+def _normalize_optional_null_args(op: str, args: dict[str, Any]) -> None:
+    optional = _OPTIONAL_ARGS.get(op, {})
+    for key in list(args):
+        if key in optional and args[key] is None:
+            del args[key]
 
 
 def _validate_args(op: str, args: dict[str, Any]) -> None:
@@ -365,6 +374,11 @@ def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
 
 def _normalize_tool_step(step: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(step)
+    args = normalized.get("args")
+    op = normalized.get("op")
+    if isinstance(op, str) and isinstance(args, dict):
+        normalized["args"] = dict(args)
+        _normalize_optional_null_args(op, normalized["args"])
     if normalized.get("save_as") is None:
         normalized.pop("save_as", None)
     return normalized

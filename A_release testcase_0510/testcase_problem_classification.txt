@@ -1,0 +1,169 @@
+A_release testcase_0510 problem classification
+Generated from: A_release testcase_0510/testcase/test01..test40/prompt.txt
+
+Counting rule
+- The testcase header line, "This is the beginning of a new testcase...", is not counted as a problem.
+- Design loading and final write-out are counted because they are explicit requested actions in every testcase.
+- Each remaining prompt line is assigned to one primary category.
+- Total classified problem/request lines: 419
+- Total excluding fixed load/write I/O requests: 339
+
+Category summary
+
+01. Design loading
+Count: 40
+Problem itself: Load the Verilog design from the testcase directory, e.g. "Please load the design from the file testXX.v located in the directory testcase/testXX/."
+
+02. Design output writing
+Count: 40
+Problem itself: Write the current netlist/design to the requested output file, e.g. "Please write the current design to the output file testXX_out.v."
+
+03. Whole-design gate count
+Count: 37
+Problem itself: Count all gates in the whole design and report totals by gate type, or compute the total gate count.
+
+04. Depth optimization
+Count: 10
+Problem itself: Restructure or optimize logic to minimize maximum depth or critical path depth while preserving functional equivalence and sometimes preserving a required gate library.
+
+05. Gate-library remap or decomposition
+Count: 15
+Problem itself: Convert/remap/reconstruct gates or cones into a restricted library such as NAND/NOT, NOR/NOT, AND/NOT, AND/OR/NOT, NOR-only, or NAND-only.
+
+06. Back-to-back inverter cleanup
+Count: 10
+Problem itself: Find NOT-followed-by-NOT pairs and collapse them into direct wire connections while preserving equivalence.
+
+07. Constant propagation simplify or count
+Count: 10
+Problem itself: Simplify gates with constant inputs by propagating constants, then report how many gates were eliminated.
+
+08. Constant-input gate handling
+Count: 8
+Problem itself: Detect or replace gates with constant inputs, including NAND/NOR/AND/OR constant-input cases and NAND-with-constant-1 replacement by inverters.
+
+09. Dead, floating, or redundant logic cleanup/check
+Count: 17
+Problem itself: Remove or report dangling, unused, floating, unconnected, or redundant gates/signals that do not affect primary outputs.
+
+10. Equivalent or duplicate gate merging
+Count: 4
+Problem itself: Merge structurally duplicate or functionally equivalent gate pairs without changing the design behavior.
+
+11. Buffer insertion and fanout repair
+Count: 5
+Problem itself: Insert BUF gates to reduce high fanout or give each load a dedicated buffered driver while preserving functionality.
+
+12. Buffer insertion result count
+Count: 2
+Problem itself: Report how many BUF gates were added by the previous buffer insertion operation.
+
+13. Rename identifiers
+Count: 8
+Problem itself: Rename a gate, wire, or internal signal and update all references while preserving functionality.
+
+14. Post-rename connectivity
+Count: 1
+Problem itself: After renaming a signal, list all gates that now connect to the renamed signal.
+
+15. Path existence, avoidance, cut, or articulation query
+Count: 38
+Problem itself: Decide whether a combinational path exists, whether it can avoid a node, whether every path passes through a gate/wire, whether a wire is a cut, whether a gate lies on a maximum-depth path, or find articulation points/direct PI-to-PO wires.
+
+16. Sequential or register analysis
+Count: 9
+Problem itself: Analyze DFF/register behavior, including register-to-register paths, DFF D-pin depth, clock-driven flip-flops, register enable/hold structures, and register-to-register maximum depth.
+
+17. Path enumeration
+Count: 27
+Problem itself: List or fully enumerate combinational paths between specified primary inputs/outputs, including gate-by-gate path listings.
+
+18. Depth and critical-path analysis
+Count: 37
+Problem itself: Compute maximum logic depth, longest combinational path depth, critical path depth, cone depth, number of outputs above a depth threshold, or whole-design maximum combinational depth.
+
+19. Fanin cone enumeration
+Count: 8
+Problem itself: Compute or list transitive fanin cones, fanin logic cones, or gates shared between two fanin cones.
+
+20. Reachability and transitive fanout
+Count: 8
+Problem itself: Determine all gates reachable from a signal or list the transitive fanout cone of an input.
+
+21. Fanout and direct-successor analysis
+Count: 27
+Problem itself: Report primary-input fanout, maximum fanout after repair, highest-fanout primary input, gates driven by g0, immediate successors, or gates connected to g0 output.
+
+22. Cone size and type-count analysis
+Count: 7
+Problem itself: Count gates in a fanin/logic cone, report gate-type counts inside a cone, or identify the output/cone with the largest or deepest fanin structure.
+
+23. Post-transform gate-count query
+Count: 8
+Problem itself: After a transformation, report current counts of a target gate type such as NOT, AND, NOR, or NAND.
+
+24. Functional equivalence verification
+Count: 22
+Problem itself: Prove or check equivalence between the current/transformed design and the original/pre-transformation netlist, or check equivalence between internal signals.
+
+25. Boolean function, dependency, or property query
+Count: 10
+Problem itself: Derive Boolean equations/functions, test whether an output depends on an input, test constant-output behavior, symmetry, or whether an existing NAND pair can implement a target signal.
+
+26. Primary I/O listing and counting
+Count: 6
+Problem itself: List primary inputs/outputs with bit widths, or count primary inputs and primary outputs.
+
+27. Gate metadata and listing
+Count: 6
+Problem itself: Report gate type/pin connections for g0, list XOR/NAND gates, or list gates with specified tied inputs.
+
+Per-testcase request count
+These counts exclude the testcase header line but include load/write requests.
+
+test01: 2
+test02: 3
+test03: 3
+test04: 3
+test05: 3
+test06: 4
+test07: 5
+test08: 6
+test09: 7
+test10: 8
+test11: 9
+test12: 10
+test13: 11
+test14: 12
+test15: 13
+test16: 14
+test17: 15
+test18: 16
+test19: 17
+test20: 18
+test21: 4
+test22: 4
+test23: 5
+test24: 6
+test25: 8
+test26: 7
+test27: 7
+test28: 7
+test29: 8
+test30: 8
+test31: 19
+test32: 19
+test33: 19
+test34: 11
+test35: 19
+test36: 16
+test37: 17
+test38: 19
+test39: 19
+test40: 18
+
+Notes
+- Tests 01-05 are basic I/O, gate/cone/fanout/depth smoke tests.
+- Tests 06-20 mostly scale up path existence, path enumeration, depth, fanout, cone, and internal-signal equivalence queries.
+- Tests 21-30 emphasize transformations: buffer insertion, depth optimization, cleanup, renaming, library conversion, inverter cleanup, and duplicate merging.
+- Tests 31-40 are mixed stress cases with many independent analysis and transformation requests per testcase.

@@ -1,4 +1,4 @@
-# CADA1070 v0.3.1
+# CADA1070 v0.4.0
 
 This repository is an ICCAD Contest Problem A style prototype for
 LLM-assisted netlist exploration and transformation.
@@ -14,7 +14,7 @@ domain tool from `agent/tool_schema.py` (`run_design_io_plan`,
 tool-call arguments are normalized into the project Tool API plan, checked by
 `agent/plan_checker.py`, and then executed through `runtime/dispatcher.py`.
 The broader target API is documented in `docs/tool_spec.md`; this README marks
-which parts are implemented in v0.3.1.
+which parts are implemented in v0.4.0.
 
 ## Architecture
 
@@ -40,11 +40,11 @@ Yosys-backed Verilog parser/writer + Design IR + EDA backend
 stdout response + testcase log + optional output netlist
 ```
 
-## What v0.3.1 Supports
+## What v0.4.0 Supports
 
 ### Planner modes
 
-`main.py` supports three planner modes:
+`main.py` supports four planner modes:
 
 ```bash
 python main.py -config config.example.yaml -planner rule
@@ -68,43 +68,75 @@ pretty-printed `[llm-tool-call]` JSON blocks, so contest stdout remains clean.
 
 ### Implemented Tool API operations
 
-These operations are wired through both the plan checker and dispatcher:
+These operations are wired through the tool schema, plan checker, and dispatcher.
+The LLM planner may call them through the four domain tools, and the rule
+planner can exercise the common contest-style subset.
+
+Design I/O and testcase control:
 
 - `begin_testcase`
 - `read_design`
 - `write_design`
+- `unsupported`
+
+Analysis and reporting:
+
 - `find_path`
+- `report_all_paths`
 - `all_paths_pass_through`
 - `max_depth`
 - `logic_cone`
 - `report_gate_counts`
+- `report_gate_type_count`
+- `report_gate_type_connections`
+- `report_direct_pi_po_paths`
+- `report_dffs_by_clock`
 - `report_fanout`
+- `report_highest_fanout_primary_input`
 - `report_fanout_cone`
 - `report_gate_connections`
 - `report_outputs_by_cone_size`
+- `report_outputs_depth_greater_than`
 - `report_io_counts`
 - `gate_on_max_depth_path`
+- `report_max_depth_to_dff_d`
 - `report_register_paths`
 - `report_constant_input_gates`
+- `report_articulation_points`
+- `report_shared_fanin_cone_gates`
 - `find_gates`
 - `same_clock_domain`
+- `report_last_transform_stats`
+
+Transform and optimization:
+
 - `replace_buffers_with_and`
 - `remove_dangling`
 - `replace_inv_buf_with_inv`
 - `replace_or_with_nand_not`
 - `replace_nand_const1_with_not`
 - `insert_buffers_for_fanout`
+- `insert_dedicated_buffers_for_each_load`
+- `insert_buffers_for_all_high_fanout`
 - `balance_depth_with_buffers`
 - `optimize_cone`
+- `optimize_design_depth`
 - `constant_propagation`
+- `replace_xnor_nor_with_basic_gates`
+- `replace_and_not_with_nand`
+- `merge_equivalent_gates`
+- `rename_gate`
 - `rename_net`
+
+Verification:
+
 - `check_connectivity`
 - `check_fanout`
 - `check_depth`
 - `check_equivalent_to_original`
+- `check_equivalent_to_last_transform_input`
 - `check_equivalence`
 - `check_property`
-- `unsupported`
 
 Multi-step plans with a top-level `steps` array are supported. A step may use
 `save_as` to store a result in testcase-local state, and later steps can reuse
@@ -131,33 +163,34 @@ The parser/writer path uses a Yosys-backed flow:
 The current backend includes:
 
 - path search that does not cross DFF boundaries,
+- bounded all-path reporting and all-paths-through checks,
 - longest combinational max-depth propagation with loop guarding,
-- fanin logic-cone collection,
-- transitive fanout-cone reporting,
+- fanin logic-cone and transitive fanout-cone collection,
 - gate-on-maximum-depth-path membership checks,
 - primary input/output count reports,
+- gate type counts and gate type connection reports,
+- direct primary-input to primary-output wire path reports,
+- highest-fanout primary-input reports,
+- DFF grouping by clock net,
 - capped register-to-register structural path reports,
+- maximum depth reports to DFF D pins,
+- primary-output depth-threshold reports,
 - constant-input gate reports,
+- articulation-point and shared-fanin-cone structural reports,
 - gate search by type and/or name substring,
 - fanout-bound checking,
 - depth-bound checking,
-- connectivity checking for missing and duplicate drivers.
+- connectivity checking for missing and duplicate drivers,
 - combinational equivalence/property checking, using `z3-solver` when
-  installed and a small brute-force fallback otherwise.
-- transactional high-fanout buffer insertion guarded by connectivity,
-  equivalence, and final fanout-bound checks.
-- transactional endpoint depth balancing with inserted buffers, guarded by
-  connectivity, equivalence, and final depth-balance checks.
-- transactional cone optimization with local buffer/double-inverter
-  simplification, guarded by connectivity, equivalence, and optional depth
-  constraints.
+  installed and a small brute-force fallback otherwise,
+- equivalence checks against the original design snapshot and the previous
+  successful transform input.
 
-Additional analysis helpers exist in `eda/analysis.py` for fanout cones and
-related structural reports. Primary-output cone-size reports,
-all-paths-through checks, and same-clock-domain DFF checks are exposed through
-the dispatcher Tool API.
+Dispatcher transforms are transactional where appropriate: they run on a copied
+design, reject new connectivity regressions, and preserve common primary-output
+functions before the modified design is committed.
 
-### Transformation
+### Transformation and optimization
 
 The implemented transformations are:
 
@@ -171,16 +204,36 @@ The implemented transformations are:
   as equivalent NAND/NOT logic.
 - `replace_nand_const1_with_not`: 2-input NAND gates with one constant-1 input
   are rewritten as inverters.
-- `rename_net`: one net is renamed across declarations and all structural
-  references while preserving function.
+- `insert_buffers_for_fanout`: buffers one selected high-fanout net until the
+  requested fanout bound is met when possible.
+- `insert_dedicated_buffers_for_each_load`: inserts one dedicated buffer per
+  current load of a selected net.
+- `insert_buffers_for_all_high_fanout`: applies bounded high-fanout buffering
+  across all currently high-fanout nets.
+- `balance_depth_with_buffers`: inserts endpoint buffer chains to align selected
+  path depths.
+- `optimize_cone`: applies conservative local cone cleanup such as buffer and
+  double-inverter simplification.
+- `optimize_design_depth`: runs a Yosys/ABC-backed full-design depth
+  optimization when safe, with conservative local or bounded cleanup fallback
+  for large or fanout-buffered sequential designs.
 - `constant_propagation`: gates with constant or redundant inputs are simplified
   under transactional guards.
+- `replace_xnor_nor_with_basic_gates`: rewrites XNOR/NOR gates into equivalent
+  XOR/OR plus NOT structures.
+- `replace_and_not_with_nand`: rewrites AND/NOT structures into NAND-only logic.
+- `merge_equivalent_gates`: merges structurally identical primitive gates when
+  the duplicate output can be safely redirected.
+- `rename_gate`: renames one gate or DFF instance without changing connectivity.
+- `rename_net`: renames one net across declarations and all structural
+  references while preserving function.
 
+`report_last_transform_stats` summarizes the previous successful transform with
+inserted/removed gate, net, DFF, and gate-type delta statistics.
 Function-preserving transformations are transactional: they run on a copied
 design, must not introduce new connectivity regressions, and generally must
 preserve common primary-output functions before the modified design is
-committed. The local NAND-with-constant-1 rewrite is a direct Boolean identity
-and is guarded structurally.
+committed.
 
 ## Requirements
 
@@ -359,29 +412,26 @@ design state remains the project `Design` IR.
 The pure Python backend still owns the IR, graph traversal, response behavior,
 and Tool API safety boundary.
 
-## Known Limits in v0.3.1
+## Known Limits in v0.4.0
 
 - The dispatcher exposes the implemented operation list above, while
-  `docs/tool_spec.md` still describes a broader contest target.
+  `docs/tool_spec.md` may still describe broader contest targets and future
+  variants.
 - Formal checks are combinational-only in this version. Sequential
   unrolling/property checking is not implemented yet.
-- Cone optimization is implemented as a first local simplification pass for
-  redundant buffers and double inverters. General Boolean resynthesis is not
-  implemented yet.
+- Yosys/ABC depth optimization is guarded conservatively. If the optimized
+  candidate fails connectivity, increases structural depth, or is too risky for
+  a large fanout-buffered sequential design, the runtime keeps the safe local
+  fallback result instead.
+- Cone optimization is still a conservative local simplification pass for
+  redundant buffers and double inverters. General Boolean resynthesis remains
+  limited to the explicit remap/constant-propagation operations above.
 - Fanout-buffer insertion is implemented for gate/DFF sinks; primary-output
-  sinks remain directly tied to the original net and count against the root
+  sinks may remain directly tied to the original net and count against the root
   fanout budget.
-- Depth balancing is implemented for independent gate-driven destination nets
-  by inserting buffer chains before the selected endpoints.
 - Depth balancing is a structural logic-depth helper, not a physical timing
-  optimizer. It is intended for requests that require path-depth alignment or
-  for preparing normalized cones before later optimization. It counts primitive
-  gates as depth stages and does not model Liberty delay, placement, routing,
-  slew, or clock skew.
-- Current depth balancing pads each endpoint independently. Future versions
-  should share buffers across common subtrees, support DFF-input/primary-output
-  endpoints when safe, and accept hard constraints such as max inserted buffers
-  or max final depth.
+  optimizer. It counts primitive gates as depth stages and does not model
+  Liberty delay, placement, routing, slew, or clock skew.
 - The writer emits a normalized flattened primitive style instead of preserving
   original formatting or comments.
 - Named-pin, library-specific sequential cells are future work beyond the
@@ -434,6 +484,46 @@ and Tool API safety boundary.
 See `docs/work_division.md` for the detailed milestone-based ownership plan.
 
 ## Version Notes
+
+### v0.4.0 - Release testcase expansion and LLM tool-schema hardening (2026-06-16)
+
+This version expands CADA1070 from the v0.3.x guarded-transform baseline toward
+broader release testcase coverage.
+
+1. LLM tool-schema surface is now split by domain
+
+   OpenAI and Claude planning use four domain tools: design I/O, analysis,
+   transform, and verification. Tool calls are pretty-printed to stderr as
+   `[llm-tool-call]` JSON blocks, normalized into the project Tool API plan,
+   checked by `agent/plan_checker.py`, and executed by `runtime/dispatcher.py`.
+
+2. Larger analysis/reporting coverage
+
+   v0.4.0 exposes all-path reports, gate type counts and connections, direct
+   PI-to-PO paths, DFF-by-clock reports, highest-fanout PI reports,
+   articulation points, shared fanin cones, max depth to DFF D pins,
+   output-depth threshold reports, and last-transform delta statistics.
+
+3. More release-oriented transforms
+
+   New or hardened transforms include `rename_gate`, global high-fanout buffer
+   insertion, dedicated per-load buffering, XNOR/NOR remapping, AND/NOT to NAND
+   remapping, equivalent-gate merging, constant propagation, and Yosys/ABC-backed
+   full-design depth optimization with conservative fallback.
+
+4. Stronger safety guards
+
+   Transform commits are guarded by connectivity, equivalence, fanout, and depth
+   checks where applicable. The runtime records the original design and the
+   previous transform input so users can verify equivalence after multi-step
+   optimization flows.
+
+5. Release testcase runner improvements
+
+   `scripts/run_release_testcases.py` supports `rule`, `llm_openai`,
+   `llm_claude`, and `llm_both`; stores provider outputs separately; pretty
+   prints LLM tool calls; and mirrors the contest timeout policy with 60-second
+   basic begin/read/write responses and 300-second non-basic responses.
 
 ### v0.3.1 - Formal checks and guarded optimization tools (2026-05-28)
 

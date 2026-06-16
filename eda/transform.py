@@ -555,25 +555,27 @@ def optimize_cone(
     """
     Locally simplify a target fanin cone with function-preserving rewrites.
 
-    First-version rules:
-    - remove internal one-input buffers by reconnecting their sinks,
-    - replace double inverters with a direct connection, or with one buffer if
-      the second inverter drives a primary output net.
+    DFF.Q targets are treated as sequential boundaries for analysis, but for
+    transformation requests we resolve them to the corresponding D input cone.
+    This keeps LLM tool calls simple while matching optimization intent.
     """
     del minimize_gate_count  # The current rule set always reduces gate count when possible.
-    if target not in design.all_nets():
-        raise ValueError(f'Target net not found: "{target}"')
     if max_depth is not None and max_depth < 0:
         raise ValueError("optimize_cone requires max_depth >= 0 when provided.")
 
     rebuild_graph(design)
-    initial_gates = logic_cone(design, target)
-    initial_depth = _cone_max_depth(design, target)
+    resolved = _resolve_optimization_cone_target(design, target)
+    resolved_target = resolved["target"]
+    if resolved_target not in design.all_nets():
+        raise ValueError(f'Target net not found: "{target}"')
+
+    initial_gates = logic_cone(design, resolved_target)
+    initial_depth = _cone_max_depth(design, resolved_target)
     changed: list[dict[str, Any]] = []
     max_iterations = max(1, len(design.gates) + 1)
 
     for _ in range(max_iterations):
-        cone_gates = set(logic_cone(design, target))
+        cone_gates = set(logic_cone(design, resolved_target))
         rewrite = _simplify_double_inverter_in_cone(design, cone_gates)
         if rewrite is None:
             rewrite = _remove_internal_buffer_in_cone(design, cone_gates)
@@ -584,15 +586,17 @@ def optimize_cone(
     else:
         raise RuntimeError("optimize_cone did not converge.")
 
-    final_depth = _cone_max_depth(design, target)
+    final_depth = _cone_max_depth(design, resolved_target)
     if max_depth is not None and final_depth > max_depth:
         raise ValueError(
             f'Optimized cone depth {final_depth} exceeds max_depth {max_depth} for target "{target}".'
         )
 
-    final_gates = logic_cone(design, target)
+    final_gates = logic_cone(design, resolved_target)
     return {
         "target": target,
+        "resolved_target": resolved_target,
+        "target_resolution": resolved,
         "max_depth": max_depth,
         "initial_gate_count": len(initial_gates),
         "final_gate_count": len(final_gates),
@@ -602,6 +606,51 @@ def optimize_cone(
         "changed": changed,
         "num_changed": len(changed),
     }
+
+
+def _resolve_optimization_cone_target(design: Design, target: str) -> dict[str, Any]:
+    if target not in design.all_nets():
+        raise ValueError(f'Target net not found: "{target}"')
+
+    direct_dff = _dff_driving_q(design, target)
+    if direct_dff is not None and not is_constant(direct_dff.d):
+        return {
+            "target": direct_dff.d,
+            "original_target": target,
+            "kind": "dff_q_to_d",
+            "dff": direct_dff.name,
+            "reason": "resolved DFF Q target to its D input cone",
+        }
+
+    driver = design.drivers.get(target)
+    if driver and driver.startswith("GATE:"):
+        gate_name = driver.split(":", 1)[1]
+        gate = design.gates.get(gate_name)
+        if gate and gate.type == "buf" and len(gate.inputs) == 1:
+            source = gate.inputs[0]
+            source_dff = _dff_driving_q(design, source)
+            if source_dff is not None and not is_constant(source_dff.d):
+                return {
+                    "target": source_dff.d,
+                    "original_target": target,
+                    "kind": "po_buf_dff_q_to_d",
+                    "dff": source_dff.name,
+                    "reason": "resolved primary-output buffer driven by DFF Q to the D input cone",
+                }
+
+    return {
+        "target": target,
+        "original_target": target,
+        "kind": "direct",
+        "reason": "using the requested combinational fanin cone",
+    }
+
+
+def _dff_driving_q(design: Design, net: str) -> DFF | None:
+    for dff in design.dffs.values():
+        if dff.q == net:
+            return dff
+    return None
 
 
 @_rebuild_graph_after_transform
@@ -670,14 +719,22 @@ def optimize_design_depth(
     if max_outputs is not None and max_outputs < 1:
         raise ValueError("optimize_design_depth requires max_outputs >= 1 when provided.")
 
-    should_skip_full_yosys = max_outputs is None and (
-        len(design.gates) > 2000 or any("__fanout_buf_" in net for net in design.all_nets())
-    )
-    if should_skip_full_yosys:
-        result = _optimize_design_depth_locally(design, max_depth=max_depth, max_outputs=max_outputs)
-        result["engine"] = "local_fallback"
+    gate_count = len(design.gates)
+    has_fanout_buffers = any("__fanout_buf_" in net for net in design.all_nets())
+    if max_outputs is None and (gate_count > 10000 or has_fanout_buffers):
+        result = _optimize_design_depth_fast_cleanup(design, max_depth=max_depth)
+        result["engine"] = "large_design_bounded_cleanup"
         result["fallback_reason"] = "Skipped full-design Yosys/ABC for a large or fanout-buffered design."
         return result
+
+    if max_outputs is None and gate_count > 2000:
+        return _optimize_design_depth_locally(
+            design,
+            max_depth=max_depth,
+            max_outputs=16,
+            engine="topk_critical_cones",
+            bounded_reason="medium design: optimized the largest critical cones only",
+        )
 
     try:
         return _optimize_design_depth_with_yosys_abc(design, max_depth=max_depth)
@@ -1262,6 +1319,8 @@ def _optimize_design_depth_locally(
     design: Design,
     max_depth: int | None = None,
     max_outputs: int | None = None,
+    engine: str = "local",
+    bounded_reason: str | None = None,
 ) -> dict:
     reports = _optimization_target_cone_sizes(design)
     outputs = [name for name, _ in sorted(reports.items(), key=lambda item: item[1]["num_gates"], reverse=True)]
@@ -1294,8 +1353,8 @@ def _optimize_design_depth_locally(
             changed.append(result)
 
     final_depth = _design_max_depth(design)
-    return {
-        "engine": "local",
+    result = {
+        "engine": engine,
         "max_depth": max_depth,
         "max_outputs": max_outputs,
         "attempted_outputs": selected_outputs,
@@ -1307,6 +1366,45 @@ def _optimize_design_depth_locally(
         "target_met": max_depth is None or final_depth <= max_depth,
         "changed": changed,
         "num_changed_outputs": len(changed),
+    }
+    if bounded_reason is not None:
+        result["bounded_reason"] = bounded_reason
+    return result
+
+
+def _optimize_design_depth_fast_cleanup(
+    design: Design,
+    max_depth: int | None,
+) -> dict:
+    initial_gate_count = len(design.gates)
+    cleanup_results: list[dict[str, Any]] = []
+
+    constant_result = constant_propagation(design, max_changes=128)
+    if constant_result.get("num_changed", 0):
+        cleanup_results.append({"op": "constant_propagation", **constant_result})
+
+    inverter_result = collapse_back_to_back_inverters(design)
+    if inverter_result.get("num_collapsed", 0):
+        cleanup_results.append({"op": "collapse_back_to_back_inverters", **inverter_result})
+
+    dangling_result = remove_dangling(design)
+    if dangling_result.get("num_removed_gates", 0) or dangling_result.get("num_removed_dffs", 0):
+        cleanup_results.append({"op": "remove_dangling", **dangling_result})
+
+    return {
+        "engine": "large_design_bounded_cleanup",
+        "max_depth": max_depth,
+        "max_outputs": 0,
+        "attempted_outputs": [],
+        "skipped_outputs": [],
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": len(design.gates),
+        "initial_depth": None,
+        "final_depth": None,
+        "target_met": max_depth is None,
+        "changed": cleanup_results,
+        "num_changed_outputs": len(cleanup_results),
+        "bounded_reason": "large design: skipped expensive depth enumeration and optimized only cheap safe rewrites",
     }
 
 
