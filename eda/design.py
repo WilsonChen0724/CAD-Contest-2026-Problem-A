@@ -95,9 +95,9 @@ class Design:
         return _make_unique_name(prefix, used)
 
     def make_unique_gate_name(self, base: str) -> str:
-        """Return a legal instance name that does not collide with instances."""
+        """Return a legal instance name that does not collide with instances or nets."""
         prefix = _sanitize_identifier(base, fallback="U")
-        used = set(self.gates) | set(self.dffs)
+        used = set(self.gates) | set(self.dffs) | self.all_nets()
         return _make_unique_name(prefix, used)
 
     def summary(self) -> str:

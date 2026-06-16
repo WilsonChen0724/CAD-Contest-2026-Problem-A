@@ -13,7 +13,7 @@ Hard rules:
 - If the request is ambiguous or unsupported, return:
   unsupported with {"reason": "I could not map the request to a supported EDA operation."}
 - Never fill required arguments with an empty string. If the request does not name the required net, target, src, dst, gate, or instance, return unsupported.
-- Use whole-design transform ops only when they are explicitly supported by the selected tool schema. Current whole-design transforms include insert_buffers_for_all_high_fanout, optimize_design_depth, constant_propagation, replace_xnor_nor_with_basic_gates, replace_and_not_with_nand, and merge_equivalent_gates.
+- Use whole-design transform ops only when they are explicitly supported by the selected tool schema. Current whole-design transforms include insert_buffers_for_all_high_fanout, optimize_design_depth, constant_propagation, replace_with_and_not, replace_xnor_nor_with_basic_gates, replace_xor_with_nand, replace_and_not_with_nand, and merge_equivalent_gates.
 - Rename gate/DFF instances with rename_gate. Rename wires, nets, and signals with rename_net. Do not use rename_net for gate instance names.
 - For "always 0/1 regardless of all inputs" questions, use check_equivalence with expr "0" or "1"; do not use check_property.
 
@@ -60,6 +60,7 @@ Common mappings:
 - Optimize design depth with optional max depth N using Yosys/ABC -> optimize_design_depth with {"max_depth": N}; use {} if no bound is specified.
 - Propagate constants or simplify gates with constant inputs -> constant_propagation with {}.
 - Remap XNOR/NOR gates -> replace_xnor_nor_with_basic_gates with {}.
+- Reconstruct primitive combinational gates using only AND and NOT gates -> replace_with_and_not with {}.
 - Remap AND/NOT gates into NAND logic -> replace_and_not_with_nand with {}.
 - Merge equivalent or structurally duplicate gates -> merge_equivalent_gates with {}.
 - Rename net/wire/signal A to B -> rename_net with {"old_net": "A", "new_net": "B"}.
@@ -70,13 +71,17 @@ Common mappings:
 - List all combinational paths from A to B -> report_all_paths with {"src": "A", "dst": "B"}; include optional "max_paths" only when the user gives a positive limit. Never use placeholders like "$all_pis", "$all_pos", "$input", or "$output".
 - Does every path from A to B pass through C -> all_paths_pass_through with {"src": "A", "dst": "B", "node": "C"}.
 - Fanin cone of target T -> logic_cone with {"target": "T"}.
+- Depth of the fanin/logic cone of target T -> report_cone_depth with {"target": "T"}.
 - Count all gates by type -> report_gate_counts with {}.
 - Count one gate type, such as NOT/NAND/BUF/DFF gates -> report_gate_type_count with {"gate_type": "not"}.
 - List gates of one type with input and output signals -> report_gate_type_connections with {"gate_type": "nand"}.
 - Direct fanout of net X -> report_fanout with {"net": "X"}.
 - Primary input with the highest fanout -> report_highest_fanout_primary_input with {}.
 - Gate type and pin connections of instance U -> report_gate_connections with {"gate": "U"}.
+- List primary inputs with bit widths -> report_primary_inputs with {}.
+- List primary outputs with bit widths -> report_primary_outputs with {}.
 - Report primary outputs whose logic cone contains more than N gates -> report_outputs_by_cone_size with {"min_gates": N}.
+- Output with the largest fanin cone -> report_largest_fanin_cone_output with {}.
 - Count primary inputs and outputs -> report_io_counts with {}.
 - Transitive fanout or gates reachable from source S -> report_fanout_cone with {"source": "S"}.
 - Report gates with constant input pins -> report_constant_input_gates with {"gate_type": null}; use {"gate_type": "nand"} for NAND-only questions.
@@ -85,12 +90,14 @@ Common mappings:
 - Shared gates between fanin cones of A and B -> report_shared_fanin_cone_gates with {"target_a": "A", "target_b": "B"}.
 - Derive Boolean equation for target T -> derive_boolean_equation with {"target": "T"}.
 - Maximum logic depth from any primary input to any DFF D-pin -> report_max_depth_to_dff_d with {}.
+- Maximum combinational depth on any register-to-register path -> report_max_register_to_register_depth with {}.
+- Report DFF D input logic or enable/hold structures -> report_dff_input_logic_structures with {}.
 - Outputs with logic depth greater than N -> report_outputs_depth_greater_than with {"min_depth": N}.
 - How many BUF gates were added, removed, changed, or what changed in the previous transform -> report_last_transform_stats with {}.
 - Check whether DFF A and DFF B are in the same clock domain -> same_clock_domain with {"dff_a": "A", "dff_b": "B"}.
 - List flip-flops driven by clock C -> report_dffs_by_clock with {"clock": "C"}.
-- Signal symmetry with respect to two inputs is not implemented -> unsupported.
-- Reconnecting a specific gate input pin is not implemented -> unsupported.
+- Signal symmetry with respect to two inputs -> check_signal_symmetry with {"target": "T", "input_a": "A", "input_b": "B"}.
+- Reconnect a specific gate input pin -> reconnect_gate_input with {"gate": "G", "pin": "0", "new_net": "N"}.
 - List register-to-register paths -> report_register_paths with {}.
 - Check connectivity -> check_connectivity with {}.
 - Check fanout <= N -> check_fanout with {"max_fanout": N}.

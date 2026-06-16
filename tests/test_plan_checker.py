@@ -71,7 +71,76 @@ class PlanCheckerTest(unittest.TestCase):
     def test_accepts_null_save_as_in_plain_plan(self) -> None:
         plan = {"op": "logic_cone", "args": {"target": "y"}, "save_as": None}
 
-        self.assertEqual(validate_plan(plan), plan)
+        self.assertEqual(validate_plan(plan), {"op": "logic_cone", "args": {"target": "y"}})
+
+    def test_normalizes_null_optional_args(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {
+                        "op": "report_gates_by_type",
+                        "args": {"gate_type": "nand", "limit": None},
+                        "save_as": None,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(plan, {"steps": [{"op": "report_gates_by_type", "args": {"gate_type": "nand"}}]})
+
+    def test_normalizes_empty_gate_type_cone_count_to_logic_cone(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {
+                        "op": "report_gate_type_count_in_cone",
+                        "args": {"target": "n15", "gate_type": ""},
+                        "save_as": None,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(plan, {"steps": [{"op": "logic_cone", "args": {"target": "n15"}}]})
+
+    def test_normalizes_find_path_avoid_string_and_drops_empty_steps(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {
+                        "op": "find_path",
+                        "args": {"src": "n4", "dst": "n17[1]", "avoid": "n269"},
+                    },
+                    {"save_as": None},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "find_path", "args": {"src": "n4", "dst": "n17[1]", "avoid": ["n269"]}}]},
+        )
+
+    def test_normalizes_find_path_avoiding_alias(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {
+                        "op": "find_path",
+                        "args": {"src": "n4", "dst": "n17[1]", "avoiding": "n269"},
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "find_path", "args": {"src": "n4", "dst": "n17[1]", "avoid": ["n269"]}}]},
+        )
 
     def test_normalizes_optional_null_args(self) -> None:
         plan = validate_plan({"op": "optimize_cone", "args": {"target": "y", "max_depth": None}})
@@ -148,6 +217,80 @@ class PlanCheckerTest(unittest.TestCase):
             )
 
         self.assertIn("not allowed", str(ctx.exception))
+
+    def test_repairs_analysis_tool_call_with_extra_transform_step(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {"op": "replace_xnor_with_nor", "args": {}, "save_as": None},
+                    {"op": "report_gate_type_count", "args": {"gate_type": "nor"}, "save_as": None},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "report_gate_type_count", "args": {"gate_type": "nor"}}]},
+        )
+
+    def test_transform_tool_allows_immediate_readonly_followups(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_transform_plan",
+            {
+                "steps": [
+                    {"op": "insert_buffers_for_fanout", "args": {"net": "clk", "max_fanout": 4}},
+                    {"op": "check_equivalent_to_last_transform_input", "args": {}},
+                    {"op": "report_gate_type_count", "args": {"gate_type": "buf"}},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {
+                "steps": [
+                    {"op": "insert_buffers_for_fanout", "args": {"net": "clk", "max_fanout": 4}},
+                    {"op": "check_equivalent_to_last_transform_input", "args": {}},
+                    {"op": "report_gate_type_count", "args": {"gate_type": "buf"}},
+                ]
+            },
+        )
+
+    def test_repairs_wrong_readonly_tool_call_with_extra_transform_step(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_design_io_plan",
+            {
+                "steps": [
+                    {"op": "replace_xnor_with_nor", "args": {}, "save_as": None},
+                    {"op": "report_gate_type_count", "args": {"gate_type": "nor"}, "save_as": None},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "report_gate_type_count", "args": {"gate_type": "nor"}}]},
+        )
+
+    def test_normalizes_empty_find_gates_name_filter(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_analysis_plan",
+            {
+                "steps": [
+                    {
+                        "op": "find_gates",
+                        "args": {"gate_type": "xor", "name_contains": ""},
+                        "save_as": None,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "find_gates", "args": {"gate_type": "xor"}}]},
+        )
 
 
 if __name__ == "__main__":

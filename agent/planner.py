@@ -11,13 +11,25 @@ SUPPORTED_OPS = {
     "find_path",
     "all_paths_pass_through",
     "report_all_paths",
+    "all_paths",
+    "report_direct_pi_po_paths",
+    "check_cut_signal",
     "max_depth",
+    "report_max_logic_depth",
+    "report_cone_depth",
     "logic_cone",
     "report_gate_counts",
     "report_gate_type_count",
+    "report_primary_inputs",
+    "report_primary_outputs",
     "report_fanout",
     "report_highest_fanout_primary_input",
     "report_gate_connections",
+    "report_gate_type_connections",
+    "report_gates_by_type",
+    "report_gate_type_count_in_cone",
+    "report_deepest_output_cone",
+    "report_largest_fanin_cone_output",
     "report_outputs_by_cone_size",
     "report_fanout_cone",
     "report_constant_input_gates",
@@ -26,18 +38,23 @@ SUPPORTED_OPS = {
     "report_articulation_points",
     "report_shared_fanin_cone_gates",
     "derive_boolean_equation",
+    "find_nand_equivalent_pair",
     "report_max_depth_to_dff_d",
+    "report_max_register_to_register_depth",
     "report_outputs_depth_greater_than",
     "report_register_paths",
+    "report_dff_input_logic_structures",
     "report_last_transform_stats",
     "find_gates",
     "same_clock_domain",
+    "report_dffs_by_clock",
     "replace_buffers_with_and",
     "remove_dangling",
     "replace_inv_buf_with_inv",
     "collapse_back_to_back_inverters",
     "replace_or_with_nand_not",
     "replace_nand_const1_with_not",
+    "replace_with_and_not",
     "insert_buffers_for_fanout",
     "insert_dedicated_buffers_for_each_load",
     "insert_buffers_for_all_high_fanout",
@@ -46,10 +63,13 @@ SUPPORTED_OPS = {
     "constant_propagation",
     "optimize_design_depth",
     "replace_xnor_nor_with_basic_gates",
+    "replace_xnor_with_nor",
+    "replace_xor_with_nand",
     "replace_and_not_with_nand",
     "merge_equivalent_gates",
     "rename_gate",
     "rename_net",
+    "reconnect_gate_input",
     "check_connectivity",
     "check_fanout",
     "check_depth",
@@ -57,6 +77,7 @@ SUPPORTED_OPS = {
     "check_equivalent_to_last_transform_input",
     "check_equivalence",
     "check_property",
+    "check_signal_symmetry",
 }
 
 _SIGNAL_RE = r"[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?"
@@ -193,6 +214,11 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         either explicit targets or targets_from="found_buffers". Returns None
         when no supported transformation rule matches.
     """
+    reconnect = _extract_reconnect_request(text, low)
+    if reconnect:
+        gate, pin, new_net = reconnect
+        return {"op": "reconnect_gate_input", "args": {"gate": gate, "pin": pin, "new_net": new_net}}
+
     rename_gate_pair = _extract_rename_gate_pair(text, low)
     if rename_gate_pair:
         old_name, new_name = rename_gate_pair
@@ -221,6 +247,22 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
     ):
         return {"op": "replace_nand_const1_with_not", "args": {}}
 
+    if (
+        ("replace" in low or "rewrite" in low or "remap" in low or "convert" in low)
+        and "xnor" in low
+        and ("nor-only" in low or "nor only" in low or ("nor" in low and "only" in low))
+    ):
+        return {"op": "replace_xnor_with_nor", "args": {}}
+
+    if (
+        ("reconstruct" in low or "rewrite" in low or "remap" in low or "convert" in low)
+        and ("entire netlist" in low or "full netlist" in low or "design" in low or "netlist" in low)
+        and _mentions_and_not_gate_set(low)
+        and "not" in low
+        and ("only" in low or "using" in low)
+    ):
+        return {"op": "replace_with_and_not", "args": {}}
+
     if "replace" in low and ("buffer" in low or "buffers" in low) and _mentions_gate_type(low, "and"):
         extra_input = _extract_extra_input(text) or "_gc_ctrl"
         targets = _extract_instance_list(text)
@@ -238,9 +280,13 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         and (
             "dangling" in low
             or "unused" in low
+            or "floating" in low
+            or "do not affect" in low
+            or "does not affect" in low
             or "do not contribute" in low
             or "does not contribute" in low
             or "not contribute" in low
+            or "not connected to any primary output" in low
         )
     ):
         return {"op": "remove_dangling", "args": {}}
@@ -260,6 +306,17 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         return {"op": "replace_inv_buf_with_inv", "args": {}}
 
     if (
+        ("restructure" in low or "rewrite" in low or "convert" in low)
+        and "cone" in low
+        and "nand" in low
+        and "not" in low
+    ):
+        target = _extract_after_keyword(text, "output") or _extract_after_keyword(text, "cone of")
+        target = target or _extract_after_keyword(text, "of") or _extract_after_keyword(text, "target")
+        if target:
+            return {"op": "replace_or_with_nand_not", "args": {"cone_target": target}}
+
+    if (
         "replace" in low
         and _mentions_gate_type(low, "or")
         and "nand" in low
@@ -271,8 +328,8 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
             return {"op": "replace_or_with_nand_not", "args": {"cone_target": target}}
 
     if (
-        any(word in low for word in ("insert", "add", "build"))
-        and ("buffer" in low or "buffers" in low)
+        any(word in low for word in ("insert", "add", "build", "perform", "optimize"))
+        and ("buffer" in low or "buffers" in low or "fanout optimization" in low)
         and ("fanout" in low or "fan-out" in low or "loads" in low or "drives more than" in low)
     ):
         max_fanout = _extract_limit_int(text)
@@ -285,9 +342,11 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
                 or "every net" in low
                 or "entire design" in low
                 or "across the design" in low
+                or "across the netlist" in low
                 or "wherever" in low
                 or "wherever needed" in low
                 or "no gate drives more than" in low
+                or "fanout optimization" in low
             )
         ):
             return {"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": max_fanout}}
@@ -331,6 +390,20 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
                     args["max_depth"] = max_allowed_depth
             return {"op": "optimize_cone", "args": args}
 
+    if (
+        ("restructure" in low or "optimize" in low)
+        and ("target depth" in low or "levels deep" in low or "at most" in low)
+        and re.search(r"\b[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?\b", text)
+    ):
+        target = _extract_after_keyword(text, "restructure") or _extract_after_keyword(text, "optimize")
+        target = target or _extract_after_keyword(text, "output") or _extract_after_keyword(text, "signal")
+        if target and target.lower() not in {"logic", "the", "design", "its"}:
+            args: dict[str, Any] = {"target": target, "minimize_gate_count": True}
+            max_allowed_depth = _extract_limit_int(text)
+            if max_allowed_depth is not None:
+                args["max_depth"] = max_allowed_depth
+            return {"op": "optimize_cone", "args": args}
+
     if "optimize" in low and re.search(r"\b[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?\b", text):
         target = _extract_after_keyword(text, "optimize")
         if target and target.lower() not in {"logic", "the", "design", "its"}:
@@ -369,6 +442,24 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         return {"op": "optimize_design_depth", "args": args}
 
     if (
+        ("reduce" in low or "minimize" in low or "shorten" in low)
+        and ("critical path" in low or "path depth" in low or "maximum path depth" in low)
+        and ("restructuring" in low or "logic" in low or "depth" in low)
+    ):
+        args = {}
+        max_allowed_depth = _extract_limit_int(text)
+        if max_allowed_depth is not None:
+            args["max_depth"] = max_allowed_depth
+        return {"op": "optimize_design_depth", "args": args}
+
+    if (
+        ("replace" in low or "rewrite" in low or "remap" in low or "convert" in low)
+        and "xor" in low
+        and ("nand-only" in low or "nand only" in low or ("nand" in low and "only" in low))
+    ):
+        return {"op": "replace_xor_with_nand", "args": {}}
+
+    if (
         ("replace" in low or "rewrite" in low or "remap" in low)
         and ("xnor" in low or "nor" in low)
         and ("basic" in low or "xor" in low or "or" in low or "not" in low or "gates" in low)
@@ -386,7 +477,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
 
     if (
         ("merge" in low or "remove" in low)
-        and ("equivalent" in low or "duplicate" in low or "identical" in low)
+        and ("equivalent" in low or "duplicate" in low or "identical" in low or "redundant" in low)
         and ("gate" in low or "gates" in low)
     ):
         return {"op": "merge_equivalent_gates", "args": {}}
@@ -410,32 +501,157 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
         One of the supported analysis plans: find_gates, logic_cone, max_depth,
         or find_path. Returns None when this is not an analysis request.
     """
-    if "symmetric" in low or "symmetry" in low:
-        return {"op": "unsupported", "args": {"reason": "Signal symmetry checking is not implemented yet."}}
-
-    if "reconnect" in low and "input pin" in low:
-        return {"op": "unsupported", "args": {"reason": "Guarded gate input pin reconnect is not implemented yet."}}
-
-    if "paths of length 0" in low or "direct wire connections" in low:
+    if "paths of length 0" in low or "direct wire connection" in low:
         return {"op": "report_direct_pi_po_paths", "args": {}}
 
-    if ("flip-flop" in low or "flipflop" in low or "dff" in low or "flip-flops" in low) and "driven by clock" in low:
-        clock = _extract_after_keyword(text, "clock")
+    if "cut" in low and ("primary input" in low or "primary output" in low):
+        signal = _extract_after_keyword(text, "wire") or _extract_after_keyword(text, "signal")
+        signal = signal or _extract_after_keyword(text, "net")
+        if signal:
+            return {"op": "check_cut_signal", "args": {"signal": signal}}
+
+    if "symmetric" in low and "respect to" in low:
+        symmetry = _extract_symmetry_request(text)
+        if symmetry:
+            target, input_a, input_b = symmetry
+            return {
+                "op": "check_signal_symmetry",
+                "args": {"target": target, "input_a": input_a, "input_b": input_b},
+            }
+
+    if (
+        ("primary inputs" in low or "primary input" in low)
+        and ("bit width" in low or "bit widths" in low or "width" in low or "widths" in low)
+        and ("list" in low or "report" in low)
+    ):
+        return {"op": "report_primary_inputs", "args": {}}
+
+    if (
+        ("primary outputs" in low or "primary output" in low)
+        and ("bit width" in low or "bit widths" in low or "width" in low or "widths" in low)
+        and ("list" in low or "report" in low)
+    ):
+        return {"op": "report_primary_outputs", "args": {}}
+
+    if (
+        ("d input logic" in low or "d-input logic" in low or "d pin logic" in low or "d-pin logic" in low)
+        and ("flip-flop" in low or "flip flops" in low or "flip-flops" in low or "dff" in low or "dffs" in low)
+    ):
+        return {"op": "report_dff_input_logic_structures", "args": {}}
+
+    if (
+        ("enable" in low or "hold" in low)
+        and ("flip-flop" in low or "flip flops" in low or "flip-flops" in low or "dff" in low or "dffs" in low)
+    ):
+        return {"op": "report_dff_input_logic_structures", "args": {}}
+
+    if (
+        ("flip-flop" in low or "flip flops" in low or "flip-flops" in low or "dff" in low or "dffs" in low)
+        and ("driven by clock" in low or "clock" in low)
+    ):
+        clock = _extract_after_keyword(text, "clock") or _extract_after_keyword(text, "by")
         if clock:
             return {"op": "report_dffs_by_clock", "args": {"clock": clock}}
 
+    if "deepest" in low and ("output bit" in low or "primary output" in low or "fanin logic cone" in low):
+        return {"op": "report_deepest_output_cone", "args": {}}
+
     if (
-        ("constant input" in low or "constant inputs" in low)
+        ("largest" in low or "biggest" in low)
+        and ("fanin cone" in low or "fan-in cone" in low or "logic cone" in low)
+        and ("output" in low or "primary output" in low)
+    ):
+        return {"op": "report_largest_fanin_cone_output", "args": {}}
+
+    if (
+        ("register-to-register" in low or "register to register" in low)
+        and "depth" in low
+    ):
+        return {"op": "report_max_register_to_register_depth", "args": {}}
+
+    if (
+        (
+            "maximum combinational logic depth" in low
+            or "maximum logic depth in the design" in low
+            or "maximum combinational depth" in low
+        )
+        and "dff d" not in low
+        and "d-pin" not in low
+        and "d pin" not in low
+    ):
+        return {"op": "report_max_logic_depth", "args": {}}
+
+    if (
+        (
+            "constant input" in low
+            or "constant inputs" in low
+            or "constant 0 input" in low
+            or "constant-0 input" in low
+            or "constant 1 input" in low
+            or "constant-1 input" in low
+        )
         and ("report" in low or "list" in low or "find" in low)
         and ("gate" in low or "gates" in low or "nand" in low)
     ):
         gate_type = "nand" if "nand" in low else _extract_gate_type(low)
         return {"op": "report_constant_input_gates", "args": {"gate_type": gate_type}}
 
+    if (
+        ("added" in low or "eliminated" in low or "removed" in low)
+        and ("how many" in low or "count" in low or "number" in low)
+        and ("gate" in low or "gates" in low or "buf" in low or "nand" in low or "nor" in low)
+    ):
+        return {"op": "report_last_transform_stats", "args": {}}
+
+    if (
+        ("gate" in low or "gates" in low)
+        and (
+            "broken down" in low
+            or "by type" in low
+            or "all the gates" in low
+            or "total count" in low
+            or "total number of gates" in low
+        )
+    ):
+        return {"op": "report_gate_counts", "args": {}}
+
+    if (
+        ("how many" in low or "count" in low or "number" in low)
+        and "cone" in low
+        and ("gate" in low or "gates" in low)
+    ):
+        gate_type = _extract_gate_type(low)
+        target = _extract_after_keyword(text, "output") or _extract_after_keyword(text, "cone of")
+        target = target or _extract_after_keyword(text, "of")
+        if gate_type and target:
+            return {
+                "op": "report_gate_type_count_in_cone",
+                "args": {"target": target, "gate_type": gate_type},
+            }
+
+    if "nand" in low and "pair" in low and "equivalent" in low:
+        target = _extract_after_keyword(text, "equivalent to") or _extract_after_keyword(text, "to")
+        target = target or _extract_after_keyword(text, "output") or _extract_after_keyword(text, "signal")
+        if target:
+            return {"op": "find_nand_equivalent_pair", "args": {"target": target}}
+
     if ("list" in low or "report" in low or "find" in low) and "gates" in low and ("input" in low or "output" in low or "signals" in low):
         gate_type = _extract_gate_type(low)
         if gate_type is not None:
             return {"op": "report_gate_type_connections", "args": {"gate_type": gate_type}}
+
+    if (
+        ("list" in low or "report" in low)
+        and "gates" in low
+        and "shared" not in low
+        and "fanin" not in low
+        and "count" not in low
+        and "how many" not in low
+        and "number" not in low
+    ):
+        gate_type = _extract_gate_type(low)
+        if gate_type and "constant" not in low and "connected" not in low:
+            return {"op": "report_gates_by_type", "args": {"gate_type": gate_type}}
     if "shared" in low and "fanin" in low and ("cone" in low or "cones" in low):
         targets = _extract_targets_after_between_or_of(text)
         if targets:
@@ -445,7 +661,12 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
                 "args": {"target_a": target_a, "target_b": target_b},
             }
 
-    if "derive" in low and "boolean equation" in low:
+    if (
+        ("derive" in low and "boolean equation" in low)
+        or "logic expression" in low
+        or "boolean function" in low
+        or ("function" in low and "compute" in low)
+    ):
         target = _extract_after_keyword(text, "output") or _extract_after_keyword(text, "signal")
         target = target or _extract_after_keyword(text, "for")
         if target:
@@ -473,7 +694,7 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
         ("count" in low or "number" in low or "how many" in low)
         and ("gate" in low or "gates" in low or "cell" in low or "cells" in low or "register" in low or "dff" in low)
     ):
-        gate_type = _extract_gate_type(low)
+        gate_type = _extract_gate_type_before_count(low) or _extract_gate_type(low)
         if gate_type is not None:
             return {"op": "report_gate_type_count", "args": {"gate_type": gate_type}}
         return {"op": "report_gate_counts", "args": {}}
@@ -559,6 +780,12 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
             dff_a, dff_b = dff_pair
             return {"op": "same_clock_domain", "args": {"dff_a": dff_a, "dff_b": dff_b}}
 
+    if "depth" in low and ("logic cone" in low or "fanin cone" in low or "fan-in cone" in low or "cone of" in low):
+        target = _extract_after_keyword(text, "cone of") or _extract_after_keyword(text, "of")
+        target = target or _extract_after_keyword(text, "target") or _extract_after_keyword(text, "output")
+        if target:
+            return {"op": "report_cone_depth", "args": {"target": target}}
+
     if "logic cone" in low or "fanin cone" in low or "fan-in cone" in low:
         target = _extract_after_keyword(text, "of") or _extract_after_keyword(text, "for")
         target = target or _extract_after_keyword(text, "target")
@@ -602,6 +829,24 @@ def _plan_analysis(text: str, low: str) -> dict[str, Any] | None:
                 args["avoid"] = avoid
             return {"op": "find_path", "args": args}
 
+    if "path" in low and ("originating" in low or "terminating" in low or "connecting" in low):
+        endpoints = _extract_src_dst(text)
+        if endpoints:
+            src, dst = endpoints
+            if "every" in low or "all" in low or "list" in low:
+                return {"op": "all_paths", "args": {"src": src, "dst": dst}}
+            args = {"src": src, "dst": dst}
+            avoid = _extract_avoid_list(text)
+            if avoid:
+                args["avoid"] = avoid
+            return {"op": "find_path", "args": args}
+
+    if "depend" in low and "input" in low and "output" in low:
+        src = _extract_after_keyword(text, "input")
+        dst = _extract_after_keyword(text, "output")
+        if src and dst:
+            return {"op": "find_path", "args": {"src": src, "dst": dst}}
+
     return None
 
 
@@ -622,7 +867,7 @@ def _plan_verification(text: str, low: str) -> dict[str, Any] | None:
         plan when fanout is requested without a numeric limit. Returns None when
         this is not a verification request.
     """
-    if "check" not in low and "verify" not in low and "prove" not in low:
+    if "check" not in low and "verify" not in low and "prove" not in low and "confirm" not in low:
         return None
 
     if "connectivity" in low or "connection" in low or "floating" in low or "driver" in low:
@@ -743,34 +988,74 @@ def _extract_quoted_text(text: str) -> str | None:
 
 
 def _extract_gate_type(low: str) -> str | None:
-    aliases = {
-        "flip-flop": "dff",
-        "flipflop": "dff",
-        "registers": "dff",
-        "register": "dff",
-        "buffers": "buf",
-        "buffer": "buf",
-        "xnor": "xnor",
-        "nand": "nand",
-        "xor": "xor",
-        "nor": "nor",
-        "not": "not",
-        "inv": "not",
-        "inverter": "not",
-        "dffs": "dff",
-        "dff": "dff",
-        "buf": "buf",
-        "and": "and",
-        "or": "or",
-    }
-    for word, gate_type in aliases.items():
+    aliases = [
+        ("xnor", "xnor"),
+        ("xor", "xor"),
+        ("nand", "nand"),
+        ("nor", "nor"),
+        ("flip-flops", "dff"),
+        ("flip-flop", "dff"),
+        ("flip flops", "dff"),
+        ("flip flop", "dff"),
+        ("flipflop", "dff"),
+        ("registers", "dff"),
+        ("register", "dff"),
+        ("dffs", "dff"),
+        ("dff", "dff"),
+        ("buffer", "buf"),
+        ("buffers", "buf"),
+        ("buf", "buf"),
+        ("not", "not"),
+        ("inv", "not"),
+        ("inverter", "not"),
+        ("and", "and"),
+        ("or", "or"),
+    ]
+    for word, gate_type in aliases:
         if re.search(rf"\b{re.escape(word)}\b", low):
             return gate_type
     return None
 
 
+def _extract_gate_type_before_count(low: str) -> str | None:
+    aliases = {
+        "and": "and",
+        "or": "or",
+        "not": "not",
+        "nand": "nand",
+        "nor": "nor",
+        "xor": "xor",
+        "xnor": "xnor",
+        "buf": "buf",
+        "buffer": "buf",
+        "dff": "dff",
+    }
+    match = re.search(
+        r"\b(and|or|not|nand|nor|xor|xnor|buf|buffer|dff)\s+gates?\s+count\b",
+        low,
+    )
+    if match:
+        return aliases[match.group(1)]
+    match = re.search(
+        r"\b(and|or|not|nand|nor|xor|xnor|buf|buffer|dff)\s+gate\s+count\b",
+        low,
+    )
+    if match:
+        return aliases[match.group(1)]
+    return None
+
+
 def _mentions_gate_type(low: str, gate_type: str) -> bool:
     return re.search(rf"\b{re.escape(gate_type)}\b", low) is not None
+
+
+def _mentions_and_not_gate_set(low: str) -> bool:
+    return bool(
+        re.search(r"\band\s*(?:/|,|\+|and)\s*not\s+gates?\b", low)
+        or re.search(r"\bnot\s*(?:/|,|\+|and)\s*and\s+gates?\b", low)
+        or "and/not" in low
+        or "and-not" in low
+    )
 
 
 def _extract_extra_input(text: str) -> str | None:
@@ -811,6 +1096,15 @@ def _extract_src_dst(text: str) -> tuple[str, str] | None:
     dst = _extract_after_keyword(text, "to")
     if src and dst:
         return src, dst
+    patterns = [
+        rf"\bconnecting\s+(?:primary\s+)?input\s+({_SIGNAL_RE})\s+to\s+(?:primary\s+)?output\s+({_SIGNAL_RE})",
+        rf"\boriginating\s+at\s+(?:primary\s+)?input\s+({_SIGNAL_RE}).*?\bterminating\s+at\s+(?:primary\s+)?output\s+({_SIGNAL_RE})",
+        rf"\bfrom\s+(?:primary\s+)?input\s+({_SIGNAL_RE})\s+to\s+(?:primary\s+)?output\s+({_SIGNAL_RE})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return match.group(1), match.group(2)
     return None
 
 
@@ -821,7 +1115,9 @@ def _extract_after_keyword(text: str, keyword: str) -> str | None:
 
 
 def _extract_avoid_list(text: str) -> list[str]:
-    match = re.search(r"\bavoid(?:ing)?\s+([A-Za-z0-9_$,\s]+)", text, flags=re.I)
+    match = re.search(r"\bavoid(?:ing)?\s+([A-Za-z0-9_$,\s\[\]]+)", text, flags=re.I)
+    if not match:
+        match = re.search(r"\bdoes\s+not\s+traverse\s+(?:node\s+|signal\s+|net\s+)?([A-Za-z0-9_$\[\]]+)", text, flags=re.I)
     if not match:
         return []
     return [
@@ -849,6 +1145,32 @@ def _extract_destination_list(text: str) -> list[str]:
         if tokens:
             return tokens
     return []
+
+
+def _extract_reconnect_request(text: str, low: str) -> tuple[str, str, str] | None:
+    if "reconnect" not in low and "connect input pin" not in low:
+        return None
+    match = re.search(
+        rf"\b(?:reconnect|connect)\s+(?:input\s+)?pin\s+([A-Za-z0-9_]+)\s+of\s+gate\s+({_SIGNAL_RE})\s+to\s+(?:internal\s+)?(?:signal\s+|net\s+|wire\s+)?({_SIGNAL_RE})",
+        text,
+        flags=re.I,
+    )
+    if match:
+        return match.group(2), match.group(1), match.group(3)
+    return None
+
+
+def _extract_symmetry_request(text: str) -> tuple[str, str, str] | None:
+    target = _extract_after_keyword(text, "at") or _extract_after_keyword(text, "function at")
+    target = target or _extract_after_keyword(text, "target") or _extract_after_keyword(text, "output")
+    match = re.search(
+        rf"\bwith\s+respect\s+to\s+inputs?\s+({_SIGNAL_RE})\s+and\s+({_SIGNAL_RE})",
+        text,
+        flags=re.I,
+    )
+    if target and match:
+        return target, match.group(1), match.group(2)
+    return None
 
 
 def _extract_dff_pair(text: str) -> tuple[str, str] | None:
@@ -942,6 +1264,15 @@ def _extract_connection_instance(text: str) -> str | None:
 
 def _extract_signal_equivalence_pair(text: str) -> tuple[str, str] | None:
     match = re.search(
+        rf"\b(?:internal\s+)?signals?\s+({_SIGNAL_RE})\s+and\s+({_SIGNAL_RE})\s+"
+        rf"(?:are\s+)?functionally\s+equivalent",
+        text,
+        flags=re.I,
+    )
+    if match:
+        return match.group(1), match.group(2)
+
+    match = re.search(
         rf"\bequivalence\s+between\s+(?:internal\s+)?signals?\s+({_SIGNAL_RE})\s+and\s+({_SIGNAL_RE})",
         text,
         flags=re.I,
@@ -976,6 +1307,7 @@ def _extract_rename_net_pair(text: str, low: str) -> tuple[str, str] | None:
     if (
         not any(word in low for word in ("rename", "renaming"))
         and "update name" not in low
+        and "update the name" not in low
         and "change the identifier" not in low
     ):
         return None
@@ -985,6 +1317,7 @@ def _extract_rename_net_pair(text: str, low: str) -> tuple[str, str] | None:
     patterns = [
         rf"(?:rename|renaming)\s+(?:internal\s+)?(?:net|wire|signal)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
         rf"(?:rename|renaming)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
+        rf"update\s+the\s+name\s+of\s+(?:internal\s+)?(?:net|wire|signal)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
         rf"update\s+name\s+of\s+(?:internal\s+)?(?:net|wire|signal)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
         rf"change\s+the\s+identifier\s+of\s+(?:internal\s+)?(?:net|wire|signal)\s+({_SIGNAL_RE})\s+(?:to|as)\s+({_SIGNAL_RE})",
     ]
