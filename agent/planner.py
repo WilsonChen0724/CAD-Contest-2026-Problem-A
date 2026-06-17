@@ -899,6 +899,8 @@ def _plan_verification(text: str, low: str) -> dict[str, Any] | None:
         and "equivalence" not in low
         and "identical logic" not in low
         and "same logic" not in low
+        and "floating" not in low
+        and "unconnected" not in low
     ):
         return None
 

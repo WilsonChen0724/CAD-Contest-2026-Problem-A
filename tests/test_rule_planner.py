@@ -380,6 +380,10 @@ class RulePlannerTest(unittest.TestCase):
             {"op": "report_fanout", "args": {"net": "g0"}},
         )
         self.assertEqual(
+            plan_request("How many floating signals were found?", None),
+            {"op": "check_connectivity", "args": {}},
+        )
+        self.assertEqual(
             plan_request("Convert every XOR gate in this design to an equivalent 4-NAND circuit. Ensure the design functionality does not change.", None),
             {"op": "replace_xor_with_nand", "args": {}},
         )

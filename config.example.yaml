@@ -8,3 +8,29 @@ anthropic:
 generation:
   temperature: 0.2
   max_output_tokens: 4096
+  # Keep this low for the official 60-second response profile.
+  request_timeout: 12
+  max_attempts: 2
+
+planner:
+  # Number of JSON/tool-checker repair attempts after an invalid LLM plan.
+  # Runtime transform rejection retry is intentionally separate and disabled
+  # until it has classification and response-time guards.
+  max_retries: 1
+
+# Runtime optimization budgets. Defaults match the built-in safe profile.
+# Increase these on faster machines; decrease them when response timeout risk is
+# more important than attempting larger transforms.
+optimization_limits:
+  large_design_gate_limit: 10000
+  large_cone_gate_limit: 1500
+  large_constant_propagation_max_changes: 64
+  high_fanout_budget_medium_gate_limit: 10000
+  high_fanout_budget_large_gate_limit: 20000
+  high_fanout_budget_medium_changed_nets: 24
+  high_fanout_budget_large_changed_nets: 4
+  saved_output_cone_skip_gate_limit: 4000
+  xnor_to_nor_skip_gate_limit: 10000
+  xor_to_nand_skip_gate_limit: 20000
+  and_not_to_nand_skip_gate_limit: 10000
+  merge_equivalent_skip_gate_limit: 20000

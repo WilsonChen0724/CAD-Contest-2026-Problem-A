@@ -276,18 +276,8 @@ def max_register_to_register_depth(design: Design) -> dict:
     }
 
 
-def dffs_by_clock(design: Design, clock: str) -> dict:
-    """List DFFs whose clock pin is driven by the requested clock net."""
-    dffs = [
-        {"name": name, "d": dff.d, "q": dff.q, "clk": dff.clk, "rst": dff.rst}
-        for name, dff in sorted(design.dffs.items())
-        if dff.clk == clock
-    ]
-    return {"clock": clock, "num_dffs": len(dffs), "dffs": dffs}
-
-
-def gates_by_type(design: Design, gate_type: str, limit: int = 200) -> dict:
-    """Report gates of one primitive type with pin summaries, capped by default."""
+def gates_by_type(design: Design, gate_type: str, limit: int | None = 200) -> dict:
+    """Report gates of one primitive type with pin summaries."""
     normalized = gate_type.lower()
     if normalized == "dff":
         rows = [
@@ -300,12 +290,13 @@ def gates_by_type(design: Design, gate_type: str, limit: int = 200) -> dict:
             for name, gate in sorted(design.gates.items())
             if gate.type == normalized
         ]
+    selected = rows if limit is None else rows[:limit]
     return {
         "gate_type": normalized,
         "num_gates": len(rows),
-        "gates": rows[:limit],
+        "gates": selected,
         "limit": limit,
-        "truncated": len(rows) > limit,
+        "truncated": limit is not None and len(rows) > limit,
     }
 
 
@@ -396,32 +387,57 @@ def highest_fanout_primary_input(design: Design) -> dict:
     }
 
 
-def gate_type_connections(design: Design, gate_type: str, max_items: int = 200) -> dict:
-    """Report connections for gates of one type, bounded for large designs."""
+def gate_type_connections(design: Design, gate_type: str, max_items: int | None = 200) -> dict:
+    """Report connections for gates of one type."""
     normalized = gate_type.lower()
     names = sorted(design.dffs) if normalized == "dff" else [
         name for name, gate in sorted(design.gates.items()) if gate.type == normalized
     ]
-    selected = names[:max_items]
+    selected = names if max_items is None else names[:max_items]
+    rows = []
+    for name in selected:
+        if normalized == "dff":
+            dff = design.dffs[name]
+            pins = {"D": dff.d, "Q": dff.q, "CLK": dff.clk}
+            if dff.rst is not None:
+                pins["RST"] = dff.rst
+            rows.append({"kind": "dff", "instance": name, "pins": pins})
+        else:
+            gate = design.gates[name]
+            rows.append(
+                {
+                    "kind": "gate",
+                    "instance": name,
+                    "inputs": list(gate.inputs),
+                    "output": gate.output,
+                }
+            )
     return {
         "gate_type": normalized,
         "num_gates": len(names),
         "max_items": max_items,
-        "truncated": len(names) > len(selected),
-        "gates": [gate_connections(design, name) for name in selected],
+        "truncated": max_items is not None and len(names) > len(selected),
+        "gates": rows,
     }
 
 
-def dffs_by_clock(design: Design, clock: str, max_items: int = 200) -> dict:
+def dffs_by_clock(design: Design, clock: str, max_items: int | None = 200) -> dict:
     """Report DFF instances driven by one clock net."""
     matched = [name for name, dff in sorted(design.dffs.items()) if dff.clk == clock]
-    selected = matched[:max_items]
+    selected = matched if max_items is None else matched[:max_items]
+    rows = []
+    for name in selected:
+        dff = design.dffs[name]
+        pins = {"D": dff.d, "Q": dff.q, "CLK": dff.clk}
+        if dff.rst is not None:
+            pins["RST"] = dff.rst
+        rows.append({"instance": name, "pins": pins})
     return {
         "clock": clock,
         "num_dffs": len(matched),
         "max_items": max_items,
-        "truncated": len(matched) > len(selected),
-        "dffs": [gate_connections(design, name) for name in selected],
+        "truncated": max_items is not None and len(matched) > len(selected),
+        "dffs": rows,
     }
 
 
@@ -981,9 +997,10 @@ def derive_boolean_equation(design: Design, target: str, max_terms: int = 200) -
     """
     Derive a structural Boolean expression for a target when tractable.
 
-    DFF Q pins and primary inputs are treated as symbolic boundaries. The
-    expansion is intentionally capped so release-sized cones cannot produce
-    enormous responses.
+    Primary inputs are symbolic boundaries. If a target depends on a DFF Q pin,
+    the expression follows the DFF D input so prompts asking for primary-input
+    expressions do not stop at sequential state names. Sequential feedback is
+    still guarded and replaced with the documented initial state 1'b0.
     """
     rebuild_graph(design)
     remaining = {"terms": max_terms}
@@ -1386,12 +1403,22 @@ def _derive_expr(design: Design, net: str, remaining: dict[str, int], visiting: 
     if remaining["terms"] <= 0:
         return f"{net} /* truncated */"
     if net in visiting:
-        return f"{net} /* loop */"
+        return "1'b0"
     if net in design.inputs or net in {"1'b0", "1'b1", "0", "1"}:
         return net
 
     driver = design.drivers.get(net)
-    if driver is None or not driver.startswith("GATE:"):
+    if driver is None:
+        return net
+    if driver.startswith("DFF:"):
+        if net in visiting:
+            return f"{net} /* sequential loop */"
+        dff = design.dffs[driver.split(":", 1)[1]]
+        visiting.add(net)
+        expression = _derive_expr(design, dff.d, remaining, visiting)
+        visiting.remove(net)
+        return expression
+    if not driver.startswith("GATE:"):
         return net
 
     visiting.add(net)

@@ -229,6 +229,16 @@ class AnalysisTest(unittest.TestCase):
 
         self.assertEqual(report["expression"], "!(a & b)")
 
+    def test_derive_boolean_equation_expands_dff_q_to_d_input(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b", "clk"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="and", inputs=["a", "b"], output="d0"))
+        design.add_dff(DFF(name="FF0", d="d0", q="q0", clk="clk"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["q0"], output="y"))
+
+        report = derive_boolean_equation(design, "y")
+
+        self.assertEqual(report["expression"], "!((a & b))")
+
     def test_gate_type_count_and_nand_equivalent_pair(self) -> None:
         design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="nand", inputs=["a", "b"], output="y"))

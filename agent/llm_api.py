@@ -180,6 +180,8 @@ def _normalize_config(config: dict) -> dict[str, Any]:
         "anthropic_model": anthropic_config.get("model"),
         "temperature": generation_config.get("temperature"),
         "max_output_tokens": generation_config.get("max_output_tokens"),
+        "request_timeout": generation_config.get("request_timeout"),
+        "max_attempts": generation_config.get("max_attempts"),
     }
 
 
@@ -215,6 +217,8 @@ def _parse_simple_yaml_config(raw: str) -> dict[str, Any]:
         "anthropic_model": result.get("anthropic.model"),
         "temperature": result.get("generation.temperature"),
         "max_output_tokens": result.get("generation.max_output_tokens"),
+        "request_timeout": result.get("generation.request_timeout"),
+        "max_attempts": result.get("generation.max_attempts"),
     }
 
 

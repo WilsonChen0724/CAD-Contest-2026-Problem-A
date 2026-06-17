@@ -190,17 +190,23 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("CLK=clk", body)
 
     def test_dispatcher_summarizes_large_fanout_reports(self) -> None:
-        state = CurrentState()
-        state.design = Design(module_name="top", inputs={"src"}, outputs={f"y{i}" for i in range(125)})
-        for index in range(125):
-            state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=["src"], output=f"y{index}"))
+        with tempfile.TemporaryDirectory() as tmp:
+            state = CurrentState(output_dir=Path(tmp) / "output")
+            state.testcase = "fanout_case"
+            state.design = Design(module_name="top", inputs={"src"}, outputs={f"y{i}" for i in range(125)})
+            for index in range(125):
+                state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=["src"], output=f"y{index}"))
 
-        body = dispatch_plan(state, {"op": "report_fanout", "args": {"net": "src"}})
+            body = dispatch_plan(state, {"op": "report_fanout", "args": {"net": "src"}})
+            report_path = state.output_dir / "reports" / "fanout_case_src_fanout.txt"
+            report = report_path.read_text(encoding="utf-8")
 
         self.assertIn("125 load(s)", body)
-        self.assertIn("... 5 more sink(s) omitted", body)
+        self.assertIn(f"Complete fanout listing written to {report_path}", body)
+        self.assertIn("Showing first 120 sink(s) in this response.", body)
         self.assertIn("U119", body)
         self.assertNotIn("U124", body)
+        self.assertIn("U124", report)
 
     def test_report_fanout_handles_floating_signal_placeholder(self) -> None:
         state = CurrentState()
@@ -236,21 +242,26 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("- floating_wire", body)
 
     def test_dispatcher_summarizes_large_logic_cones(self) -> None:
-        state = CurrentState()
-        state.design = Design(module_name="top", inputs={"src"}, outputs={"y"})
-        previous = "src"
-        for index in range(205):
-            output = "y" if index == 204 else f"n{index}"
-            state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=output))
-            previous = output
+        with tempfile.TemporaryDirectory() as tmp:
+            state = CurrentState(output_dir=Path(tmp) / "output")
+            state.testcase = "cone_case"
+            state.design = Design(module_name="top", inputs={"src"}, outputs={"y"})
+            previous = "src"
+            for index in range(205):
+                output = "y" if index == 204 else f"n{index}"
+                state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=output))
+                previous = output
 
-        body = dispatch_plan(state, {"op": "logic_cone", "args": {"target": "y"}})
+            body = dispatch_plan(state, {"op": "logic_cone", "args": {"target": "y"}})
+            report_path = state.output_dir / "reports" / "cone_case_y_logic_cone.txt"
+            report = report_path.read_text(encoding="utf-8")
 
         self.assertIn('Logic cone of "y" contains 205 gates', body)
-        self.assertIn("Showing first 200 gate(s).", body)
-        self.assertIn("... 5 more gate(s) omitted", body)
-        self.assertIn("U199", body)
+        self.assertIn(f"Complete logic-cone gate listing written to {report_path}", body)
+        self.assertIn("Showing first 120 gate(s) in this response.", body)
+        self.assertIn("U119", body)
         self.assertNotIn("U95", body)
+        self.assertIn("U204", report)
 
     def test_dispatcher_reports_saved_gate_list_connections(self) -> None:
         state = CurrentState()
@@ -271,6 +282,43 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Matched gates: 2", body)
         self.assertIn("Gate connection report for saved gate list: 2", body)
         self.assertIn("U0: type=nand", body)
+
+    def test_dispatcher_writes_large_gate_type_connection_report_to_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = CurrentState(output_dir=Path(tmp) / "output")
+            state.testcase = "nand_case"
+            state.design = Design(module_name="top", inputs={"a", "b"}, outputs={f"y{i}" for i in range(125)})
+            for index in range(125):
+                state.design.add_gate(Gate(name=f"U{index}", type="nand", inputs=["a", "b"], output=f"y{index}"))
+
+            body = dispatch_plan(state, {"op": "report_gate_type_connections", "args": {"gate_type": "nand"}})
+            report_path = state.output_dir / "reports" / "nand_case_nand_gate_connections.txt"
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("NAND gate connections: 125", body)
+        self.assertIn(f"Complete gate connection listing written to {report_path}", body)
+        self.assertIn("U119", body)
+        self.assertNotIn("U99", body)
+        self.assertIn("U99", report)
+
+    def test_dispatcher_writes_large_boolean_equation_to_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = CurrentState(output_dir=Path(tmp) / "output")
+            state.testcase = "expr_case"
+            state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+            previous = "a"
+            for index in range(800):
+                output = "y" if index == 799 else f"n{index}"
+                state.design.add_gate(Gate(name=f"U{index}", type="and", inputs=[previous, "a"], output=output))
+                previous = output
+
+            body = dispatch_plan(state, {"op": "derive_boolean_equation", "args": {"target": "y"}})
+            report_path = state.output_dir / "reports" / "expr_case_y_boolean_equation.txt"
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertIn(f'Boolean equation for "y" was written to {report_path}', body)
+        self.assertIn("stdout only reports the file path", body)
+        self.assertIn("y =", report)
 
     def test_dispatcher_checks_current_design_against_original_snapshot(self) -> None:
         state = CurrentState()
@@ -555,6 +603,28 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Skipped cone optimization", body)
         self.assertIn("large design", body)
         self.assertEqual(len(state.design.gates), 10001)
+
+    def test_dispatcher_uses_configured_large_design_limits(self) -> None:
+        state = CurrentState(
+            config={
+                "optimization_limits": {
+                    "large_design_gate_limit": 3,
+                    "large_cone_gate_limit": 2,
+                }
+            }
+        )
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        previous = "a"
+        for index in range(4):
+            output = "y" if index == 3 else f"n{index}"
+            state.design.add_gate(Gate(name=f"U{index}", type="buf", inputs=[previous], output=output))
+            previous = output
+
+        body = dispatch_plan(state, {"op": "optimize_cone", "args": {"target": "y"}})
+
+        self.assertIn("Skipped cone optimization", body)
+        self.assertIn("large design", body)
+        self.assertEqual(len(state.design.gates), 4)
 
     def test_dispatcher_skips_large_original_equivalence_check(self) -> None:
         state = CurrentState()
