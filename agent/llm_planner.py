@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from agent.intent_classifier import validate_semantic_plan_match
 from agent.llm_api import call_llm
 from agent.plan_checker import PlanValidationError, parse_plan_json
 
@@ -15,7 +16,7 @@ def plan_with_llm(
     user_request: str,
     config: dict,
     *,
-    max_retries: int = MAX_LLM_RETRIES,
+    max_retries: int | None = None,
     llm_call: LLMCaller = call_llm,
 ) -> dict[str, Any]:
     """
@@ -29,16 +30,19 @@ def plan_with_llm(
     """
     request_for_model = user_request
     last_error: PlanValidationError | None = None
-    attempts = max_retries + 1
+    configured_max_retries = _configured_max_retries(config, max_retries)
+    attempts = configured_max_retries + 1
 
     for attempt in range(attempts):
         raw_plan: str | None = None
         try:
             raw_plan = llm_call(prompt, request_for_model, config)
-            return parse_plan_json(raw_plan)
+            plan = parse_plan_json(raw_plan)
+            validate_semantic_plan_match(user_request, plan)
+            return plan
         except PlanValidationError as exc:
             last_error = exc
-            if attempt >= max_retries:
+            if attempt >= configured_max_retries:
                 break
             if raw_plan is None:
                 request_for_model = _build_retry_request_after_missing_tool_call(user_request, exc)
@@ -49,6 +53,25 @@ def plan_with_llm(
         "LLM planner returned an invalid tool plan after retry. "
         f"Last checker error: {last_error}"
     )
+
+
+def _configured_max_retries(config: dict, explicit: int | None) -> int:
+    if explicit is not None:
+        return max(0, explicit)
+    planner_config = config.get("planner", {}) if isinstance(config, dict) else {}
+    if not isinstance(planner_config, dict):
+        return MAX_LLM_RETRIES
+    value = planner_config.get("max_retries", MAX_LLM_RETRIES)
+    if isinstance(value, bool):
+        return MAX_LLM_RETRIES
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, str):
+        try:
+            return max(0, int(value.strip()))
+        except ValueError:
+            return MAX_LLM_RETRIES
+    return MAX_LLM_RETRIES
 
 
 def _build_retry_request_after_missing_tool_call(original_request: str, error: Exception) -> str:
