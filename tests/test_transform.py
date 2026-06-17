@@ -357,6 +357,38 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["final_gate_count"], 0)
         self.assertEqual(design.dffs["FF0"].d, "a")
 
+    def test_optimize_design_depth_accepts_cone_gate_constraint(self) -> None:
+        design = Design(inputs={"a", "b", "c"}, outputs={"n10", "y"})
+        design.add_gate(Gate(name="U_xor", type="xor", inputs=["a", "b"], output="n10"))
+        design.add_gate(Gate(name="U_buf", type="buf", inputs=["c"], output="y"))
+        rebuild_graph(design)
+
+        def fake_depth_optimizer(candidate: Design, max_depth=None, max_outputs=None):
+            return {
+                "engine": "fake_depth",
+                "attempted_outputs": ["n10", "y"],
+                "skipped_outputs": [],
+                "changed": [],
+                "num_changed_outputs": 0,
+                "bounded_reason": None,
+            }
+
+        with patch("eda.transform._optimize_design_depth_base", side_effect=fake_depth_optimizer):
+            result = optimize_design_depth(
+                design,
+                cost_function="max_logic_depth",
+                cost_scope="whole_design",
+                constraints=[
+                    {"type": "cone_gate_library", "target": "n10", "allowed_gates": ["nor", "not"]}
+                ],
+            )
+
+        self.assertEqual(result["engine"], "constraint_aware_depth")
+        self.assertTrue(result["candidate_applied"])
+        self.assertTrue(result["constraint_reports_after"][0]["satisfied"])
+        self.assertEqual(result["constraint_reports_after"][0]["allowed_gates"], ["nor", "not"])
+        self.assertTrue(all(gate.type in {"nor", "not"} for gate in design.gates.values() if gate.output == "n10" or gate.output.startswith("U_xor_")))
+
     def test_rename_net_updates_references_and_preserves_function(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))
@@ -420,4 +452,5 @@ class TransformTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

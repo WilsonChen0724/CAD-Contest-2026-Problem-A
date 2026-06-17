@@ -2321,3 +2321,1033 @@ def _fast_depth_profile(design: Design) -> dict[str, Any]:
         "unprocessed_gates": len(design.gates) - len(processed),
     }
 
+
+# Constraint-aware optimize_cone wrapper. Keep the original implementation for
+# unconstrained calls, and add a small legalization flow for cone gate-library
+# constraints passed by the LLM tool schema.
+_optimize_cone_base = optimize_cone
+_optimize_design_depth_base = optimize_design_depth
+
+
+def optimize_cone(
+    design: Design,
+    target: str,
+    max_depth: int | None = None,
+    minimize_gate_count: bool = True,
+    allow_yosys_abc: bool = True,
+    allowed_gates: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> dict:
+    allowed = _normalize_allowed_gates(allowed_gates)
+    if not allowed:
+        return _optimize_cone_base(
+            design,
+            target,
+            max_depth=max_depth,
+            minimize_gate_count=minimize_gate_count,
+            allow_yosys_abc=allow_yosys_abc,
+        )
+
+    rebuild_graph(design)
+    resolved = _resolve_optimization_cone_target(design, target)
+    resolved_target = resolved["target"]
+    initial_gates = logic_cone(design, resolved_target)
+    initial_depth = _cone_max_depth(design, resolved_target)
+    changed: list[dict[str, Any]] = []
+
+    legalize = _legalize_cone_to_gate_library(design, resolved_target, allowed)
+    if legalize["num_changed"]:
+        changed.append({"rule": "legalize_cone", **legalize})
+    cleanup = _optimize_cone_base(
+        design,
+        target,
+        max_depth=None,
+        minimize_gate_count=minimize_gate_count,
+        allow_yosys_abc=False,
+    )
+    changed.extend(cleanup.get("changed", []))
+
+    before_yosys = deepcopy(design)
+    before_yosys_depth = _cone_max_depth(design, resolved_target)
+    if allow_yosys_abc:
+        yosys_result = _try_yosys_abc_for_small_cone(
+            design,
+            target=target,
+            resolved_target=resolved_target,
+            max_depth=max_depth,
+            initial_gate_count=len(initial_gates),
+            initial_depth=initial_depth,
+            current_gate_count=len(logic_cone(design, resolved_target)),
+            current_depth=before_yosys_depth,
+        )
+        if yosys_result is not None:
+            relegalize = _legalize_cone_to_gate_library(design, resolved_target, allowed)
+            if relegalize["num_changed"]:
+                yosys_result.setdefault("changed", []).append({"rule": "post_yosys_relegalize", **relegalize})
+            if _cone_uses_only_gates(design, resolved_target, allowed):
+                changed.extend(yosys_result.get("changed", []))
+            else:
+                _replace_design_contents(design, before_yosys)
+
+    if not _cone_uses_only_gates(design, resolved_target, allowed):
+        raise RuntimeError(f'Constrained cone optimization failed to satisfy allowed_gates={sorted(allowed)}.')
+
+    final_depth = _cone_max_depth(design, resolved_target)
+    if max_depth is not None and final_depth > max_depth:
+        raise ValueError(f'Optimized cone depth {final_depth} exceeds max_depth {max_depth} for target "{target}".')
+    final_gates = logic_cone(design, resolved_target)
+    return {
+        "target": target,
+        "resolved_target": resolved_target,
+        "target_resolution": resolved,
+        "engine": "constraint_aware_cone",
+        "allowed_gates": sorted(allowed),
+        "max_depth": max_depth,
+        "initial_gate_count": len(initial_gates),
+        "final_gate_count": len(final_gates),
+        "removed_gate_count": len(initial_gates) - len(final_gates),
+        "initial_depth": initial_depth,
+        "final_depth": final_depth,
+        "changed": changed,
+        "num_changed": len(changed),
+    }
+
+
+def optimize_design_depth(
+    design: Design,
+    max_depth: int | None = None,
+    max_outputs: int | None = None,
+    allowed_gates: list[str] | set[str] | tuple[str, ...] | None = None,
+    cost_function: str | None = None,
+    cost_scope: str | None = None,
+    constraints: list[dict[str, Any]] | None = None,
+) -> dict:
+    allowed = _normalize_allowed_gates(allowed_gates)
+    cone_constraints = _normalize_cone_gate_constraints(constraints)
+    if not cone_constraints:
+        del allowed, cost_function, cost_scope
+        return _optimize_design_depth_base(design, max_depth=max_depth, max_outputs=max_outputs)
+    return _optimize_design_depth_with_constraints(
+        design,
+        max_depth=max_depth,
+        max_outputs=max_outputs,
+        cost_function=cost_function or "max_logic_depth",
+        cost_scope=cost_scope or "whole_design",
+        constraints=cone_constraints,
+    )
+
+
+def _normalize_cone_gate_constraints(constraints: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for constraint in constraints or []:
+        if not isinstance(constraint, dict):
+            raise ValueError("Optimization constraints must be objects.")
+        if constraint.get("type") != "cone_gate_library":
+            raise ValueError("Only cone_gate_library constraints are supported.")
+        target = constraint.get("target")
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError("cone_gate_library constraint requires a non-empty target.")
+        allowed = _normalize_allowed_gates(constraint.get("allowed_gates"))
+        if not allowed:
+            raise ValueError("cone_gate_library constraint requires allowed_gates.")
+        normalized.append({"type": "cone_gate_library", "target": target.strip(), "allowed_gates": sorted(allowed)})
+    return normalized
+
+
+def _optimize_design_depth_with_constraints(
+    design: Design,
+    *,
+    max_depth: int | None,
+    max_outputs: int | None,
+    cost_function: str,
+    cost_scope: str,
+    constraints: list[dict[str, Any]],
+) -> dict[str, Any]:
+    initial_gate_count = len(design.gates)
+    initial_depth = _design_max_depth(design)
+    before_constraints = [_cone_gate_constraint_report(design, constraint) for constraint in constraints]
+
+    legalization_changes: list[dict[str, Any]] = []
+    for constraint in constraints:
+        resolved = _resolve_optimization_cone_target(design, constraint["target"])
+        legalize = _legalize_cone_to_gate_library(design, resolved["target"], set(constraint["allowed_gates"]))
+        if legalize["num_changed"]:
+            legalization_changes.append({"target": constraint["target"], "resolved_target": resolved["target"], **legalize})
+        balance = _optimize_constrained_cone_depth_locally(design, constraint)
+        if balance["num_changed"]:
+            legalization_changes.append({"rule": "constraint_cone_depth_balance", **balance})
+        region = _try_multi_output_region_yosys_for_constraint(design, constraint)
+        if region["num_changed"]:
+            legalization_changes.append({"rule": "constraint_multi_output_region_yosys", **region})
+    whole_regions = _optimize_whole_design_multi_output_regions(design, constraints, max_regions=max_outputs)
+    legalization_changes.extend(whole_regions)
+    rebuild_graph(design)
+
+    legalized_design = deepcopy(design)
+    legalized_gate_count = len(design.gates)
+    legalized_depth = _design_max_depth(design)
+    legalized_constraints = [_cone_gate_constraint_report(design, constraint) for constraint in constraints]
+    if not all(report["satisfied"] for report in legalized_constraints):
+        bad = [report for report in legalized_constraints if not report["satisfied"]]
+        raise RuntimeError(f"Constrained depth optimization failed to legalize cone constraints: {bad}")
+
+    candidate_reject_reason = "No depth candidate was attempted."
+    candidate_result: dict[str, Any] | None = None
+    candidate_applied = False
+    final_constraints = legalized_constraints
+    try:
+        candidate = deepcopy(legalized_design)
+        candidate_result = _optimize_design_depth_base(candidate, max_depth=max_depth, max_outputs=max_outputs)
+        candidate_relegalization: list[dict[str, Any]] = []
+        candidate_constraints = [_cone_gate_constraint_report(candidate, constraint) for constraint in constraints]
+        if not all(report["satisfied"] for report in candidate_constraints):
+            for constraint in constraints:
+                resolved = _resolve_optimization_cone_target(candidate, constraint["target"])
+                relegalize = _legalize_cone_to_gate_library(candidate, resolved["target"], set(constraint["allowed_gates"]))
+                if relegalize["num_changed"]:
+                    candidate_relegalization.append({"target": constraint["target"], "resolved_target": resolved["target"], **relegalize})
+            candidate_constraints = [_cone_gate_constraint_report(candidate, constraint) for constraint in constraints]
+        candidate_depth = _design_max_depth(candidate)
+        candidate_gate_count = len(candidate.gates)
+        if not all(report["satisfied"] for report in candidate_constraints):
+            candidate_reject_reason = "depth candidate violated cone gate-library constraint after re-legalization"
+        elif candidate_depth > legalized_depth:
+            candidate_reject_reason = f"depth candidate increased post-legalization depth from {legalized_depth} to {candidate_depth}"
+        elif candidate_depth == legalized_depth and candidate_gate_count > legalized_gate_count:
+            candidate_reject_reason = f"depth candidate kept depth {candidate_depth} but increased gate count from {legalized_gate_count} to {candidate_gate_count}"
+        else:
+            if candidate_relegalization:
+                candidate_result.setdefault("changed", []).extend(candidate_relegalization)
+            _replace_design_contents(design, candidate)
+            candidate_applied = True
+            final_constraints = candidate_constraints
+    except Exception as exc:
+        candidate_reject_reason = str(exc)
+        _replace_design_contents(design, legalized_design)
+
+    if not candidate_applied:
+        _replace_design_contents(design, legalized_design)
+
+    final_depth = _design_max_depth(design)
+    final_gate_count = len(design.gates)
+    target_met = max_depth is None or final_depth <= max_depth
+    return {
+        "engine": "constraint_aware_depth",
+        "cost_function": cost_function,
+        "cost_scope": cost_scope,
+        "max_depth": max_depth,
+        "max_outputs": max_outputs,
+        "attempted_outputs": candidate_result.get("attempted_outputs", []) if isinstance(candidate_result, dict) else [],
+        "skipped_outputs": candidate_result.get("skipped_outputs", []) if isinstance(candidate_result, dict) else [],
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": final_gate_count,
+        "initial_depth": initial_depth,
+        "legalized_gate_count": legalized_gate_count,
+        "legalized_depth": legalized_depth,
+        "final_depth": final_depth,
+        "target_met": target_met,
+        "constraints": constraints,
+        "constraint_reports_before": before_constraints,
+        "constraint_reports_after": final_constraints,
+        "legalization_changes": legalization_changes,
+        "candidate_engine": candidate_result.get("engine") if isinstance(candidate_result, dict) else None,
+        "candidate_applied": candidate_applied,
+        "fallback_reason": None if candidate_applied else candidate_reject_reason,
+        "changed": legalization_changes + (candidate_result.get("changed", []) if candidate_applied and isinstance(candidate_result, dict) else []),
+        "num_changed_outputs": candidate_result.get("num_changed_outputs", 0) if candidate_applied and isinstance(candidate_result, dict) else 0,
+        "bounded_reason": candidate_result.get("bounded_reason") if isinstance(candidate_result, dict) else None,
+    }
+
+
+def _cone_gate_constraint_report(design: Design, constraint: dict[str, Any]) -> dict[str, Any]:
+    resolved = _resolve_optimization_cone_target(design, constraint["target"])
+    resolved_target = resolved["target"]
+    allowed = set(constraint["allowed_gates"])
+    disallowed = sorted(set(_disallowed_gate_types_in_cone(design, resolved_target, allowed)))
+    return {
+        "type": "cone_gate_library",
+        "target": constraint["target"],
+        "resolved_target": resolved_target,
+        "resolution_kind": resolved["kind"],
+        "allowed_gates": sorted(allowed),
+        "satisfied": not disallowed,
+        "disallowed_gate_types": disallowed,
+        "gate_count": len(logic_cone(design, resolved_target)),
+        "depth": _cone_max_depth(design, resolved_target),
+    }
+
+
+def _optimize_whole_design_multi_output_regions(
+    design: Design,
+    constraints: list[dict[str, Any]],
+    *,
+    max_regions: int | None = None,
+) -> list[dict[str, Any]]:
+    gate_count = len(design.gates)
+    has_fanout_buffers = any("__fanout_buf_" in net for net in design.all_nets())
+    limit = max_regions if max_regions is not None else min(_adaptive_depth_topk(gate_count, has_fanout_buffers), 8)
+    limit = max(0, min(limit, 8))
+    if limit == 0:
+        return []
+
+    changed: list[dict[str, Any]] = []
+    tried: set[str] = set()
+    for target in _whole_design_critical_targets(design, limit=limit * 2):
+        if target in tried:
+            continue
+        tried.add(target)
+        result = _try_multi_output_region_yosys_for_target(
+            design,
+            target,
+            constraints=constraints,
+        )
+        if result["num_changed"]:
+            changed.append({"rule": "whole_design_multi_output_region_yosys", **result})
+        if len(changed) >= limit:
+            break
+    return changed
+
+
+def _whole_design_critical_targets(design: Design, *, limit: int) -> list[str]:
+    profile = _fast_depth_profile(design)
+    scored = [
+        (depth, target)
+        for target, depth in profile["endpoint_depths"].items()
+        if depth > 0 and target in design.all_nets()
+    ]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [target for _, target in scored[:limit]]
+
+
+def _try_multi_output_region_yosys_for_target(
+    design: Design,
+    target: str,
+    *,
+    constraints: list[dict[str, Any]],
+    max_region_gates: int = 3000,
+    max_region_outputs: int = 128,
+) -> dict[str, Any]:
+    resolved = _resolve_optimization_cone_target(design, target)
+    resolved_target = resolved["target"]
+    region_gate_names = set(logic_cone(design, resolved_target))
+    initial_depth = _cone_max_depth(design, resolved_target)
+    initial_design_depth = _design_max_depth(design)
+    initial_total_gates = len(design.gates)
+    initial_gate_count = len(region_gate_names)
+    if initial_gate_count < 8:
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, "region is too small")
+    if initial_gate_count > max_region_gates:
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, f"region has {initial_gate_count} gates, above limit {max_region_gates}")
+
+    region_outputs = _multi_output_region_outputs(design, region_gate_names, resolved_target)
+    if len(region_outputs) > max_region_outputs:
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, f"region has {len(region_outputs)} outputs, above limit {max_region_outputs}")
+    before_output_depths = {net: _cone_max_depth(design, net) for net in region_outputs}
+    region_design, boundary_inputs = _build_multi_output_region_design(design, region_gate_names, region_outputs)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            raw_input = tmp_dir / "whole_region_input.v"
+            yosys_input = tmp_dir / "whole_region_yosys_input.v"
+            optimized_output = tmp_dir / "whole_region_optimized.v"
+            write_verilog(region_design, raw_input)
+            _write_yosys_abc_input(raw_input, yosys_input)
+            script = _build_yosys_abc_cone_script(
+                input_path=yosys_input,
+                output_path=optimized_output,
+                top_module=region_design.module_name,
+                max_depth=None,
+            )
+            optimized_region, reason = _run_yosys_depth_attempt(
+                script,
+                tmp_dir=tmp_dir,
+                output_path=optimized_output,
+                timeout=_cone_yosys_abc_timeout(initial_gate_count),
+                label="whole_design_multi_output_region_yosys_abc",
+            )
+            if optimized_region is None:
+                return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, reason)
+    except Exception as exc:
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, str(exc))
+
+    _restore_boundary_bit_aliases(optimized_region, boundary_inputs + region_outputs)
+    missing_outputs = sorted(set(region_outputs) - optimized_region.outputs)
+    if missing_outputs:
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, "optimized region missing outputs: " + ";".join(missing_outputs[:8]))
+
+    candidate = deepcopy(design)
+    _splice_multi_output_region(
+        candidate,
+        old_region_gate_names=region_gate_names,
+        optimized_region=optimized_region,
+        boundary_inputs=boundary_inputs,
+        region_outputs=region_outputs,
+    )
+    relegalized = _relegalize_constraints(candidate, constraints)
+    reports = [_cone_gate_constraint_report(candidate, constraint) for constraint in constraints]
+    if not all(report["satisfied"] for report in reports):
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, "candidate violated cone gate-library constraint")
+    if not check_connectivity(candidate).get("ok"):
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, "candidate failed connectivity check")
+
+    after_output_depths = {net: _cone_max_depth(candidate, net) for net in region_outputs if net in candidate.all_nets()}
+    depth_regressions = {
+        net: (before_output_depths[net], after_output_depths[net])
+        for net in after_output_depths
+        if after_output_depths[net] > before_output_depths[net]
+    }
+    final_depth = _cone_max_depth(candidate, resolved_target)
+    final_design_depth = _design_max_depth(candidate)
+    final_total_gates = len(candidate.gates)
+    if depth_regressions:
+        sample = ";".join(f"{net}:{old}->{new}" for net, (old, new) in list(depth_regressions.items())[:6])
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, "region output depth regression: " + sample)
+    if final_design_depth > initial_design_depth:
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, f"whole-design depth regression {initial_design_depth}->{final_design_depth}")
+
+    improves_target = final_depth < initial_depth
+    improves_design = final_design_depth < initial_design_depth
+    improves_area = final_design_depth == initial_design_depth and final_total_gates < initial_total_gates
+    gate_budget = initial_total_gates + max(500, initial_gate_count)
+    if not (improves_target or improves_design or improves_area):
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, "candidate did not improve target depth, design depth, or gate count")
+    if final_total_gates > gate_budget:
+        return _target_region_noop(target, resolved_target, initial_gate_count, initial_depth, f"candidate exceeded gate budget {final_total_gates}>{gate_budget}")
+
+    _replace_design_contents(design, candidate)
+    return {
+        "target": target,
+        "resolved_target": resolved_target,
+        "engine": "whole_design_multi_output_region_yosys_abc",
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": len(logic_cone(design, resolved_target)),
+        "initial_depth": initial_depth,
+        "final_depth": final_depth,
+        "initial_design_depth": initial_design_depth,
+        "final_design_depth": final_design_depth,
+        "initial_total_gates": initial_total_gates,
+        "final_total_gates": final_total_gates,
+        "region_output_count": len(region_outputs),
+        "boundary_input_count": len(boundary_inputs),
+        "optimized_region_gate_count": len(optimized_region.gates),
+        "relegalized_gate_count": relegalized,
+        "changed": [{"rule": "whole_design_multi_output_region_yosys_abc", "region_outputs": region_outputs[:16], "boundary_inputs": boundary_inputs[:16]}],
+        "num_changed": 1,
+    }
+
+
+def _relegalize_constraints(design: Design, constraints: list[dict[str, Any]]) -> int:
+    total = 0
+    for constraint in constraints:
+        resolved = _resolve_optimization_cone_target(design, constraint["target"])
+        result = _legalize_cone_to_gate_library(design, resolved["target"], set(constraint["allowed_gates"]))
+        total += result["num_changed"]
+    return total
+
+
+def _target_region_noop(target: str, resolved_target: str, gate_count: int, depth: int, reason: str) -> dict[str, Any]:
+    return {
+        "target": target,
+        "resolved_target": resolved_target,
+        "engine": "whole_design_multi_output_region_yosys_abc",
+        "initial_gate_count": gate_count,
+        "final_gate_count": gate_count,
+        "initial_depth": depth,
+        "final_depth": depth,
+        "changed": [],
+        "num_changed": 0,
+        "reason": reason,
+    }
+
+def _try_multi_output_region_yosys_for_constraint(
+    design: Design,
+    constraint: dict[str, Any],
+    *,
+    max_region_gates: int = 3000,
+    max_region_outputs: int = 128,
+) -> dict[str, Any]:
+    resolved = _resolve_optimization_cone_target(design, constraint["target"])
+    resolved_target = resolved["target"]
+    allowed = set(constraint["allowed_gates"])
+    region_gate_names = set(logic_cone(design, resolved_target))
+    initial_depth = _cone_max_depth(design, resolved_target)
+    initial_gate_count = len(region_gate_names)
+    if initial_gate_count < 8:
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, "region is too small")
+    if initial_gate_count > max_region_gates:
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, f"region has {initial_gate_count} gates, above limit {max_region_gates}")
+
+    region_outputs = _multi_output_region_outputs(design, region_gate_names, resolved_target)
+    if len(region_outputs) > max_region_outputs:
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, f"region has {len(region_outputs)} outputs, above limit {max_region_outputs}")
+    before_output_depths = {net: _cone_max_depth(design, net) for net in region_outputs}
+    region_design, boundary_inputs = _build_multi_output_region_design(design, region_gate_names, region_outputs)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            raw_input = tmp_dir / "multi_region_input.v"
+            yosys_input = tmp_dir / "multi_region_yosys_input.v"
+            optimized_output = tmp_dir / "multi_region_optimized.v"
+            write_verilog(region_design, raw_input)
+            _write_yosys_abc_input(raw_input, yosys_input)
+            script = _build_yosys_abc_cone_script(
+                input_path=yosys_input,
+                output_path=optimized_output,
+                top_module=region_design.module_name,
+                max_depth=None,
+            )
+            optimized_region, reason = _run_yosys_depth_attempt(
+                script,
+                tmp_dir=tmp_dir,
+                output_path=optimized_output,
+                timeout=_cone_yosys_abc_timeout(initial_gate_count),
+                label="multi_output_region_yosys_abc",
+            )
+            if optimized_region is None:
+                return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, reason)
+    except Exception as exc:
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, str(exc))
+
+    _restore_boundary_bit_aliases(optimized_region, boundary_inputs + region_outputs)
+    missing_outputs = sorted(set(region_outputs) - optimized_region.outputs)
+    if missing_outputs:
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, "optimized region missing outputs: " + ";".join(missing_outputs[:8]))
+
+    candidate = deepcopy(design)
+    _splice_multi_output_region(
+        candidate,
+        old_region_gate_names=region_gate_names,
+        optimized_region=optimized_region,
+        boundary_inputs=boundary_inputs,
+        region_outputs=region_outputs,
+    )
+    relegalize = _legalize_cone_to_gate_library(candidate, resolved_target, allowed)
+    report = _cone_gate_constraint_report(candidate, constraint)
+    if not report["satisfied"]:
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, "candidate violated cone gate-library constraint")
+    connectivity = check_connectivity(candidate)
+    if not connectivity.get("ok"):
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, "candidate failed connectivity check")
+
+    after_output_depths = {net: _cone_max_depth(candidate, net) for net in region_outputs if net in candidate.all_nets()}
+    depth_regressions = {
+        net: (before_output_depths[net], after_output_depths[net])
+        for net in after_output_depths
+        if after_output_depths[net] > before_output_depths[net]
+    }
+    final_depth = _cone_max_depth(candidate, resolved_target)
+    final_gate_count = len(logic_cone(candidate, resolved_target))
+    if depth_regressions:
+        sample = ";".join(f"{net}:{old}->{new}" for net, (old, new) in list(depth_regressions.items())[:6])
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, "region output depth regression: " + sample)
+    if final_depth >= initial_depth and final_gate_count >= initial_gate_count:
+        return _multi_region_noop(constraint, resolved_target, initial_gate_count, initial_depth, "candidate did not improve constrained cone depth or gate count")
+
+    _replace_design_contents(design, candidate)
+    return {
+        "target": constraint["target"],
+        "resolved_target": resolved_target,
+        "allowed_gates": sorted(allowed),
+        "engine": "multi_output_region_yosys_abc",
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": final_gate_count,
+        "initial_depth": initial_depth,
+        "final_depth": final_depth,
+        "region_output_count": len(region_outputs),
+        "boundary_input_count": len(boundary_inputs),
+        "optimized_region_gate_count": len(optimized_region.gates),
+        "relegalized_gate_count": relegalize["num_changed"],
+        "changed": [
+            {
+                "rule": "multi_output_region_yosys_abc",
+                "region_outputs": region_outputs[:16],
+                "boundary_inputs": boundary_inputs[:16],
+            }
+        ],
+        "num_changed": 1,
+    }
+
+
+def _multi_region_noop(
+    constraint: dict[str, Any],
+    resolved_target: str,
+    gate_count: int,
+    depth: int,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "target": constraint["target"],
+        "resolved_target": resolved_target,
+        "allowed_gates": sorted(set(constraint["allowed_gates"])),
+        "engine": "multi_output_region_yosys_abc",
+        "initial_gate_count": gate_count,
+        "final_gate_count": gate_count,
+        "initial_depth": depth,
+        "final_depth": depth,
+        "changed": [],
+        "num_changed": 0,
+        "reason": reason,
+    }
+
+
+def _multi_output_region_outputs(design: Design, region_gate_names: set[str], resolved_target: str) -> list[str]:
+    rebuild_graph(design)
+    outputs: set[str] = {resolved_target}
+    for gate_name in region_gate_names:
+        gate = design.gates[gate_name]
+        for sink in design.fanouts.get(gate.output, []):
+            if sink.startswith("GATE:") and sink.split(":", 1)[1] in region_gate_names:
+                continue
+            outputs.add(gate.output)
+            break
+    return sorted(outputs)
+
+
+def _build_multi_output_region_design(
+    design: Design,
+    region_gate_names: set[str],
+    region_outputs: list[str],
+) -> tuple[Design, list[str]]:
+    boundary_inputs: list[str] = []
+    boundary_seen: set[str] = set()
+    for gate_name in sorted(region_gate_names):
+        gate = design.gates[gate_name]
+        for net in gate.inputs:
+            if is_constant(net):
+                continue
+            driver = design.drivers.get(net)
+            if driver and driver.startswith("GATE:") and driver.split(":", 1)[1] in region_gate_names:
+                continue
+            if net not in boundary_seen:
+                boundary_seen.add(net)
+                boundary_inputs.append(net)
+
+    region_design = Design(
+        module_name="multi_region_opt",
+        inputs=set(boundary_inputs),
+        outputs=set(region_outputs),
+    )
+    for gate_name in sorted(region_gate_names):
+        gate = design.gates[gate_name]
+        region_design.add_gate(
+            Gate(
+                name=gate.name,
+                type=gate.type,
+                inputs=list(gate.inputs),
+                output=gate.output,
+                attrs=dict(gate.attrs),
+            )
+        )
+    rebuild_graph(region_design)
+    return region_design, boundary_inputs
+
+
+def _splice_multi_output_region(
+    design: Design,
+    *,
+    old_region_gate_names: set[str],
+    optimized_region: Design,
+    boundary_inputs: list[str],
+    region_outputs: list[str],
+) -> None:
+    for gate_name in old_region_gate_names:
+        design.gates.pop(gate_name, None)
+
+    net_map: dict[str, str] = {net: net for net in boundary_inputs}
+    net_map.update({net: net for net in region_outputs})
+    for constant in ("1'b0", "1'b1", "1'bx", "1'bz", "0", "1"):
+        net_map[constant] = constant
+
+    for gate_name in sorted(optimized_region.gates):
+        gate = optimized_region.gates[gate_name]
+        mapped_inputs = [_map_region_net(design, net_map, net) for net in gate.inputs]
+        mapped_output = _map_region_net(design, net_map, gate.output)
+        new_gate_name = design.make_unique_gate_name(f"multi_region_abc_{gate.name}")
+        design.add_gate(
+            Gate(
+                name=new_gate_name,
+                type=gate.type,
+                inputs=mapped_inputs,
+                output=mapped_output,
+                attrs=dict(gate.attrs),
+            )
+        )
+    rebuild_graph(design)
+    _prune_unreferenced_region_wires(design)
+
+
+def _map_region_net(design: Design, net_map: dict[str, str], net: str) -> str:
+    if net in net_map:
+        return net_map[net]
+    if is_constant(net):
+        net_map[net] = net
+        return net
+    mapped = design.make_unique_wire_name(f"multi_region_{net}")
+    net_map[net] = mapped
+    return mapped
+
+
+def _prune_unreferenced_region_wires(design: Design) -> None:
+    referenced = set(design.inputs) | set(design.outputs)
+    for gate in design.gates.values():
+        referenced.add(gate.output)
+        referenced.update(net for net in gate.inputs if not is_constant(net))
+    for dff in design.dffs.values():
+        referenced.add(dff.q)
+        if not is_constant(dff.d):
+            referenced.add(dff.d)
+        if dff.clk:
+            referenced.add(dff.clk)
+        if dff.rst:
+            referenced.add(dff.rst)
+    design.wires = {net for net in design.wires if net in referenced}
+    rebuild_graph(design)
+
+
+def _restore_boundary_bit_aliases(optimized_region: Design, boundary_nets: list[str]) -> None:
+    by_base: dict[str, list[str]] = {}
+    for net in boundary_nets:
+        if "[" not in net or not net.endswith("]"):
+            continue
+        base = net.split("[", 1)[0]
+        by_base.setdefault(base, []).append(net)
+    aliases = {base: nets[0] for base, nets in by_base.items() if len(nets) == 1}
+    active_aliases = {base: original for base, original in aliases.items() if base in optimized_region.inputs or base in optimized_region.outputs}
+    if not active_aliases:
+        return
+    optimized_region.inputs = {active_aliases.get(net, net) for net in optimized_region.inputs}
+    optimized_region.outputs = {active_aliases.get(net, net) for net in optimized_region.outputs}
+    optimized_region.wires = {active_aliases.get(net, net) for net in optimized_region.wires}
+    for gate in optimized_region.gates.values():
+        gate.inputs = [active_aliases.get(net, net) for net in gate.inputs]
+        gate.output = active_aliases.get(gate.output, gate.output)
+    rebuild_graph(optimized_region)
+
+def _optimize_constrained_cone_depth_locally(design: Design, constraint: dict[str, Any]) -> dict[str, Any]:
+    allowed = set(constraint["allowed_gates"])
+    if allowed != {"nor", "not"}:
+        return {"target": constraint["target"], "allowed_gates": sorted(allowed), "changed": [], "num_changed": 0}
+
+    resolved = _resolve_optimization_cone_target(design, constraint["target"])
+    resolved_target = resolved["target"]
+    initial_depth = _cone_max_depth(design, resolved_target)
+    initial_gate_count = len(logic_cone(design, resolved_target))
+    working = deepcopy(design)
+    changed: list[dict[str, Any]] = []
+
+    for _ in range(12):
+        rebuild_graph(working)
+        current_depth = _cone_max_depth(working, resolved_target)
+        cone_gate_names = set(logic_cone(working, resolved_target))
+        candidate_nets = {resolved_target}
+        candidate_nets.update(
+            gate.output
+            for name, gate in working.gates.items()
+            if name in cone_gate_names and gate.type in {"not", "nor"}
+        )
+        accepted = None
+        for net in sorted(candidate_nets, key=lambda item: _cone_max_depth(working, item), reverse=True):
+            for virtual_op in ("or", "and"):
+                trial = deepcopy(working)
+                rewrite = _try_balance_virtual_nor_not_tree(trial, net, virtual_op)
+                if rewrite is None:
+                    continue
+                if not check_connectivity(trial).get("ok"):
+                    continue
+                report = _cone_gate_constraint_report(trial, constraint)
+                if not report["satisfied"]:
+                    continue
+                trial_depth = _cone_max_depth(trial, resolved_target)
+                if trial_depth < current_depth:
+                    accepted = (trial, rewrite, trial_depth)
+                    break
+            if accepted is not None:
+                break
+        if accepted is None:
+            break
+        working, rewrite, _ = accepted
+        changed.append(rewrite)
+
+    final_depth = _cone_max_depth(working, resolved_target)
+    if changed and final_depth < initial_depth:
+        _replace_design_contents(design, working)
+        final_gate_count = len(logic_cone(design, resolved_target))
+        return {
+            "target": constraint["target"],
+            "resolved_target": resolved_target,
+            "allowed_gates": sorted(allowed),
+            "initial_depth": initial_depth,
+            "final_depth": final_depth,
+            "initial_gate_count": initial_gate_count,
+            "final_gate_count": final_gate_count,
+            "changed": changed,
+            "num_changed": len(changed),
+        }
+    return {
+        "target": constraint["target"],
+        "resolved_target": resolved_target,
+        "allowed_gates": sorted(allowed),
+        "initial_depth": initial_depth,
+        "final_depth": initial_depth,
+        "initial_gate_count": initial_gate_count,
+        "final_gate_count": initial_gate_count,
+        "changed": [],
+        "num_changed": 0,
+    }
+
+
+def _try_balance_virtual_nor_not_tree(design: Design, output_net: str, virtual_op: str) -> dict[str, Any] | None:
+    collected = _collect_virtual_nor_not_tree(design, output_net, virtual_op)
+    if collected is None:
+        return None
+    leaves, removable_gates = collected
+    if len(leaves) < 3 or len(removable_gates) < 3:
+        return None
+    old_depth = _cone_max_depth(design, output_net)
+    for gate_name in removable_gates:
+        design.gates.pop(gate_name, None)
+    builder = _GateLibraryEmitter(design, f"balance_{virtual_op}_{output_net}")
+    _emit_balanced_nor_not_op(builder, virtual_op, leaves, output_net)
+    rebuild_graph(design)
+    new_depth = _cone_max_depth(design, output_net)
+    if new_depth >= old_depth:
+        return None
+    return {
+        "rule": f"balance_virtual_{virtual_op}_tree",
+        "output": output_net,
+        "leaf_count": len(leaves),
+        "removed_gates": sorted(removable_gates),
+        "old_depth": old_depth,
+        "new_depth": new_depth,
+    }
+
+
+def _collect_virtual_nor_not_tree(design: Design, output_net: str, virtual_op: str) -> tuple[list[str], set[str]] | None:
+    if virtual_op == "or":
+        return _collect_virtual_or_tree(design, output_net)
+    if virtual_op == "and":
+        return _collect_virtual_and_tree(design, output_net)
+    return None
+
+
+def _collect_virtual_or_tree(design: Design, output_net: str) -> tuple[list[str], set[str]] | None:
+    not_gate = _gate_driving_net(design, output_net)
+    if not_gate is None or not_gate.type != "not" or len(not_gate.inputs) != 1:
+        return None
+    mid_net = not_gate.inputs[0]
+    nor_gate = _gate_driving_net(design, mid_net)
+    if nor_gate is None or nor_gate.type != "nor" or len(nor_gate.inputs) < 2:
+        return None
+    if design.fanouts.get(mid_net, []) != [f"GATE:{not_gate.name}"]:
+        return None
+
+    leaves: list[str] = []
+    removable = {not_gate.name, nor_gate.name}
+    for input_net in nor_gate.inputs:
+        if _has_single_gate_fanout(design, input_net, nor_gate.name):
+            nested = _collect_virtual_or_tree(design, input_net)
+        else:
+            nested = None
+        if nested is None:
+            leaves.append(input_net)
+        else:
+            nested_leaves, nested_gates = nested
+            leaves.extend(nested_leaves)
+            removable.update(nested_gates)
+    return leaves, removable
+
+
+def _collect_virtual_and_tree(design: Design, output_net: str) -> tuple[list[str], set[str]] | None:
+    nor_gate = _gate_driving_net(design, output_net)
+    if nor_gate is None or nor_gate.type != "nor" or len(nor_gate.inputs) < 2:
+        return None
+
+    leaves: list[str] = []
+    removable = {nor_gate.name}
+    for inverted_net in nor_gate.inputs:
+        not_gate = _gate_driving_net(design, inverted_net)
+        if not_gate is None or not_gate.type != "not" or len(not_gate.inputs) != 1:
+            return None
+        if design.fanouts.get(inverted_net, []) != [f"GATE:{nor_gate.name}"]:
+            return None
+        source_net = not_gate.inputs[0]
+        removable.add(not_gate.name)
+        if _has_single_gate_fanout(design, source_net, not_gate.name):
+            nested = _collect_virtual_and_tree(design, source_net)
+        else:
+            nested = None
+        if nested is None:
+            leaves.append(source_net)
+        else:
+            nested_leaves, nested_gates = nested
+            leaves.extend(nested_leaves)
+            removable.update(nested_gates)
+    return leaves, removable
+
+
+def _gate_driving_net(design: Design, net: str) -> Gate | None:
+    driver = design.drivers.get(net)
+    if not driver or not driver.startswith("GATE:"):
+        return None
+    return design.gates.get(driver.split(":", 1)[1])
+
+
+def _has_single_gate_fanout(design: Design, net: str, gate_name: str) -> bool:
+    return design.fanouts.get(net, []) == [f"GATE:{gate_name}"]
+
+
+def _emit_balanced_nor_not_op(builder: _GateLibraryEmitter, virtual_op: str, leaves: list[str], output: str) -> str:
+    if len(leaves) == 1:
+        first_not = builder.gate("not", [leaves[0]])
+        return builder.gate("not", [first_not], output)
+    midpoint = len(leaves) // 2
+    left = _emit_balanced_nor_not_op(builder, virtual_op, leaves[:midpoint], None)
+    right = _emit_balanced_nor_not_op(builder, virtual_op, leaves[midpoint:], None)
+    if virtual_op == "or":
+        nor_net = builder.gate("nor", [left, right])
+        return builder.gate("not", [nor_net], output)
+    left_not = builder.gate("not", [left])
+    right_not = builder.gate("not", [right])
+    return builder.gate("nor", [left_not, right_not], output)
+
+def _normalize_allowed_gates(allowed_gates: list[str] | set[str] | tuple[str, ...] | None) -> set[str]:
+    if not allowed_gates:
+        return set()
+    return {str(gate).strip().lower() for gate in allowed_gates if str(gate).strip()}
+
+
+def _cone_uses_only_gates(design: Design, resolved_target: str, allowed: set[str]) -> bool:
+    return not _disallowed_gate_types_in_cone(design, resolved_target, allowed)
+
+
+def _disallowed_gate_types_in_cone(design: Design, resolved_target: str, allowed: set[str]) -> list[str]:
+    rebuild_graph(design)
+    bad = []
+    for gate_name in logic_cone(design, resolved_target):
+        gate = design.gates.get(gate_name)
+        if gate is not None and gate.type not in allowed:
+            bad.append(gate.type)
+    return bad
+
+
+def _legalize_cone_to_gate_library(design: Design, resolved_target: str, allowed: set[str]) -> dict[str, Any]:
+    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nor", "not"}):
+        raise ValueError(f"Unsupported allowed_gates for constrained cone optimization: {sorted(allowed)}")
+    rebuild_graph(design)
+    changed: list[dict[str, Any]] = []
+    for gate_name in sorted(list(logic_cone(design, resolved_target))):
+        gate = design.gates.get(gate_name)
+        if gate is None or gate.type in allowed:
+            continue
+        old_type = gate.type
+        old_output = gate.output
+        old_inputs = list(gate.inputs)
+        design.gates.pop(gate_name, None)
+        builder = _GateLibraryEmitter(design, gate_name)
+        if allowed == {"and", "or", "not"}:
+            _emit_gate_as_and_or_not(builder, old_type, old_inputs, old_output)
+        elif allowed == {"and", "not"}:
+            _emit_gate_as_and_not(builder, old_type, old_inputs, old_output)
+        else:
+            _emit_gate_as_nor_not(builder, old_type, old_inputs, old_output)
+        changed.append({"gate": gate_name, "old_type": old_type, "output": old_output, "allowed_gates": sorted(allowed)})
+    rebuild_graph(design)
+    return {"changed": changed, "num_changed": len(changed)}
+
+
+class _GateLibraryEmitter:
+    def __init__(self, design: Design, base_name: str) -> None:
+        self.design = design
+        self.base_name = base_name
+        self.index = 0
+
+    def gate(self, gate_type: str, inputs: list[str], output: str | None = None) -> str:
+        self.index += 1
+        out = output or self.design.make_unique_wire_name(f"{self.base_name}_{gate_type}_w_{self.index}")
+        name = self.design.make_unique_gate_name(f"{self.base_name}_{gate_type}_{self.index}")
+        self.design.add_gate(Gate(name=name, type=gate_type, inputs=inputs, output=out))
+        return out
+
+
+def _emit_gate_as_and_or_not(builder: _GateLibraryEmitter, gate_type: str, inputs: list[str], output: str) -> None:
+    if gate_type == "buf" and len(inputs) == 1:
+        mid = builder.gate("not", [inputs[0]])
+        builder.gate("not", [mid], output)
+    elif gate_type == "and":
+        builder.gate("and", inputs, output)
+    elif gate_type == "or":
+        builder.gate("or", inputs, output)
+    elif gate_type == "not" and len(inputs) == 1:
+        builder.gate("not", [inputs[0]], output)
+    elif gate_type == "nand":
+        mid = builder.gate("and", inputs)
+        builder.gate("not", [mid], output)
+    elif gate_type == "nor":
+        mid = builder.gate("or", inputs)
+        builder.gate("not", [mid], output)
+    elif gate_type == "xor" and len(inputs) == 2:
+        _emit_xor_as_and_or_not(builder, inputs[0], inputs[1], output)
+    elif gate_type == "xnor" and len(inputs) == 2:
+        mid = builder.gate("xor", inputs) if False else builder.design.make_unique_wire_name(f"{builder.base_name}_xnor_xor")
+        _emit_xor_as_and_or_not(builder, inputs[0], inputs[1], mid)
+        builder.gate("not", [mid], output)
+    else:
+        raise ValueError(f"Cannot legalize {gate_type} with {len(inputs)} input(s) to AND/OR/NOT")
+
+
+def _emit_gate_as_and_not(builder: _GateLibraryEmitter, gate_type: str, inputs: list[str], output: str) -> None:
+    if gate_type == "or":
+        inverted = [builder.gate("not", [net]) for net in inputs]
+        mid = builder.gate("and", inverted)
+        builder.gate("not", [mid], output)
+    elif gate_type == "nor":
+        inverted = [builder.gate("not", [net]) for net in inputs]
+        builder.gate("and", inverted, output)
+    else:
+        _emit_gate_as_and_or_not(builder, gate_type, inputs, output)
+
+
+def _emit_gate_as_nor_not(builder: _GateLibraryEmitter, gate_type: str, inputs: list[str], output: str) -> None:
+    def inv(net: str, out: str | None = None) -> str:
+        return builder.gate("not", [net], out)
+    def or_gate(nets: list[str], out: str | None = None) -> str:
+        return inv(builder.gate("nor", nets), out)
+    def and_gate(nets: list[str], out: str | None = None) -> str:
+        return builder.gate("nor", [inv(net) for net in nets], out)
+    if gate_type == "buf" and len(inputs) == 1:
+        inv(inv(inputs[0]), output)
+    elif gate_type == "not" and len(inputs) == 1:
+        inv(inputs[0], output)
+    elif gate_type == "nor":
+        builder.gate("nor", inputs, output)
+    elif gate_type == "or":
+        or_gate(inputs, output)
+    elif gate_type == "and":
+        and_gate(inputs, output)
+    elif gate_type == "nand":
+        inv(and_gate(inputs), output)
+    elif gate_type == "xor" and len(inputs) == 2:
+        a, b = inputs
+        t1 = builder.gate("nor", [a, b])
+        t2 = builder.gate("nor", [a, t1])
+        t3 = builder.gate("nor", [b, t1])
+        xnor = builder.gate("nor", [t2, t3])
+        inv(xnor, output)
+    elif gate_type == "xnor" and len(inputs) == 2:
+        a, b = inputs
+        t1 = builder.gate("nor", [a, b])
+        t2 = builder.gate("nor", [a, t1])
+        t3 = builder.gate("nor", [b, t1])
+        builder.gate("nor", [t2, t3], output)
+    else:
+        raise ValueError(f"Cannot legalize {gate_type} with {len(inputs)} input(s) to NOR/NOT")
+
+
+def _emit_xor_as_and_or_not(builder: _GateLibraryEmitter, a: str, b: str, output: str) -> None:
+    not_a = builder.gate("not", [a])
+    not_b = builder.gate("not", [b])
+    t1 = builder.gate("and", [a, not_b])
+    t2 = builder.gate("and", [not_a, b])
+    builder.gate("or", [t1, t2], output)
+

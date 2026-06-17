@@ -173,14 +173,14 @@ OP_DESCRIPTIONS = {
     "collapse_back_to_back_inverters": "Collapse safe NOT followed by NOT chains into direct wiring while preserving function.",
     "replace_or_with_nand_not": "Rewrite two-input OR gates in a target cone as equivalent NAND/NOT logic. Use for restructuring a cone using NAND and NOT gates.",
     "replace_nand_const1_with_not": "Replace NAND gates with one input tied to 1'b1 by equivalent NOT gates.",
-    "replace_with_and_not": "Reconstruct primitive combinational gates using only AND and NOT gates while preserving Boolean function. Args: none.",
+    "replace_with_and_not": "Reconstruct primitive combinational gates using only AND and NOT gates while preserving Boolean function. Use before depth optimization when the task requires an AND/NOT-only final design. Args: none.",
     "insert_buffers_for_fanout": "Insert buffers on a net so driven gate fanout is at most max_fanout.",
     "insert_dedicated_buffers_for_each_load": "Insert one dedicated BUF per current load of a net or signal. Args: net.",
     "insert_buffers_for_all_high_fanout": "Insert buffers on every currently high-fanout net so driven gate fanout is at most max_fanout. Args: max_fanout.",
     "balance_depth_with_buffers": "Insert buffers to equalize logic depths from one source to several destinations.",
-    "optimize_cone": "Run conservative local cone optimization under optional depth and gate-count constraints.",
+    "optimize_cone": "Run conservative local cone optimization. Args: target; optional max_depth, minimize_gate_count, allowed_gates, objective. When a prompt requires a target cone to contain only certain gate types, pass allowed_gates exactly, for example [\"and\", \"or\", \"not\"] or [\"nor\", \"not\"].",
     "constant_propagation": "Simplify gates with constant or redundant inputs while preserving behavior. Args: none.",
-    "optimize_design_depth": "Run conservative local cone optimization over primary outputs, optionally bounded by max_depth.",
+    "optimize_design_depth": "Run conservative design-depth optimization. Args: optional max_depth, cost_function, cost_scope, allowed_gates, constraints, objective. Use cost_scope=whole_design when the prompt says final design maximum logic depth. Put cone gate-library limits in constraints, e.g. [{\"type\":\"cone_gate_library\",\"target\":\"n10\",\"allowed_gates\":[\"nor\",\"not\"]}].",
     "replace_xnor_nor_with_basic_gates": "Backward-compatible alias for replacing XNOR gates with equivalent NOR-only logic.",
     "replace_xnor_with_nor": "Replace all 2-input XNOR gates with equivalent NOR-only implementations.",
     "replace_xor_with_nand": "Replace all 2-input XOR gates with equivalent NAND-only implementations.",
@@ -292,3 +292,6 @@ def _operation_descriptions(ops: list[str]) -> str:
     return "Available operations: " + " ".join(
         f"{op}: {OP_DESCRIPTIONS[op]}" for op in ops
     )
+
+
+
