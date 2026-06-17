@@ -870,6 +870,9 @@ Input:
 {
   "op": "optimize_design_depth",
   "args": {
+    "cost_function": "max_logic_depth",
+    "objective": "minimize",
+    "cost_scope": "whole_design",
     "max_depth": 5
   }
 }
@@ -877,6 +880,10 @@ Input:
 
 Arguments:
 
+- `cost_function` should be `max_logic_depth` for final-design maximum logic
+  depth optimization.
+- `objective` should be `minimize` when smaller cost is better.
+- `cost_scope` should be `whole_design` when optimizing the final design cost.
 - `max_depth` is optional. When provided, the backend asks ABC to optimize toward
   that delay/depth target and reports whether the final structural depth met it.
 

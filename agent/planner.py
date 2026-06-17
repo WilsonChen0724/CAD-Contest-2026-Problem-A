@@ -83,6 +83,17 @@ SUPPORTED_OPS = {
 _SIGNAL_RE = r"[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?"
 
 
+def _depth_optimization_args(max_depth: int | None = None) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "cost_function": "max_logic_depth",
+        "objective": "minimize",
+        "cost_scope": "whole_design",
+    }
+    if max_depth is not None:
+        args["max_depth"] = max_depth
+    return args
+
+
 def plan_request(user_request: str, state) -> dict[str, Any]:
     """
     Convert one natural-language request into a Tool API plan.
@@ -370,10 +381,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         and "optimize" in low
         and "depth" in low
     ):
-        args: dict[str, Any] = {}
-        max_allowed_depth = _extract_limit_int(text)
-        if max_allowed_depth is not None:
-            args["max_depth"] = max_allowed_depth
+        args = _depth_optimization_args(_extract_limit_int(text))
         return {"op": "optimize_design_depth", "args": args}
 
     if "optimize" in low and ("logic cone" in low or "cone" in low):
@@ -435,10 +443,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
             or "maximum path" in low
         )
     ):
-        args = {}
-        max_allowed_depth = _extract_limit_int(text)
-        if max_allowed_depth is not None:
-            args["max_depth"] = max_allowed_depth
+        args = _depth_optimization_args(_extract_limit_int(text))
         return {"op": "optimize_design_depth", "args": args}
 
     if (
@@ -446,10 +451,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         and ("critical path" in low or "path depth" in low or "maximum path depth" in low)
         and ("restructuring" in low or "logic" in low or "depth" in low)
     ):
-        args = {}
-        max_allowed_depth = _extract_limit_int(text)
-        if max_allowed_depth is not None:
-            args["max_depth"] = max_allowed_depth
+        args = _depth_optimization_args(_extract_limit_int(text))
         return {"op": "optimize_design_depth", "args": args}
 
     if (

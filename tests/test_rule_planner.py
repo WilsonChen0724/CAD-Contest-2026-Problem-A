@@ -232,11 +232,26 @@ class RulePlannerTest(unittest.TestCase):
     def test_maps_design_level_transformations(self) -> None:
         self.assertEqual(
             plan_request("Optimize design depth so the maximum depth is at most 12.", None),
-            {"op": "optimize_design_depth", "args": {"max_depth": 12}},
+            {
+                "op": "optimize_design_depth",
+                "args": {
+                    "cost_function": "max_logic_depth",
+                    "objective": "minimize",
+                    "cost_scope": "whole_design",
+                    "max_depth": 12,
+                },
+            },
         )
         self.assertEqual(
             plan_request("Perform depth optimization on the combinational logic. Ensure functional equivalence is preserved.", None),
-            {"op": "optimize_design_depth", "args": {}},
+            {
+                "op": "optimize_design_depth",
+                "args": {
+                    "cost_function": "max_logic_depth",
+                    "objective": "minimize",
+                    "cost_scope": "whole_design",
+                },
+            },
         )
         self.assertEqual(
             plan_request("Replace XNOR and NOR gates with equivalent basic gates.", None),
@@ -365,7 +380,14 @@ class RulePlannerTest(unittest.TestCase):
         )
         self.assertEqual(
             plan_request("Reduce the critical path depth through restructuring. Make sure nothing changes functionally.", None),
-            {"op": "optimize_design_depth", "args": {}},
+            {
+                "op": "optimize_design_depth",
+                "args": {
+                    "cost_function": "max_logic_depth",
+                    "objective": "minimize",
+                    "cost_scope": "whole_design",
+                },
+            },
         )
         self.assertEqual(
             plan_request("Calculate the critical path depth between n15 and n25[0].", None),
