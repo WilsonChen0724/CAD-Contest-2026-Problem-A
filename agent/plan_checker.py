@@ -497,6 +497,18 @@ def _normalize_allowed_gate_list(op: str, allowed: Any) -> list[str]:
     return normalized
 
 
+_WHOLE_DESIGN_CONSTRAINT_TARGETS = {
+    "whole_design",
+    "design",
+    "netlist",
+    "entire_design",
+    "full_design",
+    "whole netlist",
+    "entire netlist",
+    "full netlist",
+}
+
+
 def _normalize_optimization_constraints(constraints: Any) -> list[dict[str, Any]]:
     if not isinstance(constraints, list):
         raise PlanValidationError("Operation 'optimize_design_depth' argument 'constraints' must be a list.")
@@ -513,8 +525,16 @@ def _normalize_optimization_constraints(constraints: Any) -> list[dict[str, Any]
         target = constraint.get("target")
         if not isinstance(target, str) or not target.strip():
             raise PlanValidationError(f"constraints[{index}].target must be a non-empty string.")
+        target_name = target.strip()
+        if target_name.lower() in _WHOLE_DESIGN_CONSTRAINT_TARGETS:
+            raise PlanValidationError(
+                f"constraints[{index}] is a whole-design gate-library constraint, "
+                "but cone_gate_library requires a named target signal. Use an "
+                "explicit whole-design rewrite such as replace_with_and_not before "
+                "optimize_design_depth instead."
+            )
         allowed = _normalize_allowed_gate_list("optimize_design_depth", constraint.get("allowed_gates"))
-        normalized.append({"type": "cone_gate_library", "target": target.strip(), "allowed_gates": allowed})
+        normalized.append({"type": "cone_gate_library", "target": target_name, "allowed_gates": allowed})
     return normalized
 def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
     unknown = set(obj) - allowed

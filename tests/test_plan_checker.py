@@ -330,6 +330,32 @@ class PlanCheckerTest(unittest.TestCase):
                 }
             )
 
+    def test_rejects_whole_design_cone_gate_constraint(self) -> None:
+        with self.assertRaisesRegex(PlanValidationError, "whole-design gate-library constraint"):
+            validate_domain_tool_plan(
+                "run_transform_plan",
+                {
+                    "steps": [
+                        {
+                            "op": "optimize_design_depth",
+                            "args": {
+                                "cost_function": "max_logic_depth",
+                                "objective": "minimize",
+                                "cost_scope": "whole_design",
+                                "constraints": [
+                                    {
+                                        "type": "cone_gate_library",
+                                        "target": "whole_design",
+                                        "allowed_gates": ["and", "not"],
+                                    }
+                                ],
+                            },
+                            "save_as": None,
+                        }
+                    ]
+                },
+            )
+
 if __name__ == "__main__":
     unittest.main()
 

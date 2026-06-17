@@ -95,6 +95,7 @@ HIGH_FANOUT_BUDGET_LARGE_GATE_LIMIT = 20000
 HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS = 24
 HIGH_FANOUT_BUDGET_LARGE_CHANGED_NETS = 4
 SAVED_OUTPUT_CONE_SKIP_GATE_LIMIT = 4000
+AND_NOT_REWRITE_SKIP_GATE_LIMIT = 50000
 XNOR_TO_NOR_SKIP_GATE_LIMIT = 10000
 XOR_TO_NAND_SKIP_GATE_LIMIT = 20000
 AND_NOT_TO_NAND_SKIP_GATE_LIMIT = 10000
@@ -705,7 +706,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_with_and_not":
         _require_design(state)
-        if len(state.design.gates) > 2000:
+        if len(state.design.gates) > _optimization_limit(state.config, "and_not_rewrite_skip_gate_limit", AND_NOT_REWRITE_SKIP_GATE_LIMIT):
             result = {
                 "changed": [],
                 "num_changed": 0,
@@ -2465,7 +2466,6 @@ def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) 
         "max_allowed_depth": max_allowed_depth,
         "source_depths": depths,
     }
-
 
 
 

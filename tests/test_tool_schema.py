@@ -56,6 +56,7 @@ class ToolSchemaTest(unittest.TestCase):
 
         self.assertIn('"max_logic_depth"', op_description)
         self.assertIn('"minimize"', op_description)
+        self.assertIn('Never use target "whole_design"', op_description)
         self.assertNotIn("min_logic_depth", op_description)
 
 
