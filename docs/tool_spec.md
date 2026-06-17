@@ -886,6 +886,11 @@ Arguments:
 - `cost_scope` should be `whole_design` when optimizing the final design cost.
 - `max_depth` is optional. When provided, the backend asks ABC to optimize toward
   that delay/depth target and reports whether the final structural depth met it.
+- `constraints` may contain `cone_gate_library` entries only for named target
+  signals or outputs, for example target `n10`. Do not use pseudo-targets such
+  as `whole_design`, `design`, or `netlist`; whole-design gate-library rewrites
+  should use explicit whole-design transform operations such as
+  `replace_with_and_not` before `optimize_design_depth`.
 
 Rules:
 

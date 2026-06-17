@@ -11,6 +11,8 @@ from eda.graph import rebuild_graph
 from eda.analysis import max_depth
 from eda.transform import (
     _adaptive_depth_topk,
+    _abc_candidate_depth_targets,
+    _try_yosys_abc_for_small_cone,
     balance_depth_with_buffers,
     collapse_back_to_back_inverters,
     constant_propagation,
@@ -245,6 +247,41 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(len(design.gates), 1)
         self.assertEqual(next(iter(design.gates.values())).output, "y")
 
+    def test_cone_local_yosys_abc_gate_limit_is_3000(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="y"))
+        optimized = deepcopy(design)
+
+        with patch("eda.transform._optimize_cone_with_yosys_abc", return_value=(optimized, {"engine": "fake"})) as yosys_abc:
+            result = _try_yosys_abc_for_small_cone(
+                design,
+                target="y",
+                resolved_target="y",
+                max_depth=None,
+                initial_gate_count=3000,
+                initial_depth=2,
+                current_gate_count=3000,
+                current_depth=2,
+            )
+
+        yosys_abc.assert_called_once()
+        self.assertIsNotNone(result)
+
+        with patch("eda.transform._optimize_cone_with_yosys_abc") as yosys_abc:
+            result = _try_yosys_abc_for_small_cone(
+                design,
+                target="y",
+                resolved_target="y",
+                max_depth=None,
+                initial_gate_count=3001,
+                initial_depth=2,
+                current_gate_count=3001,
+                current_depth=2,
+            )
+
+        yosys_abc.assert_not_called()
+        self.assertIsNone(result)
+
     def test_optimize_design_depth_uses_yosys_abc_result(self) -> None:
         design = Design(inputs={"a", "b"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
@@ -296,6 +333,9 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(_adaptive_depth_topk(20000, True), 8)
         self.assertEqual(_adaptive_depth_topk(20001, True), 8)
 
+    def test_abc_candidate_depth_targets_use_75_percent_and_plain_abc(self) -> None:
+        self.assertEqual(_abc_candidate_depth_targets(35), [("target_27", 27), ("plain_abc", None)])
+
     def test_optimize_design_depth_falls_back_when_yosys_fails(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
@@ -311,21 +351,41 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(set(design.gates), {"U1"})
         self.assertEqual(design.gates["U1"].inputs, ["a"])
 
-    def test_optimize_design_depth_uses_adaptive_topk_for_fanout_buffered_design(self) -> None:
+    def test_optimize_design_depth_falls_back_to_adaptive_topk_for_fanout_buffered_design(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n__fanout_buf_0"))
         design.add_gate(Gate(name="U1", type="buf", inputs=["n__fanout_buf_0"], output="y"))
         rebuild_graph(design)
 
-        with patch("eda.transform._optimize_design_depth_with_yosys_abc") as yosys_abc:
+        with patch("eda.transform._optimize_design_depth_with_yosys_abc", side_effect=RuntimeError("Yosys timeout")) as yosys_abc:
             result = optimize_design_depth(design)
 
-        yosys_abc.assert_not_called()
-        self.assertEqual(result["engine"], "adaptive_topk_critical_cones")
+        yosys_abc.assert_called_once()
+        self.assertEqual(result["engine"], "topk_after_yosys_fallback")
         self.assertEqual(result["max_outputs"], 8)
-        self.assertIn("adaptive top-K", result["bounded_reason"])
+        self.assertIn("Yosys/ABC failed", result["bounded_reason"])
+        self.assertIn("Yosys timeout", result["fallback_reason"])
 
-    def test_optimize_design_depth_uses_adaptive_topk_for_large_design(self) -> None:
+    def test_optimize_design_depth_topk_fallback_enables_cone_yosys_abc(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="y"))
+        rebuild_graph(design)
+
+        def fake_optimize_cone(_design, _output, **kwargs):
+            return {"num_changed": 0, "allow_yosys_abc": kwargs["allow_yosys_abc"]}
+
+        with patch("eda.transform._optimize_design_depth_with_yosys_abc", side_effect=RuntimeError("Yosys timeout")), patch(
+            "eda.transform.optimize_cone", side_effect=fake_optimize_cone
+        ) as cone_optimizer:
+            result = optimize_design_depth(design)
+
+        self.assertEqual(result["engine"], "topk_after_yosys_fallback")
+        cone_optimizer.assert_called_once()
+        self.assertTrue(cone_optimizer.call_args.kwargs["allow_yosys_abc"])
+        self.assertIn("attempted top", result["bounded_reason"])
+        self.assertIn("cone-local Yosys/ABC", result["bounded_reason"])
+
+    def test_optimize_design_depth_falls_back_to_adaptive_topk_for_large_design(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         previous = "a"
         for index in range(10001):
@@ -334,14 +394,69 @@ class TransformTest(unittest.TestCase):
             previous = out
         rebuild_graph(design)
 
-        with patch("eda.transform._optimize_design_depth_with_yosys_abc") as yosys_abc:
+        with patch("eda.transform._optimize_design_depth_with_yosys_abc", side_effect=RuntimeError("Yosys timeout")) as yosys_abc:
             result = optimize_design_depth(design)
 
-        yosys_abc.assert_not_called()
-        self.assertEqual(result["engine"], "adaptive_topk_critical_cones")
+        yosys_abc.assert_called_once()
+        self.assertEqual(result["engine"], "topk_after_yosys_fallback")
         self.assertEqual(result["max_outputs"], 16)
-        self.assertIsNone(result["initial_depth"])
-        self.assertIsNone(result["final_depth"])
+        self.assertEqual(result["initial_depth"], 10001)
+        self.assertEqual(result["final_depth"], 10001)
+        self.assertIn("Yosys timeout", result["fallback_reason"])
+
+    def test_optimize_design_depth_large_topk_attempts_cone_yosys_before_cleanup(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="Y0", type="buf", inputs=["a"], output="mid"))
+        design.add_gate(Gate(name="Y1", type="buf", inputs=["mid"], output="y"))
+        previous = "b"
+        for index in range(10001):
+            out = f"dummy{index}"
+            design.add_gate(Gate(name=f"DUMMY{index}", type="buf", inputs=[previous], output=out))
+            previous = out
+        rebuild_graph(design)
+
+        def fake_optimize_cone(_design, target, **kwargs):
+            return {
+                "target": target,
+                "engine": "local_plus_cone_local_yosys_abc",
+                "num_changed": 1,
+                "changed": [{"rule": "cone_local_yosys_abc"}],
+                "allow_yosys_abc": kwargs["allow_yosys_abc"],
+            }
+
+        def fake_cleanup(_design, max_depth=None):
+            return {
+                "engine": "large_design_bounded_cleanup",
+                "max_depth": max_depth,
+                "max_outputs": 0,
+                "attempted_outputs": [],
+                "skipped_outputs": [],
+                "initial_gate_count": len(_design.gates),
+                "final_gate_count": len(_design.gates),
+                "initial_depth": None,
+                "final_depth": None,
+                "target_met": max_depth is None,
+                "changed": [{"op": "remove_dangling", "num_removed_gates": 1}],
+                "num_changed_outputs": 1,
+                "bounded_reason": "cleanup",
+            }
+
+        with patch("eda.transform._optimize_design_depth_with_yosys_abc", side_effect=RuntimeError("Yosys timeout")), patch(
+            "eda.transform.optimize_cone", side_effect=fake_optimize_cone
+        ) as cone_optimizer, patch("eda.transform._optimize_design_depth_fast_cleanup", side_effect=fake_cleanup) as cleanup:
+            result = optimize_design_depth(design)
+
+        cone_optimizer.assert_called_once()
+        self.assertEqual(cone_optimizer.call_args.args[1], "y")
+        self.assertTrue(cone_optimizer.call_args.kwargs["allow_yosys_abc"])
+        cleanup.assert_called_once()
+        self.assertEqual(result["engine"], "topk_after_yosys_fallback")
+        self.assertEqual(result["attempted_outputs"], ["y"])
+        self.assertEqual(result["initial_depth"], 2)
+        self.assertEqual(result["final_depth"], 2)
+        self.assertEqual(result["num_changed_outputs"], 2)
+        self.assertEqual(result["changed"][0]["engine"], "local_plus_cone_local_yosys_abc")
+        self.assertEqual(result["changed"][1]["op"], "remove_dangling")
 
     def test_optimize_cone_resolves_dff_q_to_d_input_cone(self) -> None:
         design = Design(inputs={"a"}, outputs={"q"})
