@@ -177,8 +177,8 @@ _OPTIONAL_ARGS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "report_register_paths": {"max_paths": int},
     "replace_buffers_with_and": {"targets": list, "targets_from": str},
     "balance_depth_with_buffers": {"minimize_buffers": bool},
-    "optimize_cone": {"max_depth": int, "minimize_gate_count": bool},
-    "optimize_design_depth": {"max_depth": int},
+    "optimize_cone": {"max_depth": int, "minimize_gate_count": bool, "allowed_gates": list, "objective": str},
+    "optimize_design_depth": {"max_depth": int, "allowed_gates": list, "objective": str, "cost_function": str, "cost_scope": str, "constraints": list},
 }
 
 def parse_plan_json(raw_plan: str) -> dict[str, Any]:
@@ -467,6 +467,10 @@ def _validate_numeric_bounds(op: str, args: dict[str, Any]) -> None:
         if key in args and args[key] < 0:
             raise PlanValidationError(f"Operation '{op}' argument '{key}' must be non-negative.")
 
+    if op in {"optimize_cone", "optimize_design_depth"} and "allowed_gates" in args:
+        args["allowed_gates"] = _normalize_allowed_gate_list(op, args["allowed_gates"])
+    if op == "optimize_design_depth" and "constraints" in args:
+        args["constraints"] = _normalize_optimization_constraints(args["constraints"])
     if op in {"insert_buffers_for_fanout", "insert_buffers_for_all_high_fanout"} and args["max_fanout"] < 2:
         raise PlanValidationError(f"Operation '{op}' argument 'max_fanout' must be at least 2.")
     positive_optional_args = {
@@ -478,6 +482,40 @@ def _validate_numeric_bounds(op: str, args: dict[str, Any]) -> None:
         if key in args and args[key] < 1:
             raise PlanValidationError(f"Operation '{op}' argument '{key}' must be at least 1.")
 
+def _normalize_allowed_gate_list(op: str, allowed: Any) -> list[str]:
+    valid_gate_types = {"and", "or", "not", "nand", "nor", "xor", "xnor", "buf"}
+    if not isinstance(allowed, list) or not allowed:
+        raise PlanValidationError(f"Operation '{op}' argument 'allowed_gates' must be a non-empty list of primitive gate type strings.")
+    normalized: list[str] = []
+    for item in allowed:
+        if not isinstance(item, str) or not item.strip():
+            raise PlanValidationError(f"Operation '{op}' argument 'allowed_gates' must be a non-empty list of primitive gate type strings.")
+        gate_type = item.strip().lower()
+        if gate_type not in valid_gate_types:
+            raise PlanValidationError(f"Operation '{op}' argument 'allowed_gates' contains unsupported gate type '{item}'.")
+        normalized.append(gate_type)
+    return normalized
+
+
+def _normalize_optimization_constraints(constraints: Any) -> list[dict[str, Any]]:
+    if not isinstance(constraints, list):
+        raise PlanValidationError("Operation 'optimize_design_depth' argument 'constraints' must be a list.")
+    normalized: list[dict[str, Any]] = []
+    for index, constraint in enumerate(constraints, start=1):
+        if not isinstance(constraint, dict):
+            raise PlanValidationError(f"constraints[{index}] must be a JSON object.")
+        unknown = set(constraint) - {"type", "target", "allowed_gates"}
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise PlanValidationError(f"constraints[{index}] has unknown field(s): {names}.")
+        if constraint.get("type") != "cone_gate_library":
+            raise PlanValidationError(f"constraints[{index}].type must be 'cone_gate_library'.")
+        target = constraint.get("target")
+        if not isinstance(target, str) or not target.strip():
+            raise PlanValidationError(f"constraints[{index}].target must be a non-empty string.")
+        allowed = _normalize_allowed_gate_list("optimize_design_depth", constraint.get("allowed_gates"))
+        normalized.append({"type": "cone_gate_library", "target": target.strip(), "allowed_gates": allowed})
+    return normalized
 def _reject_unknown_keys(obj: dict[str, Any], allowed: set[str]) -> None:
     unknown = set(obj) - allowed
     if unknown:
@@ -508,3 +546,5 @@ def _normalize_tool_step(step: dict[str, Any]) -> dict[str, Any]:
     if normalized.get("save_as") is None:
         normalized.pop("save_as", None)
     return normalized
+
+

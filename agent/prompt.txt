@@ -56,8 +56,9 @@ Common mappings:
 - Insert one dedicated BUF per load of signal X -> insert_dedicated_buffers_for_each_load with {"net": "X"}.
 - Balance depths from source S to destinations A,B with buffers -> balance_depth_with_buffers with {"src": "S", "dsts": ["A", "B"], "minimize_buffers": true}.
 - Optimize logic cone of target T with max depth N and minimized gate count -> optimize_cone with {"target": "T", "max_depth": N, "minimize_gate_count": true}.
+- If the objective is only a target cone, use optimize_cone with allowed_gates, e.g. cone of n15 only AND/OR/NOT -> {"target": "n15", "allowed_gates": ["and", "or", "not"], "objective": "minimize_depth"}. If the prompt says cost is final design logic depth, use optimize_design_depth with cost_scope="whole_design" and put the cone limit in constraints instead of optimizing only that cone.
 - Optimize fanout across the design so fanout <= N -> insert_buffers_for_all_high_fanout with {"max_fanout": N}.
-- Optimize design depth with optional max depth N using Yosys/ABC -> optimize_design_depth with {"max_depth": N}; use {} if no bound is specified.
+- Optimize final design / whole design maximum logic depth -> optimize_design_depth with {"cost_function": "max_logic_depth", "cost_scope": "whole_design"}; include "max_depth" only when a bound is specified. If the same request also constrains a target cone gate library, keep it in constraints, e.g. {"cost_function": "max_logic_depth", "cost_scope": "whole_design", "constraints": [{"type": "cone_gate_library", "target": "n10", "allowed_gates": ["nor", "not"]}]}.
 - Propagate constants or simplify gates with constant inputs -> constant_propagation with {}.
 - Remap XNOR/NOR gates -> replace_xnor_nor_with_basic_gates with {}.
 - Reconstruct primitive combinational gates using only AND and NOT gates -> replace_with_and_not with {}.
@@ -146,3 +147,5 @@ User:
 Write out the modified netlist into 'output/test8_out.v', please.
 Tool call:
 run_design_io_plan({"steps": [{"op": "write_design", "args": {"path": "output/test8_out.v"}, "save_as": null}]})
+
+

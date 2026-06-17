@@ -809,18 +809,30 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             args["target"],
             max_depth=max_allowed_depth,
             minimize_gate_count=args.get("minimize_gate_count", True),
+            allowed_gates=args.get("allowed_gates"),
             verify_equivalence=not _is_large_design(state.design),
             cone_depth=(args["target"], max_allowed_depth),
         )
+        before_design = state.last_transform_input
+        after_design = state.design
+        before_total = gate_counts(before_design)["total"] if before_design is not None else "unknown"
+        after_total = gate_counts(after_design)["total"] if after_design is not None else "unknown"
+        before_design_depth = design_max_logic_depth(before_design)["max_depth"] if before_design is not None else "unknown"
+        after_design_depth = design_max_logic_depth(after_design)["max_depth"] if after_design is not None else "unknown"
+        resolved_target = result.get("resolved_target", args["target"])
         resolved_text = ""
-        if result.get("resolved_target") and result["resolved_target"] != args["target"]:
-            resolved_text = f' Resolved target to "{result["resolved_target"]}" ({result["target_resolution"]["kind"]}).'
-        return (
-            f'Optimized cone of "{args["target"]}": '
-            f'{result["initial_gate_count"]} -> {result["final_gate_count"]} gate(s), '
-            f'depth {result["initial_depth"]} -> {result["final_depth"]}.'
-            f'{resolved_text}'
-        )
+        if resolved_target != args["target"]:
+            resolved_text = f' resolved to "{resolved_target}" ({result["target_resolution"]["kind"]})'
+        lines = [
+            f'Optimized cone target "{args["target"]}"{resolved_text} as part of whole-design optimization.',
+            f'- Whole design gates: {before_total} -> {after_total}; max logic depth: {before_design_depth} -> {after_design_depth}.',
+            f'- Target cone gates: {result["initial_gate_count"]} -> {result["final_gate_count"]} gate(s); cone depth: {result["initial_depth"]} -> {result["final_depth"]}.',
+        ]
+        if result.get("allowed_gates"):
+            lines.append(
+                f'- Cone gate constraint: allowed gates {result["allowed_gates"]}; satisfied after transform.'
+            )
+        return "\n".join(lines)
 
     if op == "constant_propagation":
         _require_design(state)
@@ -844,6 +856,10 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             optimize_design_depth,
             max_depth=max_allowed_depth,
+            allowed_gates=args.get("allowed_gates"),
+            cost_function=args.get("cost_function"),
+            cost_scope=args.get("cost_scope"),
+            constraints=args.get("constraints"),
             verify_equivalence=False,
         )
         engine = result.get("engine", "unknown")
@@ -861,6 +877,32 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         else:
             depth_text = f'depth {result["initial_depth"]} -> {result["final_depth"]}'
         bounded_text = f' {result["bounded_reason"]}.' if result.get("bounded_reason") else ""
+        if result.get("constraint_reports_after"):
+            lines = [
+                f'Optimized design depth with {engine}: gates {result["initial_gate_count"]} -> {result["final_gate_count"]}, {depth_text}, changed targets {result["num_changed_outputs"]}.',
+            ]
+            if result.get("legalized_depth") is not None:
+                lines.append(
+                    f'- Constraint legalization checkpoint: gates {result["initial_gate_count"]} -> {result["legalized_gate_count"]}; '
+                    f'max logic depth {result["initial_depth"]} -> {result["legalized_depth"]}.'
+                )
+            candidate = "applied" if result.get("candidate_applied") else "not applied"
+            candidate_engine = result.get("candidate_engine") or "none"
+            lines.append(f'- Depth candidate: {candidate} ({candidate_engine}).')
+            for report in result.get("constraint_reports_after", []):
+                status = "satisfied" if report.get("satisfied") else "violated"
+                resolved = report.get("resolved_target", report.get("target"))
+                lines.append(
+                    f'- Cone constraint {report["target"]} -> {resolved}: {status}; '
+                    f'allowed gates {report["allowed_gates"]}; cone gates {report["gate_count"]}; cone depth {report["depth"]}.'
+                )
+            if fallback_text:
+                lines.append(fallback_text.strip())
+            if target_text:
+                lines.append(target_text.strip())
+            if bounded_text:
+                lines.append(bounded_text.strip())
+            return "\n".join(lines)
         return (
             f'Optimized design depth with {engine}: gates {result["initial_gate_count"]} -> '
             f'{result["final_gate_count"]}, {depth_text}, changed targets {result["num_changed_outputs"]}.'
@@ -2226,3 +2268,8 @@ def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) 
         "max_allowed_depth": max_allowed_depth,
         "source_depths": depths,
     }
+
+
+
+
+

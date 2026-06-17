@@ -293,5 +293,43 @@ class PlanCheckerTest(unittest.TestCase):
         )
 
 
+    def test_accepts_constrained_whole_design_depth_optimization(self) -> None:
+        plan = validate_plan(
+            {
+                "op": "optimize_design_depth",
+                "args": {
+                    "cost_function": "max_logic_depth",
+                    "cost_scope": "whole_design",
+                    "constraints": [
+                        {
+                            "type": "cone_gate_library",
+                            "target": "n10",
+                            "allowed_gates": ["NOR", "not"],
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual(
+            plan["args"]["constraints"],
+            [{"type": "cone_gate_library", "target": "n10", "allowed_gates": ["nor", "not"]}],
+        )
+
+    def test_rejects_invalid_constrained_depth_constraint(self) -> None:
+        with self.assertRaises(PlanValidationError):
+            validate_plan(
+                {
+                    "op": "optimize_design_depth",
+                    "args": {
+                        "constraints": [
+                            {"type": "cone_gate_library", "target": "n10", "allowed_gates": []}
+                        ]
+                    },
+                }
+            )
+
 if __name__ == "__main__":
     unittest.main()
+
+
