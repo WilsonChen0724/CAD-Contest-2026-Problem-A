@@ -316,9 +316,12 @@ class DispatcherTest(unittest.TestCase):
             report_path = state.output_dir / "reports" / "expr_case_y_boolean_equation.txt"
             report = report_path.read_text(encoding="utf-8")
 
-        self.assertIn(f'Boolean equation for "y" was written to {report_path}', body)
-        self.assertIn("stdout only reports the file path", body)
-        self.assertIn("y =", report)
+        self.assertIn(f'Complete Boolean equation DAG for "y" was written to {report_path}', body)
+        self.assertIn("Equation count: 800", body)
+        self.assertIn("Boolean equation DAG for \"y\"", report)
+        self.assertIn("equation_count: 800", report)
+        self.assertIn("final_reference: y", report)
+        self.assertNotIn("truncated", report.lower())
 
     def test_dispatcher_checks_current_design_against_original_snapshot(self) -> None:
         state = CurrentState()

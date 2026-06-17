@@ -227,7 +227,13 @@ class AnalysisTest(unittest.TestCase):
 
         report = derive_boolean_equation(design, "y")
 
-        self.assertEqual(report["expression"], "!(a & b)")
+        self.assertEqual(report["format"], "dag")
+        self.assertFalse(report["truncated"])
+        self.assertEqual(report["expression"], "y")
+        self.assertEqual(
+            report["equations"],
+            [{"net": "y", "gate": "U0", "type": "nand", "expr": "!(a & b)"}],
+        )
 
     def test_derive_boolean_equation_expands_dff_q_to_d_input(self) -> None:
         design = Design(module_name="top", inputs={"a", "b", "clk"}, outputs={"y"})
@@ -237,7 +243,26 @@ class AnalysisTest(unittest.TestCase):
 
         report = derive_boolean_equation(design, "y")
 
-        self.assertEqual(report["expression"], "!((a & b))")
+        self.assertEqual(report["expression"], "y")
+        self.assertEqual(
+            report["equations"],
+            [
+                {"net": "d0", "gate": "U0", "type": "and", "expr": "(a & b)"},
+                {"net": "y", "gate": "U1", "type": "not", "expr": "!(d0)"},
+            ],
+        )
+
+    def test_derive_boolean_equation_records_sequential_feedback_default(self) -> None:
+        design = Design(module_name="top", inputs={"a", "clk"}, outputs={"y"})
+        design.add_dff(DFF(name="FF0", d="d0", q="q0", clk="clk"))
+        design.add_gate(Gate(name="U0", type="and", inputs=["q0", "a"], output="d0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["q0"], output="y"))
+
+        report = derive_boolean_equation(design, "y")
+
+        self.assertFalse(report["truncated"])
+        self.assertEqual(report["sequential_feedback_defaults"], [{"net": "q0", "value": "1'b0"}])
+        self.assertIn({"net": "d0", "gate": "U0", "type": "and", "expr": "(1'b0 & a)"}, report["equations"])
 
     def test_gate_type_count_and_nand_equivalent_pair(self) -> None:
         design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})

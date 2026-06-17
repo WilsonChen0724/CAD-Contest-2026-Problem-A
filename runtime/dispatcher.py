@@ -1869,30 +1869,47 @@ def _format_fanout_cone(result: dict[str, Any], state: CurrentState | None = Non
 
 
 def _format_boolean_equation(result: dict[str, Any], state: CurrentState | None = None) -> str:
-    expression = f'{result["target"]} = {result["expression"]}'
-    should_write_file = result.get("truncated") or len(expression) > BOOLEAN_EQUATION_STDOUT_LIMIT
-    suffix = " (bounded/truncated)" if result.get("truncated") else ""
+    final_ref = str(result["expression"])
+    final_line = f'final_reference: {final_ref}'
+    equations = result.get("equations") or []
+    feedback_defaults = result.get("sequential_feedback_defaults") or []
+    should_write_file = bool(equations) or len(final_ref) > BOOLEAN_EQUATION_STDOUT_LIMIT
     if not should_write_file:
-        return f'Boolean equation for "{result["target"]}"{suffix}: {expression}'
+        return f'Boolean equation for "{result["target"]}": {result["target"]} = {final_ref}'
 
     artifact_lines = [
-        f'Boolean equation for "{result["target"]}"{suffix}:',
-        expression,
+        f'Boolean equation DAG for "{result["target"]}"',
+        "boundary: primary inputs and constants",
+        "DFF handling: DFF Q references are expanded to their D input cones",
+        "sequential feedback default: 1'b0",
+        f'equation_count: {len(equations)}',
     ]
+    if feedback_defaults:
+        artifact_lines.append("feedback_defaults:")
+        for item in feedback_defaults:
+            artifact_lines.append(f'- {item["net"]} = {item["value"]}')
+    artifact_lines.append("equations:")
+    if equations:
+        for index, item in enumerate(equations, 1):
+            artifact_lines.append(
+                f'{index}. {item["net"]} = {item["expr"]} '
+                f'# gate={item["gate"]}, type={item["type"]}'
+            )
+    else:
+        artifact_lines.append("- none")
+    artifact_lines.extend(["final:", final_line])
     artifact_path = _write_report_artifact(
         state,
         f'{result["target"]}_boolean_equation',
         artifact_lines,
     )
     lines = [
-        f'Boolean equation for "{result["target"]}"{suffix} was written to {artifact_path}.',
+        f'Complete Boolean equation DAG for "{result["target"]}" was written to {artifact_path}.',
+        f'Equation count: {len(equations)}.',
+        f'Final expression reference: {final_ref}.',
     ]
-    if result.get("truncated"):
-        lines.append(
-            "The equation reached the bounded expansion limit; the report file contains the generated partial expression."
-        )
-    else:
-        lines.append("The expression is large, so stdout only reports the file path.")
+    if feedback_defaults:
+        lines.append("Sequential feedback was cut with initial value 1'b0; see the report file for the affected net(s).")
     return "\n".join(lines)
 
 
