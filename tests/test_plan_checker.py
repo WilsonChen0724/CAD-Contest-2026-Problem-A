@@ -299,6 +299,7 @@ class PlanCheckerTest(unittest.TestCase):
                 "op": "optimize_design_depth",
                 "args": {
                     "cost_function": "max_logic_depth",
+                    "objective": "minimize",
                     "cost_scope": "whole_design",
                     "constraints": [
                         {

@@ -50,6 +50,14 @@ class ToolSchemaTest(unittest.TestCase):
             TOOL_ALLOWED_OPS["run_verify_plan"],
         )
 
+    def test_depth_optimization_tool_guides_max_logic_depth_minimize_cost(self) -> None:
+        transform_tool = next(tool for tool in openai_domain_tools() if tool["name"] == "run_transform_plan")
+        op_description = transform_tool["parameters"]["properties"]["steps"]["items"]["properties"]["op"]["description"]
+
+        self.assertIn('"max_logic_depth"', op_description)
+        self.assertIn('"minimize"', op_description)
+        self.assertNotIn("min_logic_depth", op_description)
+
 
 if __name__ == "__main__":
     unittest.main()

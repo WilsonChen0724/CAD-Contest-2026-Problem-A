@@ -85,8 +85,20 @@ from eda.verify import (
 
 DEFAULT_COMPLETE_PATH_LIMIT = 300000
 ALL_PATHS_STDOUT_LIMIT = 20
+BOOLEAN_EQUATION_MAX_TERMS = 5000
+BOOLEAN_EQUATION_STDOUT_LIMIT = 4000
 LARGE_DESIGN_GATE_LIMIT = 10000
 LARGE_CONE_GATE_LIMIT = 1500
+LARGE_CONSTANT_PROPAGATION_MAX_CHANGES = 64
+HIGH_FANOUT_BUDGET_MEDIUM_GATE_LIMIT = 10000
+HIGH_FANOUT_BUDGET_LARGE_GATE_LIMIT = 20000
+HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS = 24
+HIGH_FANOUT_BUDGET_LARGE_CHANGED_NETS = 4
+SAVED_OUTPUT_CONE_SKIP_GATE_LIMIT = 4000
+XNOR_TO_NOR_SKIP_GATE_LIMIT = 10000
+XOR_TO_NAND_SKIP_GATE_LIMIT = 20000
+AND_NOT_TO_NAND_SKIP_GATE_LIMIT = 10000
+MERGE_EQUIVALENT_SKIP_GATE_LIMIT = 20000
 
 SUPPORTED_OPS = {
     "begin_testcase",
@@ -390,7 +402,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         gates = logic_cone(state.design, args["target"])
         if save_as:
             state.remember_result(save_as, gates, kind="gate_list")
-        return _format_logic_cone(args["target"], gates)
+        return _format_logic_cone(args["target"], gates, state=state)
 
     if op == "report_gate_counts":
         _require_design(state)
@@ -405,8 +417,9 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             gate_type_connections(
                 state.design,
                 args["gate_type"],
-                max_items=_positive_int_or_default(args.get("max_items"), 200),
-            )
+                max_items=args.get("max_items"),
+            ),
+            state,
         )
 
     if op == "report_direct_pi_po_paths":
@@ -419,8 +432,9 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             dffs_by_clock(
                 state.design,
                 args["clock"],
-                max_items=_positive_int_or_default(args.get("max_items"), 200),
-            )
+                max_items=args.get("max_items"),
+            ),
+            state,
         )
 
     if op == "report_primary_inputs":
@@ -438,7 +452,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             if save_as:
                 state.remember_result(save_as, result, kind="connectivity_report")
             return _format_floating_signal_summary(result)
-        return _format_fanout(direct_fanout(state.design, args["net"]))
+        return _format_fanout(direct_fanout(state.design, args["net"]), state)
 
     if op == "report_highest_fanout_primary_input":
         _require_design(state)
@@ -446,7 +460,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "report_fanout_cone":
         _require_design(state)
-        return _format_fanout_cone(fanout_cone(state.design, args["source"]))
+        return _format_fanout_cone(fanout_cone(state.design, args["source"]), state)
 
     if op == "report_gate_connections":
         _require_design(state)
@@ -460,12 +474,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             and args["gate"] not in state.design.dffs
             and args["gate"] in state.design.all_nets()
         ):
-            return _format_fanout(direct_fanout(state.design, args["gate"]))
+            return _format_fanout(direct_fanout(state.design, args["gate"]), state)
         return _format_gate_connections(gate_connections(state.design, args["gate"]))
 
     if op == "report_gates_by_type":
         _require_design(state)
-        return _format_gates_by_type(gates_by_type(state.design, args["gate_type"], limit=args.get("limit", 200)))
+        return _format_gates_by_type(gates_by_type(state.design, args["gate_type"], limit=args.get("limit")), state)
 
     if op == "report_gate_type_count_in_cone":
         _require_design(state)
@@ -548,9 +562,8 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "derive_boolean_equation":
         _require_design(state)
-        result = derive_boolean_equation(state.design, args["target"])
-        suffix = " (truncated)" if result["truncated"] else ""
-        return f'Boolean equation for "{args["target"]}"{suffix}: {args["target"]} = {result["expression"]}'
+        result = derive_boolean_equation(state.design, args["target"], max_terms=BOOLEAN_EQUATION_MAX_TERMS)
+        return _format_boolean_equation(result, state)
 
     if op == "find_nand_equivalent_pair":
         _require_design(state)
@@ -752,7 +765,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             insert_buffers_for_all_high_fanout,
             args["max_fanout"],
-            max_changed_nets=_high_fanout_transform_budget(state.design),
+            max_changed_nets=_high_fanout_transform_budget(state.design, state.config),
             verify_equivalence=False,
             max_fanout=args["max_fanout"],
         )
@@ -796,7 +809,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
                 max_allowed_depth=max_allowed_depth,
                 minimize_gate_count=args.get("minimize_gate_count", True),
             )
-        skip_reason = _large_cone_optimization_skip_reason(state.design, args["target"])
+        skip_reason = _large_cone_optimization_skip_reason(state.design, args["target"], state.config)
         if skip_reason:
             state.last_transform_result = {
                 "transform": "optimize_cone",
@@ -810,7 +823,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             max_depth=max_allowed_depth,
             minimize_gate_count=args.get("minimize_gate_count", True),
             allowed_gates=args.get("allowed_gates"),
-            verify_equivalence=not _is_large_design(state.design),
+            verify_equivalence=not _is_large_design(state.design, state.config),
             cone_depth=(args["target"], max_allowed_depth),
         )
         before_design = state.last_transform_input
@@ -839,8 +852,8 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         result = _run_transactional_transform(
             state,
             constant_propagation,
-            max_changes=64 if len(state.design.gates) > 10000 else None,
-            verify_equivalence=False if len(state.design.gates) > 10000 else True,
+            max_changes=_large_constant_propagation_max_changes(state),
+            verify_equivalence=not _is_large_design(state.design, state.config),
         )
         return (
             f'Propagated constants through {result["num_changed"]} gate(s). '
@@ -911,7 +924,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_xnor_nor_with_basic_gates":
         _require_design(state)
-        if len(state.design.gates) > 10000:
+        if len(state.design.gates) > _optimization_limit(state.config, "xnor_to_nor_skip_gate_limit", XNOR_TO_NOR_SKIP_GATE_LIMIT):
             return _skip_large_technology_mapping(state, "replace_xnor_with_nor", "xnor", "nor")
         result = _run_transactional_transform(state, replace_xnor_nor_with_basic_gates)
         return (
@@ -930,7 +943,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_xor_with_nand":
         _require_design(state)
-        if len(state.design.gates) > 20000:
+        if len(state.design.gates) > _optimization_limit(state.config, "xor_to_nand_skip_gate_limit", XOR_TO_NAND_SKIP_GATE_LIMIT):
             return _skip_large_technology_mapping(state, "replace_xor_with_nand", "xor", "nand")
         result = _run_transactional_transform(state, replace_xor_with_nand)
         return (
@@ -941,7 +954,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_and_not_with_nand":
         _require_design(state)
-        if len(state.design.gates) > 10000:
+        if len(state.design.gates) > _optimization_limit(state.config, "and_not_to_nand_skip_gate_limit", AND_NOT_TO_NAND_SKIP_GATE_LIMIT):
             return "Skipped full-design AND/NOT-to-NAND remap for this large design to stay within the bounded large-design time budget. No structural changes were applied."
         result = _run_transactional_transform(state, replace_and_not_with_nand)
         return (
@@ -951,7 +964,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "merge_equivalent_gates":
         _require_design(state)
-        if len(state.design.gates) > 20000:
+        if len(state.design.gates) > _optimization_limit(state.config, "merge_equivalent_skip_gate_limit", MERGE_EQUIVALENT_SKIP_GATE_LIMIT):
             result = {"changed": [], "num_merged": 0, "skipped": True}
             state.last_transform_result = {"transform": "merge_equivalent_gates", "result": result}
             return (
@@ -1002,7 +1015,8 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "check_connectivity":
         _require_design(state)
-        return str(check_connectivity(state.design))
+        result = check_connectivity(state.design)
+        return _format_floating_signal_summary(result) + "\nRaw connectivity result: " + str(result)
 
     if op == "check_fanout":
         _require_design(state)
@@ -1016,7 +1030,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         if state.original_design is None:
             raise RuntimeError("No original design snapshot is available. Load a design with read_design first.")
-        if _skip_expensive_equivalence_check(state.original_design, state.design):
+        if _skip_expensive_equivalence_check(state.original_design, state.design, state.config):
             return (
                 "Skipped full equivalence check for this large design to stay within the bounded "
                 "large-design time budget. Successful transforms have already passed structural guards."
@@ -1028,7 +1042,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         if state.last_transform_input is None:
             return "No previous successful transform input snapshot is available. Run a transform first."
-        if _skip_expensive_equivalence_check(state.last_transform_input, state.design):
+        if _skip_expensive_equivalence_check(state.last_transform_input, state.design, state.config):
             return (
                 "Skipped full equivalence check against the previous transform input for this large design "
                 "to stay within the bounded large-design time budget."
@@ -1085,13 +1099,49 @@ def _require_design(state: CurrentState) -> None:
         raise RuntimeError("No design has been loaded yet.")
 
 
+def _optimization_limit(config: dict[str, Any] | None, key: str, default: int) -> int:
+    section = (config or {}).get("optimization_limits", {})
+    if not isinstance(section, dict):
+        return default
+    value = section.get(key, default)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
 
-def _is_large_design(design) -> bool:
-    return len(design.gates) > LARGE_DESIGN_GATE_LIMIT
+
+def _large_constant_propagation_max_changes(state: CurrentState) -> int | None:
+    if state.design is None or not _is_large_design(state.design, state.config):
+        return None
+    return _optimization_limit(
+        state.config,
+        "large_constant_propagation_max_changes",
+        LARGE_CONSTANT_PROPAGATION_MAX_CHANGES,
+    )
 
 
-def _large_cone_optimization_skip_reason(design, target: str) -> str | None:
-    if not _is_large_design(design):
+def _is_large_design(design, config: dict[str, Any] | None = None) -> bool:
+    return len(design.gates) > _optimization_limit(
+        config,
+        "large_design_gate_limit",
+        LARGE_DESIGN_GATE_LIMIT,
+    )
+
+
+def _large_cone_optimization_skip_reason(
+    design,
+    target: str,
+    config: dict[str, Any] | None = None,
+) -> str | None:
+    if not _is_large_design(design, config):
         return None
     if target not in design.all_nets():
         return None
@@ -1099,7 +1149,7 @@ def _large_cone_optimization_skip_reason(design, target: str) -> str | None:
         cone_gate_count = len(logic_cone(design, target))
     except Exception:
         return None
-    if cone_gate_count <= LARGE_CONE_GATE_LIMIT:
+    if cone_gate_count <= _optimization_limit(config, "large_cone_gate_limit", LARGE_CONE_GATE_LIMIT):
         return None
     return (
         f'Skipped cone optimization of "{target}" for this large design '
@@ -1108,10 +1158,11 @@ def _large_cone_optimization_skip_reason(design, target: str) -> str | None:
     )
 
 
-def _skip_expensive_equivalence_check(before, after) -> bool:
+def _skip_expensive_equivalence_check(before, after, config: dict[str, Any] | None = None) -> bool:
     if before is None or after is None:
         return False
-    return len(before.gates) > LARGE_DESIGN_GATE_LIMIT or len(after.gates) > LARGE_DESIGN_GATE_LIMIT
+    limit = _optimization_limit(config, "large_design_gate_limit", LARGE_DESIGN_GATE_LIMIT)
+    return len(before.gates) > limit or len(after.gates) > limit
 
 def _run_transactional_transform(
     state: CurrentState,
@@ -1390,16 +1441,22 @@ def _append_limited(
         lines.append(f"... {len(items) - limit} more {label} omitted")
 
 
-def _format_logic_cone(target: str, gates: list[str], limit: int = 200) -> str:
+def _format_logic_cone(
+    target: str,
+    gates: list[str],
+    limit: int = _REPORT_LIST_LIMIT,
+    state: CurrentState | None = None,
+) -> str:
     lines = [f'Logic cone of "{target}" contains {len(gates)} gates:']
     if not gates:
         lines.append("- none")
         return "\n".join(lines)
     if len(gates) > limit:
-        lines.append(f"Showing first {limit} gate(s).")
+        artifact_lines = [lines[0], "Complete logic-cone gate list:", *gates]
+        artifact_path = _write_report_artifact(state, f"{target}_logic_cone", artifact_lines)
+        lines.append(f"Complete logic-cone gate listing written to {artifact_path}.")
+        lines.append(f"Showing first {limit} gate(s) in this response.")
     lines.extend(gates[:limit])
-    if len(gates) > limit:
-        lines.append(f"... {len(gates) - limit} more gate(s) omitted")
     return "\n".join(lines)
 
 
@@ -1470,10 +1527,8 @@ def _format_all_paths(result: dict[str, Any], state: CurrentState | None = None)
 
 
 def _write_all_paths_artifact(result: dict[str, Any], state: CurrentState | None) -> Path:
-    output_dir = state.output_dir if state is not None else Path("output")
-    report_dir = output_dir / "reports"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    case_name = state.testcase if state is not None and state.testcase else "current"
+    report_dir = _report_dir(state)
+    case_name = _case_name(state)
     src = _safe_filename_token(str(result["src"]))
     dst = _safe_filename_token(str(result["dst"]))
     path = report_dir / f"{_safe_filename_token(case_name)}_{src}_to_{dst}_paths.txt"
@@ -1488,22 +1543,58 @@ def _write_all_paths_artifact(result: dict[str, Any], state: CurrentState | None
     return path
 
 
+def _report_dir(state: CurrentState | None) -> Path:
+    output_dir = state.output_dir if state is not None else Path("output")
+    report_dir = output_dir / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    return report_dir
+
+
+def _case_name(state: CurrentState | None) -> str:
+    return state.testcase if state is not None and state.testcase else "current"
+
+
+def _write_report_artifact(
+    state: CurrentState | None,
+    stem: str,
+    lines: list[str],
+) -> Path:
+    path = _report_dir(state) / f"{_safe_filename_token(_case_name(state))}_{_safe_filename_token(stem)}.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def _safe_filename_token(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "item"
 
-def _format_gate_type_connections(result: dict[str, Any]) -> str:
+def _format_gate_type_connections(result: dict[str, Any], state: CurrentState | None = None) -> str:
     lines = [
         f'{result["gate_type"].upper()} gate connections: {result["num_gates"]}'
     ]
-    if result.get("truncated"):
-        lines.append(f'Showing first {result["max_items"]} gate(s); report was truncated.')
-    for item in result["gates"]:
+
+    def format_item(item: dict[str, Any]) -> str:
         if item["kind"] == "gate":
             inputs = ", ".join(item["inputs"]) or "(none)"
-            lines.append(f'- {item["instance"]}: inputs=[{inputs}], output={item["output"]}')
+            return f'- {item["instance"]}: inputs=[{inputs}], output={item["output"]}'
         else:
             pins = ", ".join(f"{pin}={net}" for pin, net in item["pins"].items() if net is not None)
-            lines.append(f'- {item["instance"]}: {pins}')
+            return f'- {item["instance"]}: {pins}'
+
+    gates = result["gates"]
+    if len(gates) > _REPORT_LIST_LIMIT:
+        artifact_lines = [lines[0], "Complete gate connection list:", *[format_item(item) for item in gates]]
+        artifact_path = _write_report_artifact(
+            state,
+            f'{result["gate_type"]}_gate_connections',
+            artifact_lines,
+        )
+        lines.append(f"Complete gate connection listing written to {artifact_path}.")
+        lines.append(f"Showing first {_REPORT_LIST_LIMIT} gate(s) in this response.")
+        for item in gates[:_REPORT_LIST_LIMIT]:
+            lines.append(format_item(item))
+    else:
+        for item in gates:
+            lines.append(format_item(item))
     if not result["gates"]:
         lines.append("- none")
     return "\n".join(lines)
@@ -1545,31 +1636,27 @@ def _format_direct_pi_po_paths(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_dffs_by_clock(result: dict[str, Any]) -> str:
-    lines = [f'DFFs driven by clock "{result["clock"]}": {result["num_dffs"]}']
-    if result.get("truncated"):
-        lines.append(f'Showing first {result["max_items"]} DFF(s); report was truncated.')
-    for item in result["dffs"]:
-        pins = ", ".join(f"{pin}={net}" for pin, net in item["pins"].items() if net is not None)
-        lines.append(f'- {item["instance"]}: {pins}')
-    if not result["dffs"]:
-        lines.append("- none")
-    return "\n".join(lines)
-
-
 def _positive_int_or_default(value: Any, default: int) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return default
 
 
-def _high_fanout_transform_budget(design) -> int | None:
+def _high_fanout_transform_budget(design, config: dict[str, Any] | None = None) -> int | None:
     """Keep whole-design fanout optimization inside the contest response limit."""
     gate_count = len(design.gates)
-    if gate_count > 20000:
-        return 4
-    if gate_count > 10000:
-        return 24
+    if gate_count > _optimization_limit(config, "high_fanout_budget_large_gate_limit", HIGH_FANOUT_BUDGET_LARGE_GATE_LIMIT):
+        return _optimization_limit(
+            config,
+            "high_fanout_budget_large_changed_nets",
+            HIGH_FANOUT_BUDGET_LARGE_CHANGED_NETS,
+        )
+    if gate_count > _optimization_limit(config, "high_fanout_budget_medium_gate_limit", HIGH_FANOUT_BUDGET_MEDIUM_GATE_LIMIT):
+        return _optimization_limit(
+            config,
+            "high_fanout_budget_medium_changed_nets",
+            HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS,
+        )
     return None
 
 
@@ -1589,7 +1676,11 @@ def _optimize_saved_output_cones(
 ) -> str:
     if not outputs:
         return f'No outputs were saved in "{result_name}", so no cone optimization was needed.'
-    if len(state.design.gates) > 4000 and max_allowed_depth is not None:
+    if (
+        len(state.design.gates)
+        > _optimization_limit(state.config, "saved_output_cone_skip_gate_limit", SAVED_OUTPUT_CONE_SKIP_GATE_LIMIT)
+        and max_allowed_depth is not None
+    ):
         return (
             f'Skipped cone optimization for {len(outputs)} saved output(s) in "{result_name}" '
             "to stay within the bounded large-design time budget. No structural changes were applied."
@@ -1677,7 +1768,7 @@ def _format_floating_signal_summary(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_fanout(result: dict[str, Any]) -> str:
+def _format_fanout(result: dict[str, Any], state: CurrentState | None = None) -> str:
     lines = [
         f'Fanout of {result["source_kind"]} "{result["source"]}" '
         f'(net "{result["net"]}"): '
@@ -1702,18 +1793,51 @@ def _format_fanout(result: dict[str, Any]) -> str:
     if not result["sinks"]:
         lines.append("- none")
     else:
-        _append_limited(lines, result["sinks"], format_sink, label="sink(s)")
+        sinks = result["sinks"]
+        if len(sinks) > _REPORT_LIST_LIMIT:
+            artifact_lines = [
+                lines[0],
+                "Complete fanout sink list:",
+                *[format_sink(sink) for sink in sinks],
+            ]
+            artifact_path = _write_report_artifact(
+                state,
+                f'{result["source"]}_fanout',
+                artifact_lines,
+            )
+            lines.append(f"Complete fanout listing written to {artifact_path}.")
+            lines.append(f"Showing first {_REPORT_LIST_LIMIT} sink(s) in this response.")
+            for sink in sinks[:_REPORT_LIST_LIMIT]:
+                lines.append(format_sink(sink))
+        else:
+            for sink in sinks:
+                lines.append(format_sink(sink))
     return "\n".join(lines)
 
 
-def _format_gates_by_type(result: dict[str, Any]) -> str:
+def _format_gates_by_type(result: dict[str, Any], state: CurrentState | None = None) -> str:
     gate_type = result["gate_type"].upper()
     lines = [f'{gate_type} gates: {result["num_gates"]}']
-    if result.get("truncated"):
-        lines.append(f'Showing first {result["limit"]} gate(s).')
-    for item in result["gates"]:
+
+    def format_gate(item: dict[str, Any]) -> str:
         inputs = ", ".join(item["inputs"])
-        lines.append(f'- {item["name"]}: inputs [{inputs}], output {item["output"]}')
+        return f'- {item["name"]}: inputs [{inputs}], output {item["output"]}'
+
+    gates = result["gates"]
+    if len(gates) > _REPORT_LIST_LIMIT:
+        artifact_lines = [lines[0], "Complete gate list:", *[format_gate(item) for item in gates]]
+        artifact_path = _write_report_artifact(
+            state,
+            f'{result["gate_type"]}_gates',
+            artifact_lines,
+        )
+        lines.append(f"Complete gate listing written to {artifact_path}.")
+        lines.append(f"Showing first {_REPORT_LIST_LIMIT} gate(s) in this response.")
+        for item in gates[:_REPORT_LIST_LIMIT]:
+            lines.append(format_gate(item))
+    else:
+        for item in gates:
+            lines.append(format_gate(item))
     if not result["gates"]:
         lines.append("- none")
     return "\n".join(lines)
@@ -1753,7 +1877,7 @@ def _format_highest_fanout_primary_input(result: dict[str, Any]) -> str:
     )
 
 
-def _format_fanout_cone(result: dict[str, Any]) -> str:
+def _format_fanout_cone(result: dict[str, Any], state: CurrentState | None = None) -> str:
     lines = [
         f'Transitive fanout cone of "{result["source"]}": '
         f'{result["num_gates"]} gate(s), {result["num_nets"]} net(s), '
@@ -1762,9 +1886,72 @@ def _format_fanout_cone(result: dict[str, Any]) -> str:
     ]
     if result["gates"]:
         lines.append("Reachable gates:")
-        _append_limited(lines, result["gates"], lambda gate: f"- {gate}", label="gate(s)")
+        gates = result["gates"]
+        if len(gates) > _REPORT_LIST_LIMIT:
+            artifact_lines = [
+                lines[0],
+                "Complete reachable gate list:",
+                *[f"- {gate}" for gate in gates],
+            ]
+            artifact_path = _write_report_artifact(
+                state,
+                f'{result["source"]}_fanout_cone_gates',
+                artifact_lines,
+            )
+            lines.append(f"Complete reachable gate listing written to {artifact_path}.")
+            lines.append(f"Showing first {_REPORT_LIST_LIMIT} gate(s) in this response.")
+            for gate in gates[:_REPORT_LIST_LIMIT]:
+                lines.append(f"- {gate}")
+        else:
+            for gate in gates:
+                lines.append(f"- {gate}")
     else:
         lines.append("Reachable gates: none")
+    return "\n".join(lines)
+
+
+def _format_boolean_equation(result: dict[str, Any], state: CurrentState | None = None) -> str:
+    final_ref = str(result["expression"])
+    final_line = f'final_reference: {final_ref}'
+    equations = result.get("equations") or []
+    feedback_defaults = result.get("sequential_feedback_defaults") or []
+    should_write_file = bool(equations) or len(final_ref) > BOOLEAN_EQUATION_STDOUT_LIMIT
+    if not should_write_file:
+        return f'Boolean equation for "{result["target"]}": {result["target"]} = {final_ref}'
+
+    artifact_lines = [
+        f'Boolean equation DAG for "{result["target"]}"',
+        "boundary: primary inputs and constants",
+        "DFF handling: DFF Q references are expanded to their D input cones",
+        "sequential feedback default: 1'b0",
+        f'equation_count: {len(equations)}',
+    ]
+    if feedback_defaults:
+        artifact_lines.append("feedback_defaults:")
+        for item in feedback_defaults:
+            artifact_lines.append(f'- {item["net"]} = {item["value"]}')
+    artifact_lines.append("equations:")
+    if equations:
+        for index, item in enumerate(equations, 1):
+            artifact_lines.append(
+                f'{index}. {item["net"]} = {item["expr"]} '
+                f'# gate={item["gate"]}, type={item["type"]}'
+            )
+    else:
+        artifact_lines.append("- none")
+    artifact_lines.extend(["final:", final_line])
+    artifact_path = _write_report_artifact(
+        state,
+        f'{result["target"]}_boolean_equation',
+        artifact_lines,
+    )
+    lines = [
+        f'Complete Boolean equation DAG for "{result["target"]}" was written to {artifact_path}.',
+        f'Equation count: {len(equations)}.',
+        f'Final expression reference: {final_ref}.',
+    ]
+    if feedback_defaults:
+        lines.append("Sequential feedback was cut with initial value 1'b0; see the report file for the affected net(s).")
     return "\n".join(lines)
 
 
@@ -2017,18 +2204,28 @@ def _format_delta_list(label: str, items: Any, limit: int = 8) -> str:
     suffix = f' (+{len(items) - limit} more)' if len(items) > limit else ""
     return f'- {label}: {sample}{suffix}'
 
-def _format_dffs_by_clock(result: dict[str, Any]) -> str:
+def _format_dffs_by_clock(result: dict[str, Any], state: CurrentState | None = None) -> str:
     lines = [f'DFFs driven by clock "{result["clock"]}": {result["num_dffs"]}']
-    if result.get("truncated"):
-        lines.append(f'Showing first {result["max_items"]} DFF(s); report was truncated.')
-    for item in result["dffs"]:
+
+    def format_item(item: dict[str, Any]) -> str:
         pins = item.get("pins", {})
         if pins:
             pin_text = ", ".join(f"{pin}={net}" for pin, net in pins.items() if net is not None)
-            lines.append(f'- {item["instance"]}: {pin_text}')
-        else:
-            rst = f', RST={item["rst"]}' if item.get("rst") else ""
-            lines.append(f'- {item["name"]}: D={item["d"]}, Q={item["q"]}, CLK={item["clk"]}{rst}')
+            return f'- {item["instance"]}: {pin_text}'
+        rst = f', RST={item["rst"]}' if item.get("rst") else ""
+        return f'- {item["name"]}: D={item["d"]}, Q={item["q"]}, CLK={item["clk"]}{rst}'
+
+    dffs = result["dffs"]
+    if len(dffs) > _REPORT_LIST_LIMIT:
+        artifact_lines = [lines[0], "Complete DFF list:", *[format_item(item) for item in dffs]]
+        artifact_path = _write_report_artifact(state, f'{result["clock"]}_dffs_by_clock', artifact_lines)
+        lines.append(f"Complete DFF listing written to {artifact_path}.")
+        lines.append(f"Showing first {_REPORT_LIST_LIMIT} DFF(s) in this response.")
+        for item in dffs[:_REPORT_LIST_LIMIT]:
+            lines.append(format_item(item))
+    else:
+        for item in dffs:
+            lines.append(format_item(item))
     if not result["dffs"]:
         lines.append("- none")
     return "\n".join(lines)

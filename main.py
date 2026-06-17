@@ -51,7 +51,7 @@ def main() -> int:
         _ensure_yosys_available(force=args.force_yosys_install)
 
     config = load_config(args.config)
-    state = CurrentState()
+    state = CurrentState(config=config)
     prompt = _load_prompt()
 
     for raw_line in sys.stdin:
