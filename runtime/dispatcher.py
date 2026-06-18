@@ -891,6 +891,30 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         else:
             depth_text = f'depth {result["initial_depth"]} -> {result["final_depth"]}'
         bounded_text = f' {result["bounded_reason"]}.' if result.get("bounded_reason") else ""
+        if result.get("gate_library_report_after"):
+            report = result["gate_library_report_after"]
+            status = "satisfied" if report.get("satisfied") else "violated"
+            lines = [
+                f'Optimized design depth with {engine}: gates {result["initial_gate_count"]} -> {result["final_gate_count"]}, {depth_text}, changed targets {result["num_changed_outputs"]}.',
+                f'- Whole-design gate constraint: {status}; allowed gates {report["allowed_gates"]}; disallowed gate counts {report["disallowed_gate_counts"]}.',
+            ]
+            if result.get("legalized_depth") is not None:
+                lines.append(
+                    f'- Initial legalization checkpoint: gates {result["initial_gate_count"]} -> {result["legalized_gate_count"]}; '
+                    f'max logic depth {result["initial_depth"]} -> {result["legalized_depth"]}.'
+                )
+            if result.get("accepted_passes"):
+                lines.append(f'- Accepted library-preserving depth pass(es): {len(result["accepted_passes"])}.')
+            if result.get("rejected_passes"):
+                reason = result["rejected_passes"][-1].get("reason", "unknown")
+                lines.append(f'- Stopped library-preserving loop: {reason}.')
+            if fallback_text:
+                lines.append(fallback_text.strip())
+            if target_text:
+                lines.append(target_text.strip())
+            if bounded_text:
+                lines.append(bounded_text.strip())
+            return "\n".join(lines)
         if result.get("constraint_reports_after"):
             lines = [
                 f'Optimized design depth with {engine}: gates {result["initial_gate_count"]} -> {result["final_gate_count"]}, {depth_text}, changed targets {result["num_changed_outputs"]}.',
@@ -2466,7 +2490,6 @@ def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) 
         "max_allowed_depth": max_allowed_depth,
         "source_depths": depths,
     }
-
 
 
 

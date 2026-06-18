@@ -12,6 +12,7 @@ from eda.analysis import max_depth
 from eda.transform import (
     _adaptive_depth_topk,
     _abc_candidate_depth_targets,
+    _canonicalize_yosys_generated_names,
     _try_yosys_abc_for_small_cone,
     balance_depth_with_buffers,
     collapse_back_to_back_inverters,
@@ -336,6 +337,38 @@ class TransformTest(unittest.TestCase):
     def test_abc_candidate_depth_targets_use_75_percent_and_plain_abc(self) -> None:
         self.assertEqual(_abc_candidate_depth_targets(35), [("target_27", 27), ("plain_abc", None)])
 
+    def test_canonicalize_yosys_generated_names_uses_contest_style_names(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"}, wires={"_0001_", "_yosys_bit_7", "g12.q"})
+        design.add_gate(
+            Gate(
+                name="U_$and$_tmp_tmpabcd_input_for_yosys_v_10$3",
+                type="and",
+                inputs=["a", "_yosys_bit_7"],
+                output="_0001_",
+            )
+        )
+        design.add_gate(
+            Gate(
+                name="U_$not$_tmp_tmpabcd_input_for_yosys_v_11$4",
+                type="not",
+                inputs=["_0001_"],
+                output="y",
+            )
+        )
+        design.add_dff(DFF(name="g12", q="g12.q", d="_yosys_bit_7", clk="clk"))
+        rebuild_graph(design)
+
+        _canonicalize_yosys_generated_names(design)
+
+        self.assertEqual(set(design.gates), {"g13", "g14"})
+        self.assertNotIn("g12.q", design.wires)
+        self.assertNotIn("_0001_", design.wires)
+        self.assertNotIn("_yosys_bit_7", design.wires)
+        self.assertTrue(all("input_for_yosys" not in name for name in design.gates))
+        self.assertTrue(all("." not in net and "tmp" not in net and "yosys" not in net for net in design.wires))
+        self.assertIn(design.dffs["g12"].q, design.wires)
+        self.assertIn(design.dffs["g12"].d, design.wires)
+
     def test_optimize_design_depth_falls_back_when_yosys_fails(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n0"))
@@ -503,6 +536,30 @@ class TransformTest(unittest.TestCase):
         self.assertTrue(result["constraint_reports_after"][0]["satisfied"])
         self.assertEqual(result["constraint_reports_after"][0]["allowed_gates"], ["nor", "not"])
         self.assertTrue(all(gate.type in {"nor", "not"} for gate in design.gates.values() if gate.output == "n10" or gate.output.startswith("U_xor_")))
+
+    def test_optimize_design_depth_preserves_whole_design_allowed_gates(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="y"))
+        original = deepcopy(design)
+
+        def fake_depth_optimizer(candidate: Design, max_depth=None, max_outputs=None):
+            return {
+                "engine": "fake_depth",
+                "attempted_outputs": ["y"],
+                "skipped_outputs": [],
+                "changed": [],
+                "num_changed_outputs": 0,
+                "bounded_reason": None,
+            }
+
+        with patch("eda.transform._optimize_design_depth_base", side_effect=fake_depth_optimizer):
+            result = optimize_design_depth(design, allowed_gates=["and", "not"])
+
+        self.assertEqual(result["engine"], "library_preserving_depth")
+        self.assertTrue(result["gate_library_report_after"]["satisfied"])
+        self.assertEqual(result["gate_library_report_after"]["disallowed_gate_counts"], {})
+        self.assertTrue(all(gate.type in {"and", "not"} for gate in design.gates.values()))
+        self.assertTrue(check_design_equivalence(original, design)["ok"])
 
     def test_rename_net_updates_references_and_preserves_function(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})

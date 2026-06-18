@@ -10,6 +10,7 @@ from parser.yosys_tools import quote_yosys_path, run_yosys_script
 WRITER_YOSYS_VALIDATE_TIMEOUT = 20.0
 WRITER_YOSYS_VALIDATE_GATE_LIMIT = 8000
 WRITER_YOSYS_VALIDATE_DFF_LIMIT = 1000
+DECLARATION_MAX_LINE_LENGTH = 120
 
 
 def write_verilog(design: Design, path: str | Path) -> None:
@@ -104,13 +105,32 @@ def _format_declarations(kind: str, nets: set[str]) -> list[str]:
     scalars, buses = _split_scalars_and_buses(nets)
     lines: list[str] = []
     if scalars:
-        lines.append(f"{kind} " + ", ".join(sorted(scalars)) + ";")
+        lines.extend(_format_scalar_declaration_chunks(kind, sorted(scalars)))
     for base, indexes in sorted(buses.items()):
         if _is_contiguous(indexes):
             lines.append(f"{kind} [{max(indexes)}:{min(indexes)}] {base};")
         else:
             bit_names = [f"{base}[{index}]" for index in sorted(indexes)]
-            lines.append(f"{kind} " + ", ".join(bit_names) + ";")
+            lines.extend(_format_scalar_declaration_chunks(kind, bit_names))
+    return lines
+
+
+def _format_scalar_declaration_chunks(kind: str, names: list[str]) -> list[str]:
+    lines: list[str] = []
+    current: list[str] = []
+    current_length = len(kind) + 1
+    for name in names:
+        separator_length = 0 if not current else 2
+        projected = current_length + separator_length + len(name) + 1
+        if current and projected > DECLARATION_MAX_LINE_LENGTH:
+            lines.append(f"{kind} " + ", ".join(current) + ";")
+            current = [name]
+            current_length = len(kind) + 1 + len(name)
+        else:
+            current.append(name)
+            current_length += separator_length + len(name)
+    if current:
+        lines.append(f"{kind} " + ", ".join(current) + ";")
     return lines
 
 

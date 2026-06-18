@@ -83,7 +83,7 @@ SUPPORTED_OPS = {
 _SIGNAL_RE = r"[A-Za-z_][A-Za-z0-9_$]*(?:\[[0-9]+\])?"
 
 
-def _depth_optimization_args(max_depth: int | None = None) -> dict[str, Any]:
+def _depth_optimization_args(max_depth: int | None = None, allowed_gates: list[str] | None = None) -> dict[str, Any]:
     args: dict[str, Any] = {
         "cost_function": "max_logic_depth",
         "objective": "minimize",
@@ -91,7 +91,26 @@ def _depth_optimization_args(max_depth: int | None = None) -> dict[str, Any]:
     }
     if max_depth is not None:
         args["max_depth"] = max_depth
+    if allowed_gates:
+        args["allowed_gates"] = allowed_gates
     return args
+
+
+def _whole_design_allowed_gates_for_depth(low: str) -> list[str] | None:
+    if (
+        _mentions_and_not_gate_set(low)
+        and "not" in low
+        and (
+            "remain" in low
+            or "remains" in low
+            or "still" in low
+            or "final design" in low
+            or "final netlist" in low
+            or "only" in low
+        )
+    ):
+        return ["and", "not"]
+    return None
 
 
 def plan_request(user_request: str, state) -> dict[str, Any]:
@@ -381,7 +400,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         and "optimize" in low
         and "depth" in low
     ):
-        args = _depth_optimization_args(_extract_limit_int(text))
+        args = _depth_optimization_args(_extract_limit_int(text), _whole_design_allowed_gates_for_depth(low))
         return {"op": "optimize_design_depth", "args": args}
 
     if "optimize" in low and ("logic cone" in low or "cone" in low):
@@ -432,7 +451,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
             return {"op": "insert_dedicated_buffers_for_each_load", "args": {"net": net}}
 
     if (
-        ("optimize" in low or "optimization" in low)
+        ("optimize" in low or "optimization" in low or "minimize" in low or "reduce" in low)
         and ("depth" in low or "critical path" in low or "maximum path" in low)
         and (
             "design" in low
@@ -443,7 +462,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
             or "maximum path" in low
         )
     ):
-        args = _depth_optimization_args(_extract_limit_int(text))
+        args = _depth_optimization_args(_extract_limit_int(text), _whole_design_allowed_gates_for_depth(low))
         return {"op": "optimize_design_depth", "args": args}
 
     if (
@@ -451,7 +470,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         and ("critical path" in low or "path depth" in low or "maximum path depth" in low)
         and ("restructuring" in low or "logic" in low or "depth" in low)
     ):
-        args = _depth_optimization_args(_extract_limit_int(text))
+        args = _depth_optimization_args(_extract_limit_int(text), _whole_design_allowed_gates_for_depth(low))
         return {"op": "optimize_design_depth", "args": args}
 
     if (
@@ -1094,7 +1113,9 @@ def _mentions_gate_type(low: str, gate_type: str) -> bool:
 def _mentions_and_not_gate_set(low: str) -> bool:
     return bool(
         re.search(r"\band\s*(?:/|,|\+|and)\s*not\s+gates?\b", low)
+        or re.search(r"\band\s*(?:/|,|\+|and)\s*not\s+only\b", low)
         or re.search(r"\bnot\s*(?:/|,|\+|and)\s*and\s+gates?\b", low)
+        or re.search(r"\bnot\s*(?:/|,|\+|and)\s*and\s+only\b", low)
         or "and/not" in low
         or "and-not" in low
     )
