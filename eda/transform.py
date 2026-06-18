@@ -2501,6 +2501,31 @@ def optimize_cone(
         )
 
     rebuild_graph(design)
+    if target in design.outputs and not logic_cone(design, target):
+        if max_depth is not None and max_depth < 0:
+            raise ValueError("optimize_cone requires max_depth >= 0 when provided.")
+        return {
+            "target": target,
+            "resolved_target": target,
+            "target_resolution": {
+                "target": target,
+                "original_target": target,
+                "kind": "primary_output_empty_cone",
+                "reason": "primary output has no combinational fanin cone to restructure",
+            },
+            "engine": "constraint_aware_cone",
+            "allowed_gates": sorted(allowed),
+            "max_depth": max_depth,
+            "initial_gate_count": 0,
+            "final_gate_count": 0,
+            "removed_gate_count": 0,
+            "initial_depth": 0,
+            "final_depth": 0,
+            "target_met": True,
+            "changed": [],
+            "num_changed": 0,
+        }
+
     resolved = _resolve_optimization_cone_target(design, target)
     resolved_target = resolved["target"]
     initial_gates = logic_cone(design, resolved_target)
@@ -2604,7 +2629,7 @@ def _optimize_design_depth_with_allowed_gates(
     max_outputs: int | None,
     allowed: set[str],
 ) -> dict[str, Any]:
-    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nor", "not"}):
+    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nand", "not"}, {"nor", "not"}):
         raise ValueError(f"Unsupported whole-design allowed_gates for depth optimization: {sorted(allowed)}")
 
     initial_gate_count = len(design.gates)
@@ -3531,7 +3556,7 @@ def _design_gate_library_report(design: Design, allowed: set[str]) -> dict[str, 
 
 
 def _legalize_design_to_gate_library(design: Design, allowed: set[str]) -> dict[str, Any]:
-    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nor", "not"}):
+    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nand", "not"}, {"nor", "not"}):
         raise ValueError(f"Unsupported allowed_gates for whole-design optimization: {sorted(allowed)}")
     changed: list[dict[str, Any]] = []
     names = _CachedNameAllocator(design)
@@ -3548,6 +3573,8 @@ def _legalize_design_to_gate_library(design: Design, allowed: set[str]) -> dict[
             _emit_gate_as_and_or_not(builder, old_type, old_inputs, old_output)
         elif allowed == {"and", "not"}:
             _emit_gate_as_and_not(builder, old_type, old_inputs, old_output)
+        elif allowed == {"nand", "not"}:
+            _emit_gate_as_nand_not(builder, old_type, old_inputs, old_output)
         else:
             _emit_gate_as_nor_not(builder, old_type, old_inputs, old_output)
         changed.append({"gate": gate_name, "old_type": old_type, "output": old_output, "allowed_gates": sorted(allowed)})
@@ -3556,7 +3583,7 @@ def _legalize_design_to_gate_library(design: Design, allowed: set[str]) -> dict[
 
 
 def _legalize_cone_to_gate_library(design: Design, resolved_target: str, allowed: set[str]) -> dict[str, Any]:
-    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nor", "not"}):
+    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nand", "not"}, {"nor", "not"}):
         raise ValueError(f"Unsupported allowed_gates for constrained cone optimization: {sorted(allowed)}")
     rebuild_graph(design)
     changed: list[dict[str, Any]] = []
@@ -3574,6 +3601,8 @@ def _legalize_cone_to_gate_library(design: Design, resolved_target: str, allowed
             _emit_gate_as_and_or_not(builder, old_type, old_inputs, old_output)
         elif allowed == {"and", "not"}:
             _emit_gate_as_and_not(builder, old_type, old_inputs, old_output)
+        elif allowed == {"nand", "not"}:
+            _emit_gate_as_nand_not(builder, old_type, old_inputs, old_output)
         else:
             _emit_gate_as_nor_not(builder, old_type, old_inputs, old_output)
         changed.append({"gate": gate_name, "old_type": old_type, "output": old_output, "allowed_gates": sorted(allowed)})
@@ -3643,6 +3672,42 @@ def _emit_gate_as_and_not(builder: _GateLibraryEmitter, gate_type: str, inputs: 
         _emit_gate_as_and_or_not(builder, gate_type, inputs, output)
 
 
+def _emit_gate_as_nand_not(builder: _GateLibraryEmitter, gate_type: str, inputs: list[str], output: str) -> None:
+    def inv(net: str, out: str | None = None) -> str:
+        return builder.gate("not", [net], out)
+    def and_gate(nets: list[str], out: str | None = None) -> str:
+        return inv(builder.gate("nand", nets), out)
+    def or_gate(nets: list[str], out: str | None = None) -> str:
+        return builder.gate("nand", [inv(net) for net in nets], out)
+    if gate_type == "buf" and len(inputs) == 1:
+        inv(inv(inputs[0]), output)
+    elif gate_type == "not" and len(inputs) == 1:
+        inv(inputs[0], output)
+    elif gate_type == "nand":
+        builder.gate("nand", inputs, output)
+    elif gate_type == "and":
+        and_gate(inputs, output)
+    elif gate_type == "or":
+        or_gate(inputs, output)
+    elif gate_type == "nor":
+        inv(or_gate(inputs), output)
+    elif gate_type == "xor" and len(inputs) == 2:
+        a, b = inputs
+        t1 = builder.gate("nand", [a, b])
+        t2 = builder.gate("nand", [a, t1])
+        t3 = builder.gate("nand", [b, t1])
+        builder.gate("nand", [t2, t3], output)
+    elif gate_type == "xnor" and len(inputs) == 2:
+        a, b = inputs
+        t1 = builder.gate("nand", [a, b])
+        t2 = builder.gate("nand", [a, t1])
+        t3 = builder.gate("nand", [b, t1])
+        xor_net = builder.gate("nand", [t2, t3])
+        inv(xor_net, output)
+    else:
+        raise ValueError(f"Cannot legalize {gate_type} with {len(inputs)} input(s) to NAND/NOT")
+
+
 def _emit_gate_as_nor_not(builder: _GateLibraryEmitter, gate_type: str, inputs: list[str], output: str) -> None:
     def inv(net: str, out: str | None = None) -> str:
         return builder.gate("not", [net], out)
@@ -3696,4 +3761,3 @@ def _emit_xor_as_and_not(builder: _GateLibraryEmitter, a: str, b: str, output: s
     not_term_b = builder.gate("not", [not_a_and_b])
     mid = builder.gate("and", [not_term_a, not_term_b])
     builder.gate("not", [mid], output)
-

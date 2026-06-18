@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from eda.design import DFF, Design, Gate
 from eda.graph import rebuild_graph
-from eda.analysis import max_depth
+from eda.analysis import logic_cone, max_depth
 from eda.transform import (
     _adaptive_depth_topk,
     _abc_candidate_depth_targets,
@@ -561,6 +561,32 @@ class TransformTest(unittest.TestCase):
         self.assertTrue(all(gate.type in {"and", "not"} for gate in design.gates.values()))
         self.assertTrue(check_design_equivalence(original, design)["ok"])
 
+    def test_optimize_cone_accepts_nand_not_allowed_gates(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="y"))
+        original = deepcopy(design)
+
+        result = optimize_cone(design, "y", allowed_gates=["nand", "not"], allow_yosys_abc=False)
+
+        self.assertEqual(result["engine"], "constraint_aware_cone")
+        self.assertEqual(result["allowed_gates"], ["nand", "not"])
+        self.assertTrue(all(design.gates[name].type in {"nand", "not"} for name in logic_cone(design, "y")))
+        self.assertTrue(check_design_equivalence(original, design)["ok"])
+
+    def test_optimize_cone_keeps_empty_primary_output_cone_as_noop(self) -> None:
+        design = Design(inputs={"a", "clk"}, outputs={"q"})
+        design.add_gate(Gate(name="U_or", type="or", inputs=["a", "clk"], output="d"))
+        design.add_dff(DFF(name="FF0", d="d", q="q", clk="clk"))
+        original = deepcopy(design)
+
+        result = optimize_cone(design, "q", allowed_gates=["nand", "not"], allow_yosys_abc=False)
+
+        self.assertEqual(result["target_resolution"]["kind"], "primary_output_empty_cone")
+        self.assertEqual(result["initial_gate_count"], 0)
+        self.assertEqual(result["final_gate_count"], 0)
+        self.assertEqual(result["num_changed"], 0)
+        self.assertEqual({name: gate.type for name, gate in design.gates.items()}, {name: gate.type for name, gate in original.gates.items()})
+
     def test_rename_net_updates_references_and_preserves_function(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="n_mid"))
@@ -624,5 +650,3 @@ class TransformTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

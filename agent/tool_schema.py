@@ -176,7 +176,7 @@ OP_DESCRIPTIONS = {
     "replace_with_and_not": "Reconstruct primitive combinational gates using only AND and NOT gates while preserving Boolean function. Use before depth optimization when the task requires an AND/NOT-only final design. Args: none.",
     "insert_buffers_for_fanout": "Insert buffers on a net so driven gate fanout is at most max_fanout.",
     "insert_dedicated_buffers_for_each_load": "Insert one dedicated BUF per current load of a net or signal. Args: net.",
-    "insert_buffers_for_all_high_fanout": "Insert buffers on every currently high-fanout net so driven gate fanout is at most max_fanout. Args: max_fanout.",
+    "insert_buffers_for_all_high_fanout": "Insert buffers on every currently high-fanout net so driven gate fanout is at most max_fanout. Args: max_fanout. Use only this operation for fanout-bound prompts; never add optimize_design_depth in the same response after fanout buffering.",
     "balance_depth_with_buffers": "Insert buffers to equalize logic depths from one source to several destinations.",
     "optimize_cone": "Run conservative local cone optimization. Args: target; optional max_depth, minimize_gate_count, allowed_gates, objective. When a prompt requires a target cone to contain only certain gate types, pass allowed_gates exactly, for example [\"and\", \"or\", \"not\"] or [\"nor\", \"not\"].",
     "constant_propagation": "Simplify gates with constant or redundant inputs while preserving behavior. Args: none.",
@@ -292,6 +292,4 @@ def _operation_descriptions(ops: list[str]) -> str:
     return "Available operations: " + " ".join(
         f"{op}: {OP_DESCRIPTIONS[op]}" for op in ops
     )
-
-
 

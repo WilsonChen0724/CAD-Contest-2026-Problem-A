@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import os
+import platform
+import shutil
+import subprocess
+import tempfile
+from copy import deepcopy
 from itertools import product
+from pathlib import Path
 from typing import Any, Protocol
 
-from eda.design import Design
+from eda.design import Design, Gate
 from eda.graph import rebuild_graph
+from parser.verilog_writer import write_verilog
+from parser.yosys_tools import quote_yosys_path, run_yosys_script
+
+
+ABC_CEC_TIMEOUT = 60.0
+ABC_YOSYS_TIMEOUT = 60.0
 
 # todo
 # 1. check_duplicate_drivers
@@ -70,7 +83,14 @@ def check_equivalence(design: Design, expr: str, target: str) -> dict:
     engine = _BooleanEngine()
     target_expr = engine.net_expr(design, target)
     user_expr = engine.parse_expr(expr, design)
-    return _prove_no_counterexample(engine, target_expr != user_expr)
+    abc_result = _check_boolean_equivalence_with_abc(target_expr, user_expr)
+    if abc_result is not None and abc_result.get("ok"):
+        return abc_result
+
+    solver_result = _prove_no_counterexample(engine, target_expr != user_expr)
+    if abc_result is not None and not solver_result.get("ok") and solver_result.get("counterexample") is None:
+        return abc_result
+    return solver_result
 
 
 def check_property(design: Design, target: str, property_text: str) -> dict:
@@ -100,6 +120,14 @@ def check_design_equivalence(before: Design, after: Design, outputs: list[str] |
     if not selected_outputs:
         return {"ok": True, "engine": "none", "outputs": [], "failures": {}}
 
+    abc_result = _check_design_equivalence_with_abc(before, after, selected_outputs)
+    if abc_result is not None:
+        return abc_result
+
+    return _check_design_equivalence_with_expr_solver(before, after, selected_outputs)
+
+
+def _check_design_equivalence_with_expr_solver(before: Design, after: Design, selected_outputs: list[str]) -> dict:
     failures: dict[str, dict] = {}
     engines: set[str] = set()
     for output in selected_outputs:
@@ -118,6 +146,254 @@ def check_design_equivalence(before: Design, after: Design, outputs: list[str] |
         "outputs": selected_outputs,
         "failures": failures,
     }
+
+
+def _check_design_equivalence_with_abc(before: Design, after: Design, selected_outputs: list[str]) -> dict | None:
+    try:
+        before_view = _abc_combinational_boundary_view(before, selected_outputs, "before")
+        after_view = _abc_combinational_boundary_view(after, selected_outputs, "after")
+        completed = _run_abc_cec(before_view, after_view)
+    except Exception:
+        return None
+
+    text = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+    if completed.returncode == 0 and _abc_reports_equivalent(text):
+        return {"ok": True, "engine": "abc", "outputs": selected_outputs, "failures": {}}
+    if _abc_reports_not_equivalent(text):
+        return {
+            "ok": False,
+            "engine": "abc",
+            "outputs": selected_outputs,
+            "failures": {
+                output: {
+                    "ok": False,
+                    "engine": "abc",
+                    "counterexample": None,
+                    "reason": "ABC CEC reported a mismatch.",
+                }
+                for output in selected_outputs
+            },
+            "reason": _trim_tool_output(text),
+        }
+    return None
+
+
+def _abc_combinational_boundary_view(design: Design, selected_outputs: list[str], label: str) -> Design:
+    """Build the same combinational-boundary model used by the expression checker."""
+    view = deepcopy(design)
+    view.module_name = f"abc_{label}"
+    selected = set(selected_outputs)
+    state_qs = {dff.q for dff in view.dffs.values()}
+    view.dffs = {}
+
+    for q in sorted(state_qs):
+        if q in selected:
+            state_input = _unique_abc_state_input(view, q)
+            _replace_gate_input_net(view, q, state_input)
+            view.inputs.add(state_input)
+            view.wires.discard(state_input)
+            if not _net_has_gate_driver(view, q):
+                gate_name = view.make_unique_gate_name(f"ABC_state_{q}_buf")
+                view.add_gate(Gate(name=gate_name, type="buf", inputs=[state_input], output=q))
+        else:
+            view.inputs.add(q)
+            view.wires.discard(q)
+
+    view.outputs = selected
+    rebuild_graph(view)
+    return view
+
+
+def _unique_abc_state_input(design: Design, net: str) -> str:
+    base = "__abc_state_" + "".join(char if char.isalnum() or char in "_$" else "_" for char in net)
+    candidate = base
+    index = 0
+    used = design.all_nets() | set(design.gates) | set(design.dffs)
+    while candidate in used:
+        index += 1
+        candidate = f"{base}_{index}"
+    return candidate
+
+
+def _replace_gate_input_net(design: Design, old: str, new: str) -> None:
+    for gate in design.gates.values():
+        gate.inputs = [new if item == old else item for item in gate.inputs]
+
+
+def _net_has_gate_driver(design: Design, net: str) -> bool:
+    return any(gate.output == net for gate in design.gates.values())
+
+
+def _run_abc_cec(before: Design, after: Design) -> subprocess.CompletedProcess[str]:
+    abc, env = _resolve_abc()
+    with tempfile.TemporaryDirectory() as tmp:
+        work_dir = Path(tmp)
+        before_v = work_dir / "before.v"
+        after_v = work_dir / "after.v"
+        before_blif = work_dir / "before.blif"
+        after_blif = work_dir / "after.blif"
+        write_verilog(before, before_v)
+        write_verilog(after, after_v)
+        _write_abc_blif(before_v, before.module_name, before_blif)
+        _write_abc_blif(after_v, after.module_name, after_blif)
+        command = [str(abc), "-c", f"cec {before_blif.as_posix()} {after_blif.as_posix()}"]
+        try:
+            return subprocess.run(
+                command,
+                cwd=work_dir,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=ABC_CEC_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            message = f"ABC CEC timed out after {ABC_CEC_TIMEOUT:.1f} seconds."
+            return subprocess.CompletedProcess(command, 124, stdout, (stderr + "\n" + message).strip())
+
+
+def _write_abc_blif(verilog_path: Path, top: str, blif_path: Path) -> None:
+    script = "\n".join(
+        [
+            f"read_verilog -noopt {quote_yosys_path(verilog_path)}",
+            f"hierarchy -check -top {top}",
+            "proc",
+            "opt",
+            "techmap",
+            "opt",
+            f"write_blif {quote_yosys_path(blif_path)}",
+        ]
+    )
+    completed = run_yosys_script(script, timeout=ABC_YOSYS_TIMEOUT)
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(f"Yosys failed to prepare ABC BLIF: {message}")
+
+
+def _resolve_abc() -> tuple[Path | str, dict[str, str]]:
+    env = os.environ.copy()
+    repo_root = Path(__file__).resolve().parents[1]
+    suite_root = repo_root / "third_party" / "yosys" / "oss-cad-suite"
+    bin_dir = suite_root / "bin"
+    system = platform.system().lower()
+
+    candidates = ["yosys-abc.exe", "abc.exe"] if system == "windows" else ["yosys-abc", "abc"]
+    for name in candidates:
+        local_abc = bin_dir / name
+        if local_abc.exists():
+            env = env.copy()
+            env["PATH"] = os.pathsep.join([str(bin_dir), env.get("PATH", "")])
+            if system == "windows":
+                env["PATH"] = os.pathsep.join([str(suite_root / "lib"), env["PATH"]])
+                env.setdefault("YOSYSHQ_ROOT", str(suite_root) + os.sep)
+            return local_abc, env
+
+    for name in candidates:
+        system_abc = shutil.which(name)
+        if system_abc:
+            return system_abc, env
+
+    raise RuntimeError("ABC was not found. Install OSS CAD Suite or add yosys-abc/abc to PATH.")
+
+
+def _abc_reports_equivalent(text: str) -> bool:
+    lowered = text.lower()
+    return "networks are equivalent" in lowered or "circuits are equivalent" in lowered
+
+
+def _abc_reports_not_equivalent(text: str) -> bool:
+    lowered = text.lower()
+    mismatch_markers = [
+        "networks are not equivalent",
+        "circuits are not equivalent",
+        "not equivalent",
+        "not equiv",
+        "cex",
+        "counter-example",
+        "counterexample",
+    ]
+    return any(marker in lowered for marker in mismatch_markers) and not _abc_reports_equivalent(text)
+
+
+def _trim_tool_output(text: str, limit: int = 800) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _check_boolean_equivalence_with_abc(left: "_ExprNode", right: "_ExprNode") -> dict | None:
+    try:
+        output = _abc_output_name(left.vars() | right.vars())
+        left_design = _expr_to_abc_design(left, output, "expr_left")
+        right_design = _expr_to_abc_design(right, output, "expr_right")
+        completed = _run_abc_cec(left_design, right_design)
+    except Exception:
+        return None
+
+    text = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+    if completed.returncode == 0 and _abc_reports_equivalent(text):
+        return {"ok": True, "engine": "abc", "counterexample": None}
+    if _abc_reports_not_equivalent(text):
+        return {
+            "ok": False,
+            "engine": "abc",
+            "counterexample": None,
+            "reason": _trim_tool_output(text) or "ABC CEC reported a mismatch.",
+        }
+    return None
+
+
+def _expr_to_abc_design(expr: "_ExprNode", output: str, module_name: str) -> Design:
+    design = Design(module_name=module_name, inputs=set(expr.vars()), outputs={output})
+    counter = [0]
+    expr_net = _emit_expr_node(design, expr, counter)
+    if expr_net != output:
+        gate_name = design.make_unique_gate_name("ABC_expr_out")
+        design.add_gate(Gate(name=gate_name, type="buf", inputs=[expr_net], output=output))
+    rebuild_graph(design)
+    return design
+
+
+def _emit_expr_node(design: Design, expr: "_ExprNode", counter: list[int]) -> str:
+    if isinstance(expr, _Var):
+        return expr.name
+    if isinstance(expr, _Const):
+        return "1'b1" if expr.value else "1'b0"
+    if isinstance(expr, _Not):
+        input_net = _emit_expr_node(design, expr.operand, counter)
+        return _add_expr_gate(design, "not", [input_net], counter)
+    if isinstance(expr, _Binary):
+        if expr.op == "->":
+            left_net = _emit_expr_node(design, expr.left, counter)
+            right_net = _emit_expr_node(design, expr.right, counter)
+            not_left = _add_expr_gate(design, "not", [left_net], counter)
+            return _add_expr_gate(design, "or", [not_left, right_net], counter)
+        gate_type = {"&": "and", "|": "or", "^": "xor"}.get(expr.op)
+        if gate_type is None:
+            raise ValueError(f"Unsupported Boolean operator for ABC: {expr.op}")
+        left_net = _emit_expr_node(design, expr.left, counter)
+        right_net = _emit_expr_node(design, expr.right, counter)
+        return _add_expr_gate(design, gate_type, [left_net, right_net], counter)
+    raise ValueError(f"Unsupported Boolean expression node: {type(expr).__name__}")
+
+
+def _add_expr_gate(design: Design, gate_type: str, inputs: list[str], counter: list[int]) -> str:
+    counter[0] += 1
+    output = design.make_unique_wire_name(f"__abc_expr_n{counter[0]}")
+    gate_name = design.make_unique_gate_name(f"ABC_expr_{counter[0]}")
+    design.add_gate(Gate(name=gate_name, type=gate_type, inputs=inputs, output=output))
+    return output
+
+
+def _abc_output_name(used: set[str]) -> str:
+    output = "__abc_equiv_out"
+    index = 0
+    while output in used:
+        index += 1
+        output = f"__abc_equiv_out_{index}"
+    return output
 
 
 def _collect_net_drivers(design: Design) -> dict[str, list[str]]:

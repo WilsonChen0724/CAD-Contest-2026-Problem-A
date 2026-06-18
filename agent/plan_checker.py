@@ -249,6 +249,7 @@ def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
             )
 
     normalized_steps = [_normalize_tool_step(step) for step in steps]
+    normalized_steps = _drop_fanout_gate_count_depth_overplan(normalized_steps)
     return validate_plan({"steps": normalized_steps})
 
 
@@ -305,6 +306,31 @@ def _drop_empty_tool_steps(steps: list[Any]) -> list[Any]:
             and step.get("save_as") is None
         )
     ]
+
+
+def _drop_fanout_gate_count_depth_overplan(steps: list[Any]) -> list[Any]:
+    """
+    Fanout-buffer prompts should stop after buffer insertion.
+
+    LLMs sometimes append optimize_design_depth after a fanout-buffer step, but
+    that backend optimizes logic depth and can trigger expensive full-design ABC.
+    A request that needs both fanout buffering and depth optimization should be
+    split across separate user prompts, so drop the extra step here.
+    """
+    has_fanout_buffer_step = any(
+        isinstance(step, dict)
+        and step.get("op") in {"insert_buffers_for_fanout", "insert_buffers_for_all_high_fanout"}
+        for step in steps
+    )
+    if not has_fanout_buffer_step:
+        return steps
+
+    repaired: list[Any] = []
+    for step in steps:
+        if isinstance(step, dict) and step.get("op") == "optimize_design_depth":
+            continue
+        repaired.append(step)
+    return repaired
 
 
 def validate_plan(plan: Any) -> dict[str, Any]:
@@ -566,5 +592,3 @@ def _normalize_tool_step(step: dict[str, Any]) -> dict[str, Any]:
     if normalized.get("save_as") is None:
         normalized.pop("save_as", None)
     return normalized
-
-
