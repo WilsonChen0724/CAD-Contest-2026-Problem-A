@@ -106,6 +106,23 @@ endmodule
         self.assertLess(written.index("and U1"), written.index("buf U2"))
         self.assertLess(written.index("buf U2"), written.index("dff FF0"))
 
+    def test_writer_splits_long_scalar_declarations(self) -> None:
+        design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        previous = "a"
+        for index in range(40):
+            output = "y" if index == 39 else f"n{index}"
+            design.add_gate(Gate(name=f"g{index}", type="buf", inputs=[previous], output=output))
+            previous = output
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "wrapped.v"
+            write_verilog(design, out_path)
+            written = out_path.read_text(encoding="utf-8")
+
+        wire_lines = [line for line in written.splitlines() if line.startswith("wire ")]
+        self.assertGreater(len(wire_lines), 1)
+        self.assertTrue(all(len(line) <= 120 for line in wire_lines))
+
 
 if __name__ == "__main__":
     unittest.main()

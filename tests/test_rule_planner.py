@@ -390,6 +390,21 @@ class RulePlannerTest(unittest.TestCase):
             },
         )
         self.assertEqual(
+            plan_request(
+                "Minimize the maximum logic depth of the design, ensuring the netlist remains AND and NOT only.",
+                None,
+            ),
+            {
+                "op": "optimize_design_depth",
+                "args": {
+                    "cost_function": "max_logic_depth",
+                    "objective": "minimize",
+                    "cost_scope": "whole_design",
+                    "allowed_gates": ["and", "not"],
+                },
+            },
+        )
+        self.assertEqual(
             plan_request("Calculate the critical path depth between n15 and n25[0].", None),
             {"op": "max_depth", "args": {"src": "n15", "dst": "n25[0]"}},
         )

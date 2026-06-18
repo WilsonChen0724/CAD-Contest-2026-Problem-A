@@ -1876,6 +1876,7 @@ def _run_yosys_depth_attempt(
         return None, f"{label} failed: Yosys/ABC did not produce an optimized Verilog file."
     try:
         optimized = parse_verilog(output_path)
+        _canonicalize_yosys_generated_names(optimized)
         _prune_unreferenced_wires(optimized)
         connectivity = check_connectivity(optimized)
     except Exception as exc:
@@ -1883,6 +1884,85 @@ def _run_yosys_depth_attempt(
     if not connectivity.get("ok"):
         return None, f"{label} failed connectivity check: {_summarize_connectivity_failure(connectivity)}"
     return optimized, ""
+
+
+def _canonicalize_yosys_generated_names(design: Design) -> None:
+    """Rename Yosys/temp-derived internal names to stable contest-style names."""
+    used = set(design.inputs) | set(design.outputs) | set(design.wires) | set(design.gates) | set(design.dffs)
+
+    gate_renames: dict[str, str] = {}
+    gate_index = _next_numeric_suffix("g", used)
+    for old_name in sorted(design.gates):
+        if not _is_yosys_generated_name(old_name):
+            continue
+        new_name, gate_index = _allocate_numeric_name("g", gate_index, used)
+        gate_renames[old_name] = new_name
+
+    for old_name, new_name in gate_renames.items():
+        gate = design.gates.pop(old_name)
+        gate.name = new_name
+        design.gates[new_name] = gate
+
+    net_renames: dict[str, str] = {}
+    net_index = _next_numeric_suffix("n", used)
+    protected_nets = set(design.inputs) | set(design.outputs)
+    for old_net in sorted(design.wires):
+        if old_net in protected_nets or is_constant(old_net):
+            continue
+        if not _is_yosys_generated_name(old_net):
+            continue
+        new_net, net_index = _allocate_numeric_name("n", net_index, used)
+        net_renames[old_net] = new_net
+
+    if net_renames:
+        for gate in design.gates.values():
+            gate.inputs = [net_renames.get(net, net) for net in gate.inputs]
+            gate.output = net_renames.get(gate.output, gate.output)
+        for dff in design.dffs.values():
+            dff.d = net_renames.get(dff.d, dff.d)
+            dff.q = net_renames.get(dff.q, dff.q)
+            if dff.clk:
+                dff.clk = net_renames.get(dff.clk, dff.clk)
+            if dff.rst:
+                dff.rst = net_renames.get(dff.rst, dff.rst)
+        design.wires = {net_renames.get(net, net) for net in design.wires}
+
+    if gate_renames or net_renames:
+        rebuild_graph(design)
+
+
+def _is_yosys_generated_name(name: str) -> bool:
+    low = name.lower()
+    if any(marker in low for marker in ("input_for_yosys", "yosys_input", "cone_yosys", "tmp_tmp", "_tmp_", "$")):
+        return True
+    if low.startswith("_yosys_bit_"):
+        return True
+    if re.fullmatch(r"_\d+_", name):
+        return True
+    if re.fullmatch(r"g\d+\.(?:d|q|clk|rst)", name):
+        return True
+    return False
+
+
+def _next_numeric_suffix(prefix: str, used: set[str]) -> int:
+    max_suffix = 0
+    pattern = re.compile(rf"{re.escape(prefix)}(\d+)$")
+    for name in used:
+        match = pattern.fullmatch(name)
+        if match:
+            max_suffix = max(max_suffix, int(match.group(1)))
+    return max_suffix + 1
+
+
+def _allocate_numeric_name(prefix: str, start: int, used: set[str]) -> tuple[str, int]:
+    index = start
+    while True:
+        candidate = f"{prefix}{index}"
+        index += 1
+        if candidate in used:
+            continue
+        used.add(candidate)
+        return candidate, index
 
 
 def _yosys_abc_timeout(gate_count: int, *, cheap: bool) -> float:
@@ -2498,7 +2578,14 @@ def optimize_design_depth(
     allowed = _normalize_allowed_gates(allowed_gates)
     cone_constraints = _normalize_cone_gate_constraints(constraints)
     if not cone_constraints:
-        del allowed, cost_function, cost_scope
+        del cost_function, cost_scope
+        if allowed:
+            return _optimize_design_depth_with_allowed_gates(
+                design,
+                max_depth=max_depth,
+                max_outputs=max_outputs,
+                allowed=allowed,
+            )
         return _optimize_design_depth_base(design, max_depth=max_depth, max_outputs=max_outputs)
     return _optimize_design_depth_with_constraints(
         design,
@@ -2508,6 +2595,130 @@ def optimize_design_depth(
         cost_scope=cost_scope or "whole_design",
         constraints=cone_constraints,
     )
+
+
+def _optimize_design_depth_with_allowed_gates(
+    design: Design,
+    *,
+    max_depth: int | None,
+    max_outputs: int | None,
+    allowed: set[str],
+) -> dict[str, Any]:
+    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nor", "not"}):
+        raise ValueError(f"Unsupported whole-design allowed_gates for depth optimization: {sorted(allowed)}")
+
+    initial_gate_count = len(design.gates)
+    initial_depth = _design_max_depth(design)
+    before_report = _design_gate_library_report(design, allowed)
+    legalization_changes: list[dict[str, Any]] = []
+    initial_legalize = _legalize_design_to_gate_library(design, allowed)
+    if initial_legalize["num_changed"]:
+        legalization_changes.append({"rule": "initial_whole_design_legalize", **initial_legalize})
+    legalized_gate_count = len(design.gates)
+    legalized_depth = _design_max_depth(design)
+
+    best = deepcopy(design)
+    best_depth = legalized_depth
+    best_gate_count = legalized_gate_count
+    best_result: dict[str, Any] | None = None
+    accepted_passes: list[dict[str, Any]] = []
+    rejected_passes: list[dict[str, Any]] = []
+    pass_count = 1
+
+    for pass_index in range(1, pass_count + 1):
+        candidate = deepcopy(best)
+        effective_max_outputs = max_outputs
+        try:
+            candidate_result = _optimize_design_depth_base(
+                candidate,
+                max_depth=max_depth,
+                max_outputs=effective_max_outputs,
+            )
+        except Exception as exc:
+            rejected_passes.append({"pass": pass_index, "reason": str(exc)})
+            break
+
+        relegalize = _legalize_design_to_gate_library(candidate, allowed)
+        report = _design_gate_library_report(candidate, allowed)
+        candidate_depth = _design_max_depth(candidate)
+        candidate_gate_count = len(candidate.gates)
+        if not report["satisfied"]:
+            rejected_passes.append(
+                {
+                    "pass": pass_index,
+                    "reason": "depth candidate violated whole-design gate-library constraint after re-legalization",
+                    "report": report,
+                }
+            )
+            break
+        if candidate_depth > best_depth:
+            rejected_passes.append(
+                {
+                    "pass": pass_index,
+                    "reason": f"candidate increased post-legalization depth from {best_depth} to {candidate_depth}",
+                }
+            )
+            break
+        if candidate_depth == best_depth and candidate_gate_count >= best_gate_count:
+            rejected_passes.append(
+                {
+                    "pass": pass_index,
+                    "reason": f"candidate kept depth {candidate_depth} and did not reduce gate count ({best_gate_count} -> {candidate_gate_count})",
+                }
+            )
+            break
+
+        pass_summary = {
+            "pass": pass_index,
+            "candidate_engine": candidate_result.get("engine"),
+            "candidate_max_outputs": effective_max_outputs,
+            "candidate_depth": candidate_depth,
+            "candidate_gate_count": candidate_gate_count,
+            "relegalized_gates": relegalize["num_changed"],
+        }
+        accepted_passes.append(pass_summary)
+        if relegalize["num_changed"]:
+            candidate_result.setdefault("changed", []).append({"rule": "post_depth_whole_design_relegalize", **relegalize})
+        best = candidate
+        best_depth = candidate_depth
+        best_gate_count = candidate_gate_count
+        best_result = candidate_result
+
+    _replace_design_contents(design, best)
+    final_report = _design_gate_library_report(design, allowed)
+    if not final_report["satisfied"]:
+        raise RuntimeError(f"Whole-design depth optimization failed to satisfy allowed_gates={sorted(allowed)}.")
+
+    final_depth = _design_max_depth(design)
+    final_gate_count = len(design.gates)
+    return {
+        "engine": "library_preserving_depth",
+        "allowed_gates": sorted(allowed),
+        "max_depth": max_depth,
+        "max_outputs": max_outputs,
+        "initial_gate_count": initial_gate_count,
+        "legalized_gate_count": legalized_gate_count,
+        "final_gate_count": final_gate_count,
+        "initial_depth": initial_depth,
+        "legalized_depth": legalized_depth,
+        "final_depth": final_depth,
+        "target_met": max_depth is None or final_depth <= max_depth,
+        "gate_library_report_before": before_report,
+        "gate_library_report_after": final_report,
+        "legalization_changes": legalization_changes,
+        "candidate_engine": best_result.get("engine") if isinstance(best_result, dict) else None,
+        "candidate_applied": bool(accepted_passes),
+        "accepted_passes": accepted_passes,
+        "rejected_passes": rejected_passes,
+        "attempted_outputs": best_result.get("attempted_outputs", []) if isinstance(best_result, dict) else [],
+        "skipped_outputs": best_result.get("skipped_outputs", []) if isinstance(best_result, dict) else [],
+        "bounded_reason": (
+            f"whole-design allowed_gates={sorted(allowed)}; "
+            f"legalized first, then ran {len(accepted_passes)} accepted Yosys/ABC depth pass(es)"
+        ),
+        "changed": legalization_changes + (best_result.get("changed", []) if isinstance(best_result, dict) else []),
+        "num_changed_outputs": best_result.get("num_changed_outputs", 0) if isinstance(best_result, dict) else 0,
+    }
 
 
 def _normalize_cone_gate_constraints(constraints: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -3305,6 +3516,45 @@ def _disallowed_gate_types_in_cone(design: Design, resolved_target: str, allowed
     return bad
 
 
+def _design_gate_library_report(design: Design, allowed: set[str]) -> dict[str, Any]:
+    disallowed: dict[str, int] = {}
+    for gate in design.gates.values():
+        if gate.type not in allowed:
+            disallowed[gate.type] = disallowed.get(gate.type, 0) + 1
+    return {
+        "allowed_gates": sorted(allowed),
+        "satisfied": not disallowed,
+        "gate_count": len(design.gates),
+        "disallowed_gate_counts": dict(sorted(disallowed.items())),
+        "depth": _design_max_depth(design),
+    }
+
+
+def _legalize_design_to_gate_library(design: Design, allowed: set[str]) -> dict[str, Any]:
+    if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nor", "not"}):
+        raise ValueError(f"Unsupported allowed_gates for whole-design optimization: {sorted(allowed)}")
+    changed: list[dict[str, Any]] = []
+    names = _CachedNameAllocator(design)
+    for gate_name in sorted(list(design.gates)):
+        gate = design.gates.get(gate_name)
+        if gate is None or gate.type in allowed:
+            continue
+        old_type = gate.type
+        old_output = gate.output
+        old_inputs = list(gate.inputs)
+        design.gates.pop(gate_name, None)
+        builder = _GateLibraryEmitter(design, gate_name, names)
+        if allowed == {"and", "or", "not"}:
+            _emit_gate_as_and_or_not(builder, old_type, old_inputs, old_output)
+        elif allowed == {"and", "not"}:
+            _emit_gate_as_and_not(builder, old_type, old_inputs, old_output)
+        else:
+            _emit_gate_as_nor_not(builder, old_type, old_inputs, old_output)
+        changed.append({"gate": gate_name, "old_type": old_type, "output": old_output, "allowed_gates": sorted(allowed)})
+    rebuild_graph(design)
+    return {"changed": changed, "num_changed": len(changed)}
+
+
 def _legalize_cone_to_gate_library(design: Design, resolved_target: str, allowed: set[str]) -> dict[str, Any]:
     if allowed not in ({"and", "or", "not"}, {"and", "not"}, {"nor", "not"}):
         raise ValueError(f"Unsupported allowed_gates for constrained cone optimization: {sorted(allowed)}")
@@ -3383,6 +3633,12 @@ def _emit_gate_as_and_not(builder: _GateLibraryEmitter, gate_type: str, inputs: 
     elif gate_type == "nor":
         inverted = [builder.gate("not", [net]) for net in inputs]
         builder.gate("and", inverted, output)
+    elif gate_type == "xor" and len(inputs) == 2:
+        _emit_xor_as_and_not(builder, inputs[0], inputs[1], output)
+    elif gate_type == "xnor" and len(inputs) == 2:
+        mid = builder.wire(f"{builder.base_name}_xnor_xor")
+        _emit_xor_as_and_not(builder, inputs[0], inputs[1], mid)
+        builder.gate("not", [mid], output)
     else:
         _emit_gate_as_and_or_not(builder, gate_type, inputs, output)
 
@@ -3429,4 +3685,15 @@ def _emit_xor_as_and_or_not(builder: _GateLibraryEmitter, a: str, b: str, output
     t1 = builder.gate("and", [a, not_b])
     t2 = builder.gate("and", [not_a, b])
     builder.gate("or", [t1, t2], output)
+
+
+def _emit_xor_as_and_not(builder: _GateLibraryEmitter, a: str, b: str, output: str) -> None:
+    not_a = builder.gate("not", [a])
+    not_b = builder.gate("not", [b])
+    a_and_not_b = builder.gate("and", [a, not_b])
+    not_a_and_b = builder.gate("and", [not_a, b])
+    not_term_a = builder.gate("not", [a_and_not_b])
+    not_term_b = builder.gate("not", [not_a_and_b])
+    mid = builder.gate("and", [not_term_a, not_term_b])
+    builder.gate("not", [mid], output)
 
