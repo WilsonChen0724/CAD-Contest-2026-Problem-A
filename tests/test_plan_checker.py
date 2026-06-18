@@ -105,6 +105,32 @@ class PlanCheckerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"steps": [{"op": "logic_cone", "args": {"target": "n15"}}]})
 
+    def test_drops_depth_optimization_after_fanout_buffer_plan(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_transform_plan",
+            {
+                "steps": [
+                    {
+                        "op": "insert_buffers_for_all_high_fanout",
+                        "args": {"max_fanout": 16},
+                    },
+                    {
+                        "op": "optimize_design_depth",
+                        "args": {
+                            "cost_function": "max_logic_depth",
+                            "cost_scope": "whole_design",
+                            "objective": "minimize",
+                        },
+                    },
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {"steps": [{"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": 16}}]},
+        )
+
     def test_normalizes_find_path_avoid_string_and_drops_empty_steps(self) -> None:
         plan = validate_domain_tool_plan(
             "run_analysis_plan",
@@ -373,5 +399,3 @@ class PlanCheckerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

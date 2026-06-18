@@ -175,6 +175,13 @@ class RulePlannerTest(unittest.TestCase):
 
         self.assertEqual(plan, {"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": 4}})
 
+        plan = plan_request(
+            "Insert buffers wherever needed so that no signal drives more than 16 loads. The cost function is the total gate count of the final design; smaller is better.",
+            None,
+        )
+
+        self.assertEqual(plan, {"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": 16}})
+
     def test_maps_insert_dedicated_buffers_for_each_load(self) -> None:
         plan = plan_request(
             "Please insert a BUF gate on signal n2 so that each load of n2 is driven through a dedicated buffer.",

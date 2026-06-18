@@ -831,8 +831,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         after_design = state.design
         before_total = gate_counts(before_design)["total"] if before_design is not None else "unknown"
         after_total = gate_counts(after_design)["total"] if after_design is not None else "unknown"
-        before_design_depth = design_max_logic_depth(before_design)["max_depth"] if before_design is not None else "unknown"
-        after_design_depth = design_max_logic_depth(after_design)["max_depth"] if after_design is not None else "unknown"
+        if result.get("num_changed") == 0:
+            before_design_depth = "unchanged"
+            after_design_depth = "unchanged"
+        else:
+            before_design_depth = design_max_logic_depth(before_design)["max_depth"] if before_design is not None else "unknown"
+            after_design_depth = design_max_logic_depth(after_design)["max_depth"] if after_design is not None else "unknown"
         resolved_target = result.get("resolved_target", args["target"])
         resolved_text = ""
         if resolved_target != args["target"]:
@@ -2474,6 +2478,8 @@ def _check_depth_balance(design, src: str, dsts: list[str]) -> dict[str, Any]:
 
 
 def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) -> dict[str, Any]:
+    if max_allowed_depth is None:
+        return {"ok": True, "target": target, "final_depth": None, "source_depths": {}}
     sources = set(design.inputs) | {dff.q for dff in design.dffs.values()}
     depths: dict[str, int] = {}
     for source in sorted(sources):
@@ -2481,8 +2487,6 @@ def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) 
         if path:
             depths[source] = depth
     final_depth = max(depths.values(), default=0)
-    if max_allowed_depth is None:
-        return {"ok": True, "target": target, "final_depth": final_depth, "source_depths": depths}
     return {
         "ok": final_depth <= max_allowed_depth,
         "target": target,
@@ -2490,6 +2494,4 @@ def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) 
         "max_allowed_depth": max_allowed_depth,
         "source_depths": depths,
     }
-
-
 
