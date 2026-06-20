@@ -348,7 +348,7 @@ def _check_boolean_equivalence_with_abc(left: "_ExprNode", right: "_ExprNode") -
 def _expr_to_abc_design(expr: "_ExprNode", output: str, module_name: str) -> Design:
     design = Design(module_name=module_name, inputs=set(expr.vars()), outputs={output})
     counter = [0]
-    expr_net = _emit_expr_node(design, expr, counter)
+    expr_net = _emit_expr_node(design, expr, counter, memo={})
     if expr_net != output:
         gate_name = design.make_unique_gate_name("ABC_expr_out")
         design.add_gate(Gate(name=gate_name, type="buf", inputs=[expr_net], output=output))
@@ -356,26 +356,35 @@ def _expr_to_abc_design(expr: "_ExprNode", output: str, module_name: str) -> Des
     return design
 
 
-def _emit_expr_node(design: Design, expr: "_ExprNode", counter: list[int]) -> str:
+def _emit_expr_node(design: Design, expr: "_ExprNode", counter: list[int], memo: dict[int, str]) -> str:
     if isinstance(expr, _Var):
         return expr.name
     if isinstance(expr, _Const):
         return "1'b1" if expr.value else "1'b0"
+    expr_id = id(expr)
+    if expr_id in memo:
+        return memo[expr_id]
     if isinstance(expr, _Not):
-        input_net = _emit_expr_node(design, expr.operand, counter)
-        return _add_expr_gate(design, "not", [input_net], counter)
+        input_net = _emit_expr_node(design, expr.operand, counter, memo)
+        output_net = _add_expr_gate(design, "not", [input_net], counter)
+        memo[expr_id] = output_net
+        return output_net
     if isinstance(expr, _Binary):
         if expr.op == "->":
-            left_net = _emit_expr_node(design, expr.left, counter)
-            right_net = _emit_expr_node(design, expr.right, counter)
+            left_net = _emit_expr_node(design, expr.left, counter, memo)
+            right_net = _emit_expr_node(design, expr.right, counter, memo)
             not_left = _add_expr_gate(design, "not", [left_net], counter)
-            return _add_expr_gate(design, "or", [not_left, right_net], counter)
+            output_net = _add_expr_gate(design, "or", [not_left, right_net], counter)
+            memo[expr_id] = output_net
+            return output_net
         gate_type = {"&": "and", "|": "or", "^": "xor"}.get(expr.op)
         if gate_type is None:
             raise ValueError(f"Unsupported Boolean operator for ABC: {expr.op}")
-        left_net = _emit_expr_node(design, expr.left, counter)
-        right_net = _emit_expr_node(design, expr.right, counter)
-        return _add_expr_gate(design, gate_type, [left_net, right_net], counter)
+        left_net = _emit_expr_node(design, expr.left, counter, memo)
+        right_net = _emit_expr_node(design, expr.right, counter, memo)
+        output_net = _add_expr_gate(design, gate_type, [left_net, right_net], counter)
+        memo[expr_id] = output_net
+        return output_net
     raise ValueError(f"Unsupported Boolean expression node: {type(expr).__name__}")
 
 

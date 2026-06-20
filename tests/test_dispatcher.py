@@ -645,6 +645,17 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Skipped full equivalence check", body)
         self.assertIn("large design", body)
 
+    def test_transactional_transform_skips_large_equivalence_guard(self) -> None:
+        state = CurrentState(config={"optimization_limits": {"large_design_gate_limit": 1}})
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U_not1", type="not", inputs=["a"], output="n1"))
+        state.design.add_gate(Gate(name="U_not2", type="not", inputs=["n1"], output="y"))
+
+        with patch("runtime.dispatcher.check_design_equivalence", side_effect=AssertionError("too expensive")):
+            body = dispatch_plan(state, {"op": "collapse_back_to_back_inverters", "args": {}})
+
+        self.assertIn("Collapsed 1 back-to-back inverter", body)
+
     def test_dispatcher_runs_formal_checks(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})

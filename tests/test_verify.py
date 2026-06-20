@@ -3,7 +3,15 @@ from __future__ import annotations
 import unittest
 
 from eda.design import Design, Gate
-from eda.verify import check_connectivity, check_design_equivalence, check_equivalence, check_property
+from eda.verify import (
+    _BooleanEngine,
+    _abc_output_name,
+    _expr_to_abc_design,
+    check_connectivity,
+    check_design_equivalence,
+    check_equivalence,
+    check_property,
+)
 
 
 class VerifyTest(unittest.TestCase):
@@ -90,6 +98,18 @@ class VerifyTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("y", result["failures"])
+
+    def test_abc_expression_emitter_reuses_shared_subtrees(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U_and", type="and", inputs=["a", "b"], output="n1"))
+        design.add_gate(Gate(name="U_or", type="or", inputs=["n1", "n1"], output="y"))
+        engine = _BooleanEngine()
+        expr = engine.net_expr(design, "y")
+        output = _abc_output_name(expr.vars())
+
+        emitted = _expr_to_abc_design(expr, output, "expr_test")
+
+        self.assertEqual(len(emitted.gates), 3)
 
 
 if __name__ == "__main__":
