@@ -1023,6 +1023,15 @@ def optimize_design_depth(
     effective_max_outputs = max_outputs if max_outputs is not None else adaptive_k
 
     if max_outputs is None:
+        if gate_count > 10000:
+            return _optimize_design_depth_locally(
+                design,
+                max_depth=max_depth,
+                max_outputs=effective_max_outputs,
+                engine="adaptive_topk_critical_cones",
+                bounded_reason=f"large design: skipped full-design Yosys/ABC and selected top {effective_max_outputs} critical cone target(s) for bounded cleanup",
+                allow_cone_yosys=True,
+            )
         try:
             return _optimize_design_depth_with_yosys_abc(design, max_depth=max_depth)
         except Exception as exc:
@@ -2653,6 +2662,11 @@ def _optimize_design_depth_with_allowed_gates(
     for pass_index in range(1, pass_count + 1):
         candidate = deepcopy(best)
         effective_max_outputs = max_outputs
+        if effective_max_outputs is None and len(candidate.gates) > 10000:
+            effective_max_outputs = _adaptive_depth_topk(
+                len(candidate.gates),
+                any("__fanout_buf_" in net for net in candidate.all_nets()),
+            )
         try:
             candidate_result = _optimize_design_depth_base(
                 candidate,

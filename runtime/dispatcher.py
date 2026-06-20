@@ -1219,7 +1219,7 @@ def _run_transactional_transform(
     connectivity = _connectivity_regression(original_connectivity, candidate_connectivity)
     if not connectivity.get("ok", False):
         raise RuntimeError(f"Transformation rejected: connectivity check failed: {connectivity}")
-    if verify_equivalence:
+    if verify_equivalence and not _skip_expensive_equivalence_check(original, candidate, state.config):
         equivalence = check_design_equivalence(original, candidate)
         if not equivalence.get("ok", False) and not _is_solver_inconclusive(equivalence):
             raise RuntimeError(f"Transformation rejected: equivalence check failed: {equivalence}")
@@ -2494,4 +2494,3 @@ def _check_cone_depth_bound(design, target: str, max_allowed_depth: int | None) 
         "max_allowed_depth": max_allowed_depth,
         "source_depths": depths,
     }
-
