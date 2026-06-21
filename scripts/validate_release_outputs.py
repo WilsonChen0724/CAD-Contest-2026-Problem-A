@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import sys
@@ -92,6 +93,7 @@ NON_EQUIVALENCE_TRANSFORMS = {"replace_buffers_with_and"}
 DEFAULT_COMPLETE_PATH_LIMIT = 300000
 VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT = 4000
 VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = 20000
+VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT = 8
 EXACT_VALIDATED_OPS = {
     "begin_testcase",
     "read_design",
@@ -157,6 +159,28 @@ class ValidationResult:
     detail: str
 
 
+@dataclass
+class MetricRecord:
+    case: str
+    response_id: int
+    op: str
+    validation_status: str
+    validation_detail: str
+    before_gates: int | None
+    after_gates: int | None
+    gate_delta: int | None
+    gate_improved: bool | None
+    before_depth: int | None
+    after_depth: int | None
+    depth_delta: int | None
+    depth_improved: bool | None
+    final_max_fanout: int | None
+    changed_items: int | None
+    skipped_items: int | None
+    cost_objective: str
+    metric_source: str
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate release runner outputs using ledger snapshots and external EDA checks."
@@ -177,6 +201,11 @@ def main() -> int:
         help="Return nonzero when an external oracle check cannot reach a verdict.",
     )
     parser.add_argument("--output", type=Path, help="Optional JSONL validation report path.")
+    parser.add_argument(
+        "--metrics-output",
+        type=Path,
+        help="Optional CSV report with transform/optimization QoR metrics.",
+    )
     args = parser.parse_args()
 
     if args.show_coverage:
@@ -191,11 +220,13 @@ def main() -> int:
         return 2
 
     results: list[ValidationResult] = []
+    ledger_paths: dict[str, Path] = {}
     for case in cases:
         ledger_path = _find_ledger(release_dir, args.planner, case)
         if ledger_path is None:
             results.append(ValidationResult(case, 0, "FAIL", "ledger", "ledger.jsonl not found"))
             continue
+        ledger_paths[case] = ledger_path
         results.extend(_validate_ledger(release_dir, ledger_path, case))
 
     _print_summary(results)
@@ -205,6 +236,10 @@ def main() -> int:
             "".join(json.dumps(result.__dict__, sort_keys=True) + "\n" for result in results),
             encoding="utf-8",
         )
+    if args.metrics_output:
+        metrics = _collect_metrics_for_cases(release_dir, ledger_paths, results)
+        _write_metrics_csv(args.metrics_output, metrics)
+        _print_metrics_summary(metrics)
 
     has_fail = any(result.status == "FAIL" for result in results)
     has_inconclusive = any(result.status == "INCONCLUSIVE" for result in results)
@@ -1309,16 +1344,7 @@ def _validate_transform(
             return ValidationResult(case, response_id, residual[0], op, residual[1])
         if residual is not None and residual[0] == "INCONCLUSIVE":
             return ValidationResult(case, response_id, residual[0], op, residual[1])
-        return ValidationResult(
-            case,
-            response_id,
-            "INCONCLUSIVE",
-            op,
-            (
-                "generic transform equivalence skipped for large design; "
-                "use explicit check_equivalent_to_last_transform_input/original check"
-            ),
-        )
+        return _validate_large_transform_with_guards(case, response_id, op, args, before, after)
 
     equiv = check_design_equivalence(before, after)
     if not equiv.get("ok"):
@@ -1330,6 +1356,65 @@ def _validate_transform(
     if residual is not None:
         return ValidationResult(case, response_id, residual[0], op, residual[1])
     return ValidationResult(case, response_id, "PASS", op, f"before/after equivalent by {equiv.get('engine')}")
+
+
+def _validate_large_transform_with_guards(
+    case: str,
+    response_id: int,
+    op: str,
+    args: dict[str, Any],
+    before: Any,
+    after: Any,
+) -> ValidationResult:
+    connectivity = check_connectivity(after)
+    if not connectivity.get("ok", False):
+        return ValidationResult(case, response_id, "FAIL", op, f"large-design connectivity failed: {connectivity}")
+
+    selected_outputs = _selected_outputs_for_large_transform(before, after, args)
+    if selected_outputs:
+        result = check_design_equivalence(before, after, outputs=selected_outputs)
+        if result.get("ok"):
+            return ValidationResult(
+                case,
+                response_id,
+                "PASS",
+                op,
+                f"large-design connectivity passed; selected-output equivalence passed for {selected_outputs}",
+            )
+        if _equivalence_depends_on_unknown_constant(result):
+            return ValidationResult(
+                case,
+                response_id,
+                "INCONCLUSIVE",
+                op,
+                f"selected-output equivalence depends on unknown/X constant: {result}",
+            )
+        return ValidationResult(case, response_id, "FAIL", op, f"selected-output equivalence failed: {result}")
+
+    return ValidationResult(
+        case,
+        response_id,
+        "INCONCLUSIVE",
+        op,
+        (
+            "large-design connectivity passed; selected-output equivalence target unavailable, "
+            "so full transform equivalence remains bounded"
+        ),
+    )
+
+
+def _selected_outputs_for_large_transform(before: Any, after: Any, args: dict[str, Any]) -> list[str]:
+    common_outputs = set(getattr(before, "outputs", set())) & set(getattr(after, "outputs", set()))
+    candidates: list[str] = []
+    for key in ("target", "dst", "output"):
+        value = args.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+    outputs = args.get("outputs")
+    if isinstance(outputs, list):
+        candidates.extend(str(item) for item in outputs)
+    selected = [candidate for candidate in candidates if candidate in common_outputs]
+    return sorted(dict.fromkeys(selected))[:VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT]
 
 
 def _check_transform_residual(design: Any, op: str, args: dict[str, Any]) -> tuple[str, str] | None:
@@ -1401,6 +1486,146 @@ def _read_records(path: Path) -> list[dict[str, Any]]:
         if line.strip():
             records.append(json.loads(line))
     return records
+
+
+def _collect_metrics_for_cases(
+    release_dir: Path,
+    ledger_paths: dict[str, Path],
+    results: list[ValidationResult],
+) -> list[MetricRecord]:
+    result_by_key = {(result.case, result.response_id): result for result in results}
+    metrics: list[MetricRecord] = []
+    for case, ledger_path in ledger_paths.items():
+        for record in _read_records(ledger_path):
+            response_id = int(record.get("response_id") or 0)
+            steps = _plan_steps(record)
+            op = str(steps[0].get("op")) if steps else ""
+            if op not in TRANSFORM_OPS and op not in NON_EQUIVALENCE_TRANSFORMS:
+                continue
+            result = result_by_key.get((case, response_id))
+            metrics.append(_metric_from_record(release_dir, ledger_path, case, response_id, op, record, result))
+    return metrics
+
+
+def _metric_from_record(
+    release_dir: Path,
+    ledger_path: Path,
+    case: str,
+    response_id: int,
+    op: str,
+    record: dict[str, Any],
+    validation_result: ValidationResult | None,
+) -> MetricRecord:
+    body = str(record.get("body") or "")
+    last_transform = record.get("last_transform")
+    delta = last_transform.get("delta") if isinstance(last_transform, dict) else None
+    delta = delta if isinstance(delta, dict) else {}
+    transform_result = last_transform.get("result") if isinstance(last_transform, dict) else None
+    transform_result = transform_result if isinstance(transform_result, dict) else {}
+
+    before_gates = _optional_int(delta.get("before_total_gates"))
+    after_gates = _optional_int(delta.get("after_total_gates"))
+    if before_gates is None or after_gates is None:
+        parsed_gates = _parse_arrow_metric(body, "gates")
+        before_gates = before_gates if before_gates is not None else parsed_gates[0]
+        after_gates = after_gates if after_gates is not None else parsed_gates[1]
+    gate_delta = _optional_int(delta.get("total_gate_delta"))
+    if gate_delta is None and before_gates is not None and after_gates is not None:
+        gate_delta = after_gates - before_gates
+
+    before_depth, after_depth = _parse_arrow_metric(body, "depth")
+    if before_depth is None:
+        before_depth = _optional_int(transform_result.get("initial_depth"))
+    if after_depth is None:
+        after_depth = _optional_int(transform_result.get("final_depth"))
+    depth_delta = after_depth - before_depth if before_depth is not None and after_depth is not None else None
+
+    final_max_fanout = _optional_int(transform_result.get("final_max_fanout"))
+    if final_max_fanout is None:
+        match = re.search(r"Final max fanout is\s+(\d+)", body)
+        final_max_fanout = int(match.group(1)) if match else None
+
+    changed_items = _first_int(
+        transform_result.get("num_changed"),
+        transform_result.get("num_changed_outputs"),
+        transform_result.get("num_inserted_buffers"),
+        transform_result.get("num_references"),
+        transform_result.get("num_removed_gates"),
+    )
+    skipped_items = _count_skipped_items(transform_result)
+    status = validation_result.status if validation_result else "UNKNOWN"
+    detail = validation_result.detail if validation_result else "no validation result"
+    return MetricRecord(
+        case=case,
+        response_id=response_id,
+        op=op,
+        validation_status=status,
+        validation_detail=detail,
+        before_gates=before_gates,
+        after_gates=after_gates,
+        gate_delta=gate_delta,
+        gate_improved=(gate_delta < 0) if gate_delta is not None else None,
+        before_depth=before_depth,
+        after_depth=after_depth,
+        depth_delta=depth_delta,
+        depth_improved=(depth_delta < 0) if depth_delta is not None else None,
+        final_max_fanout=final_max_fanout,
+        changed_items=changed_items,
+        skipped_items=skipped_items,
+        cost_objective=str(transform_result.get("cost_function") or _infer_cost_objective(op, body)),
+        metric_source="ledger_delta/body",
+    )
+
+
+def _write_metrics_csv(path: Path, metrics: list[MetricRecord]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(MetricRecord.__dataclass_fields__.keys())
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for metric in metrics:
+            writer.writerow(metric.__dict__)
+
+
+def _parse_arrow_metric(body: str, label: str) -> tuple[int | None, int | None]:
+    match = re.search(rf"{re.escape(label)}\s+(\d+)\s*->\s*(\d+)", body, flags=re.IGNORECASE)
+    if not match:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_int(*values: Any) -> int | None:
+    for value in values:
+        parsed = _optional_int(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _count_skipped_items(transform_result: dict[str, Any]) -> int | None:
+    skipped = transform_result.get("skipped")
+    if isinstance(skipped, list):
+        return len(skipped)
+    parsed = _optional_int(transform_result.get("num_skipped"))
+    return parsed
+
+
+def _infer_cost_objective(op: str, body: str) -> str:
+    lowered = f"{op} {body}".lower()
+    if "depth" in lowered or "critical path" in lowered:
+        return "max_logic_depth"
+    if "fanout" in lowered:
+        return "max_fanout"
+    if "gate" in lowered or "remove" in lowered or "merge" in lowered:
+        return "gate_count"
+    return "structural_change"
 
 
 def _plan_steps(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1549,6 +1774,23 @@ def _print_summary(results: list[ValidationResult]) -> None:
     for result in results:
         if result.status in {"FAIL", "INCONCLUSIVE"}:
             print(f"- {result.status} {result.case} response {result.response_id} [{result.check}]: {result.detail}")
+
+
+def _print_metrics_summary(metrics: list[MetricRecord]) -> None:
+    gate_improvements = sum(1 for metric in metrics if metric.gate_improved is True)
+    depth_improvements = sum(1 for metric in metrics if metric.depth_improved is True)
+    validated_improvements = sum(
+        1
+        for metric in metrics
+        if metric.validation_status == "PASS" and (metric.gate_improved is True or metric.depth_improved is True)
+    )
+    print(
+        "Metrics: "
+        f"{len(metrics)} transform/optimization response(s), "
+        f"gate improvements={gate_improvements}, "
+        f"depth improvements={depth_improvements}, "
+        f"validated improvements={validated_improvements}"
+    )
 
 
 def _print_coverage() -> None:

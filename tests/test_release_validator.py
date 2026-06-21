@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.validate_release_outputs import _validate_ledger
+from eda.design import Design, Gate
+from scripts.validate_release_outputs import (
+    ValidationResult,
+    _collect_metrics_for_cases,
+    _validate_large_transform_with_guards,
+    _validate_ledger,
+)
 
 
 class ReleaseValidatorTest(unittest.TestCase):
@@ -416,6 +422,97 @@ class ReleaseValidatorTest(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].status, "FAIL")
+
+    def test_collects_transform_qor_metrics_from_ledger_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "llm_openai" / "validation" / "test26"
+            case_dir.mkdir(parents=True)
+            ledger_path = case_dir / "ledger.jsonl"
+            record = {
+                "case": "test26",
+                "response_id": 7,
+                "plan": {"op": "optimize_design_depth", "args": {}},
+                "body": "Optimized design depth: gates 23 -> 15, depth 9 -> 6.",
+                "last_transform": {
+                    "delta": {
+                        "before_total_gates": 23,
+                        "after_total_gates": 15,
+                        "total_gate_delta": -8,
+                    },
+                    "result": {
+                        "initial_depth": 9,
+                        "final_depth": 6,
+                        "num_changed_outputs": 2,
+                    },
+                },
+            }
+            ledger_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            metrics = _collect_metrics_for_cases(
+                release_dir,
+                {"test26": ledger_path},
+                [
+                    ValidationResult(
+                        "test26",
+                        7,
+                        "PASS",
+                        "optimize_design_depth",
+                        "equivalence passed",
+                    )
+                ],
+            )
+
+            self.assertEqual(len(metrics), 1)
+            metric = metrics[0]
+            self.assertEqual(metric.before_gates, 23)
+            self.assertEqual(metric.after_gates, 15)
+            self.assertEqual(metric.gate_delta, -8)
+            self.assertTrue(metric.gate_improved)
+            self.assertEqual(metric.before_depth, 9)
+            self.assertEqual(metric.after_depth, 6)
+            self.assertEqual(metric.depth_delta, -3)
+            self.assertTrue(metric.depth_improved)
+            self.assertEqual(metric.validation_status, "PASS")
+            self.assertEqual(metric.cost_objective, "max_logic_depth")
+
+    def test_large_transform_uses_selected_output_equivalence_when_target_is_output(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
+        before.add_gate(Gate("U1", "buf", ["a"], "y"))
+        before.add_gate(Gate("U2", "not", ["a"], "z"))
+        after = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
+        after.add_gate(Gate("U1_rewrite", "buf", ["a"], "y"))
+        after.add_gate(Gate("U2", "not", ["a"], "z"))
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            1,
+            "optimize_cone",
+            {"target": "y"},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("selected-output equivalence passed", result.detail)
+
+    def test_large_transform_without_selected_output_is_inconclusive(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        before.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        after.add_gate(Gate("U1_rewrite", "buf", ["a"], "y"))
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            2,
+            "remove_dangling",
+            {},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "INCONCLUSIVE")
+        self.assertIn("selected-output equivalence target unavailable", result.detail)
 
 
 if __name__ == "__main__":
