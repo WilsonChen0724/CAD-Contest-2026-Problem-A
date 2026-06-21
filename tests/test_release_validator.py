@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from eda.design import Design, Gate
+from scripts import validate_release_outputs as validator
 from scripts.validate_release_outputs import (
     ValidationResult,
     _collect_metrics_for_cases,
@@ -205,6 +206,79 @@ class ReleaseValidatorTest(unittest.TestCase):
             results = _validate_ledger(release_dir, ledger_path, "test02")
 
             self.assertEqual([result.status for result in results], ["PASS"] * len(records))
+
+    def test_large_analysis_graph_oracles_are_exact_not_inconclusive(self) -> None:
+        original_limit = validator.VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT
+        validator.VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = 1
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                release_dir = Path(tmp) / "release"
+                case_dir = release_dir / "runner_output" / "rule" / "validation" / "test_large_analysis"
+                snapshot_dir = case_dir / "snapshots"
+                snapshot_dir.mkdir(parents=True)
+                snapshot_path = snapshot_dir / "design.v"
+                snapshot_path.write_text(
+                    "\n".join(
+                        [
+                            "module top(a, b, y);",
+                            "input a, b;",
+                            "output y;",
+                            "wire n1, n2;",
+                            "and U1(n1, a, b);",
+                            "not U2(n2, n1);",
+                            "buf U3(y, n2);",
+                            "endmodule",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                records = [
+                    {
+                        "case": "test_large_analysis",
+                        "response_id": 1,
+                        "plan": {"op": "find_path", "args": {"src": "a", "dst": "y"}},
+                        "body": "Found path:\na -> U1 -> n1 -> U2 -> n2 -> U3 -> y",
+                        "after_snapshot": "snapshots/design.v",
+                    },
+                    {
+                        "case": "test_large_analysis",
+                        "response_id": 2,
+                        "plan": {
+                            "op": "all_paths_pass_through",
+                            "args": {"src": "a", "dst": "y", "node": "n1"},
+                        },
+                        "body": 'Yes. Every combinational path from "a" to "y" passes through "n1".',
+                        "after_snapshot": "snapshots/design.v",
+                    },
+                    {
+                        "case": "test_large_analysis",
+                        "response_id": 3,
+                        "plan": {"op": "max_depth", "args": {"src": "a", "dst": "y"}},
+                        "body": (
+                            'The maximum logic depth from "a" to "y" is 3.\n'
+                            "Example path: a -> U1 -> n1 -> U2 -> n2 -> U3 -> y"
+                        ),
+                        "after_snapshot": "snapshots/design.v",
+                    },
+                    {
+                        "case": "test_large_analysis",
+                        "response_id": 4,
+                        "plan": {"op": "report_max_logic_depth", "args": {}},
+                        "body": "The maximum combinational logic depth in the design is 3.",
+                        "after_snapshot": "snapshots/design.v",
+                    },
+                ]
+                ledger_path = case_dir / "ledger.jsonl"
+                ledger_path.write_text(
+                    "".join(json.dumps(record) + "\n" for record in records),
+                    encoding="utf-8",
+                )
+
+                results = _validate_ledger(release_dir, ledger_path, "test_large_analysis")
+
+                self.assertEqual([result.status for result in results], ["PASS"] * len(records))
+        finally:
+            validator.VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = original_limit
 
     def test_negative_records_fail_when_response_text_is_wrong(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

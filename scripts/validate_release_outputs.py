@@ -595,9 +595,6 @@ def _validate_find_path(
     avoid = args.get("avoid") or []
     avoid = avoid if isinstance(avoid, list) else [avoid]
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        if "Found path:" in body or body.startswith(f'No path found from "{src}" to "{dst}".'):
-            return ValidationResult(case, response_id, "INCONCLUSIVE", "find_path", "large-design path oracle skipped")
     path = find_path(design, src=src, dst=dst, avoid=[str(item) for item in avoid])
     if path:
         expected = " -> ".join(path)
@@ -623,15 +620,6 @@ def _validate_all_paths_pass_through(
     if src == "__primary_input__" and dst == "__primary_output__":
         return ValidationResult(case, response_id, "SKIP", "all_paths_pass_through", "PI/PO cut-signal mode not covered")
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        if body.startswith("Yes.") or body.startswith("No."):
-            return ValidationResult(
-                case,
-                response_id,
-                "INCONCLUSIVE",
-                "all_paths_pass_through",
-                "large-design path-through oracle skipped",
-            )
     ok = all_paths_pass_through(design, src=src, dst=dst, node=node)
     if ok:
         expected = f'Yes. Every combinational path from "{src}" to "{dst}" passes through "{node}".'
@@ -683,9 +671,6 @@ def _validate_max_depth(
     src = str(args.get("src") or "")
     dst = str(args.get("dst") or "")
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        if f'The maximum logic depth from "{src}" to "{dst}" is ' in body:
-            return ValidationResult(case, response_id, "INCONCLUSIVE", "max_depth", "large-design depth oracle skipped")
     depth, path = max_depth(design, src, dst)
     expected = f'The maximum logic depth from "{src}" to "{dst}" is {depth}.'
     path_text = " -> ".join(path) if path else "(none)"
@@ -719,15 +704,6 @@ def _validate_design_max_logic_depth(
     record: dict[str, Any],
 ) -> ValidationResult:
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        if "The maximum combinational logic depth in the design is " in body:
-            return ValidationResult(
-                case,
-                response_id,
-                "INCONCLUSIVE",
-                "report_max_logic_depth",
-                "large-design max-depth oracle skipped",
-            )
     result = design_max_logic_depth(design)
     if result["endpoint"] is None:
         expected = "The maximum combinational logic depth in the design is 0."
