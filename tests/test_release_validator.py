@@ -476,6 +476,123 @@ class ReleaseValidatorTest(unittest.TestCase):
             self.assertEqual(metric.validation_status, "PASS")
             self.assertEqual(metric.cost_objective, "max_logic_depth")
 
+    def test_bounded_noop_transform_passes_from_ledger_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "llm_openai" / "validation" / "test24"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            netlist = "\n".join(
+                [
+                    "module top(a, y);",
+                    "input a;",
+                    "output y;",
+                    "buf U1(y, a);",
+                    "endmodule",
+                ]
+            )
+            (snapshot_dir / "before.v").write_text(netlist, encoding="utf-8")
+            (snapshot_dir / "after.v").write_text(netlist, encoding="utf-8")
+            record = {
+                "case": "test24",
+                "response_id": 6,
+                "plan": {"op": "optimize_design_depth", "args": {}},
+                "body": (
+                    "Optimized design depth with adaptive_topk_critical_cones: "
+                    "gates 1 -> 1, depth 1 -> 1, changed targets 0. "
+                    "large design: skipped full-design Yosys/ABC due to budget."
+                ),
+                "before_snapshot": "snapshots/before.v",
+                "after_snapshot": "snapshots/after.v",
+                "last_transform": {
+                    "transform": "optimize_design_depth",
+                    "delta": {
+                        "before_total_gates": 1,
+                        "after_total_gates": 1,
+                        "total_gate_delta": 0,
+                        "type_delta": {},
+                        "added_gates": [],
+                        "removed_gates": [],
+                        "added_dffs": [],
+                        "removed_dffs": [],
+                        "added_nets": [],
+                        "removed_nets": [],
+                    },
+                    "result": {"num_changed_outputs": 0, "changed": []},
+                },
+            }
+            ledger_path = case_dir / "ledger.jsonl"
+            ledger_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            results = _validate_ledger(release_dir, ledger_path, "test24")
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].status, "PASS")
+            self.assertIn("no structural delta", results[0].detail)
+
+    def test_delta_zero_with_reported_change_still_checks_equivalence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "rule" / "validation" / "bad05"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            (snapshot_dir / "before.v").write_text(
+                "\n".join(
+                    [
+                        "module top(a, b, y);",
+                        "input a, b;",
+                        "output y;",
+                        "and U1(y, a, b);",
+                        "endmodule",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (snapshot_dir / "after.v").write_text(
+                "\n".join(
+                    [
+                        "module top(a, b, y);",
+                        "input a, b;",
+                        "output y;",
+                        "or U1(y, a, b);",
+                        "endmodule",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            record = {
+                "case": "bad05",
+                "response_id": 1,
+                "plan": {"op": "reconnect_gate_input", "args": {"gate": "U1", "pin": "A", "new_net": "b"}},
+                "body": "Gate U1 was reconnected successfully.",
+                "before_snapshot": "snapshots/before.v",
+                "after_snapshot": "snapshots/after.v",
+                "last_transform": {
+                    "transform": "reconnect_gate_input",
+                    "delta": {
+                        "before_total_gates": 1,
+                        "after_total_gates": 1,
+                        "total_gate_delta": 0,
+                        "type_delta": {},
+                        "added_gates": [],
+                        "removed_gates": [],
+                        "added_dffs": [],
+                        "removed_dffs": [],
+                        "added_nets": [],
+                        "removed_nets": [],
+                    },
+                    "result": {"num_changed": 1, "changed": [{"gate": "U1"}]},
+                },
+            }
+            ledger_path = case_dir / "ledger.jsonl"
+            ledger_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            results = _validate_ledger(release_dir, ledger_path, "bad05")
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].status, "FAIL")
+            self.assertIn("not equivalent", results[0].detail)
+
     def test_large_transform_uses_selected_output_equivalence_when_target_is_output(self) -> None:
         before = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
         before.add_gate(Gate("U1", "buf", ["a"], "y"))

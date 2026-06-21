@@ -90,6 +90,13 @@ TRANSFORM_OPS = {
 }
 
 NON_EQUIVALENCE_TRANSFORMS = {"replace_buffers_with_and"}
+NOOP_ACCEPTABLE_TRANSFORMS = {
+    "remove_dangling",
+    "constant_propagation",
+    "optimize_cone",
+    "optimize_design_depth",
+    "merge_equivalent_gates",
+}
 DEFAULT_COMPLETE_PATH_LIMIT = 300000
 VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT = 4000
 VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = 20000
@@ -1335,15 +1342,20 @@ def _validate_transform(
     residual_args = dict(args)
     if _last_transform_has_skipped_items(record):
         residual_args["_bounded_partial"] = True
+    no_change_reason = _no_structural_change_reason(record, release_dir, ledger_path)
 
     if max(_design_gate_total(before), _design_gate_total(after)) > VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT:
-        if _is_bounded_skip_response(body):
-            return ValidationResult(case, response_id, "INCONCLUSIVE", op, _first_line(body))
         residual = _check_transform_residual(after, op, residual_args)
         if residual is not None and residual[0] == "FAIL":
             return ValidationResult(case, response_id, residual[0], op, residual[1])
         if residual is not None and residual[0] == "INCONCLUSIVE":
             return ValidationResult(case, response_id, residual[0], op, residual[1])
+        if residual is not None and residual[0] == "PASS":
+            return ValidationResult(case, response_id, residual[0], op, residual[1])
+        if no_change_reason is not None and op in NOOP_ACCEPTABLE_TRANSFORMS:
+            return ValidationResult(case, response_id, "PASS", op, no_change_reason)
+        if _is_bounded_skip_response(body):
+            return ValidationResult(case, response_id, "INCONCLUSIVE", op, _first_line(body))
         return _validate_large_transform_with_guards(case, response_id, op, args, before, after)
 
     equiv = check_design_equivalence(before, after)
@@ -1355,6 +1367,8 @@ def _validate_transform(
     residual = _check_transform_residual(after, op, residual_args)
     if residual is not None:
         return ValidationResult(case, response_id, residual[0], op, residual[1])
+    if no_change_reason is not None and op in NOOP_ACCEPTABLE_TRANSFORMS:
+        return ValidationResult(case, response_id, "PASS", op, no_change_reason)
     return ValidationResult(case, response_id, "PASS", op, f"before/after equivalent by {equiv.get('engine')}")
 
 
@@ -1453,6 +1467,100 @@ def _last_transform_has_skipped_items(record: dict[str, Any]) -> bool:
         return False
     result = last_transform.get("result")
     return isinstance(result, dict) and bool(result.get("skipped"))
+
+
+def _no_structural_change_reason(record: dict[str, Any], release_dir: Path, ledger_path: Path) -> str | None:
+    if _last_transform_delta_is_noop(record):
+        return "no structural delta recorded; transform made no netlist change"
+
+    before_path = _resolve_snapshot_path(record.get("before_snapshot"), release_dir, ledger_path)
+    after_path = _resolve_snapshot_path(record.get("after_snapshot"), release_dir, ledger_path)
+    if before_path is None or after_path is None:
+        return None
+    if before_path.suffix == ".txt" or after_path.suffix == ".txt":
+        return None
+    try:
+        if before_path.read_text(encoding="utf-8") == after_path.read_text(encoding="utf-8"):
+            return "before/after snapshots are identical; transform made no netlist change"
+    except OSError:
+        return None
+    return None
+
+
+def _last_transform_delta_is_noop(record: dict[str, Any]) -> bool:
+    last_transform = record.get("last_transform")
+    if not isinstance(last_transform, dict):
+        return False
+    delta = last_transform.get("delta")
+    if not isinstance(delta, dict):
+        return False
+    if not _transform_result_reports_noop(last_transform.get("result")):
+        return False
+
+    gate_delta = _optional_int(delta.get("total_gate_delta"))
+    before_gates = _optional_int(delta.get("before_total_gates"))
+    after_gates = _optional_int(delta.get("after_total_gates"))
+    if gate_delta is None and before_gates is not None and after_gates is not None:
+        gate_delta = after_gates - before_gates
+    if gate_delta is None or gate_delta != 0:
+        return False
+
+    sequence_keys = (
+        "added_gates",
+        "removed_gates",
+        "added_dffs",
+        "removed_dffs",
+        "added_nets",
+        "removed_nets",
+    )
+    if any(delta.get(key) for key in sequence_keys):
+        return False
+
+    type_delta = delta.get("type_delta")
+    return not isinstance(type_delta, dict) or not any(type_delta.values())
+
+
+def _transform_result_reports_noop(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+
+    saw_noop_indicator = False
+    count_keys = (
+        "num_changed",
+        "num_changed_outputs",
+        "num_changed_nets",
+        "num_inserted_buffers",
+        "num_removed_gates",
+        "num_removed_dffs",
+        "num_removed_nets",
+        "num_merged",
+        "num_references",
+    )
+    for key in count_keys:
+        value = _optional_int(result.get(key))
+        if value is None:
+            continue
+        saw_noop_indicator = True
+        if value != 0:
+            return False
+
+    sequence_keys = (
+        "changed",
+        "removed_gates",
+        "removed_dffs",
+        "removed_nets",
+        "added_gates",
+        "added_nets",
+        "merged",
+    )
+    for key in sequence_keys:
+        if key not in result:
+            continue
+        saw_noop_indicator = True
+        if result.get(key):
+            return False
+
+    return saw_noop_indicator
 
 
 def _verdict_from_equivalence_text(
