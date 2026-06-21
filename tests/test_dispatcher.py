@@ -656,6 +656,35 @@ class DispatcherTest(unittest.TestCase):
 
         self.assertIn("Collapsed 1 back-to-back inverter", body)
 
+    def test_optimize_design_depth_rejects_non_equivalent_candidate(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U1", type="buf", inputs=["a"], output="y"))
+
+        def fake_bad_optimizer(design, **kwargs):
+            del kwargs
+            design.gates["U1"].type = "not"
+            return {
+                "engine": "fake_bad_optimizer",
+                "initial_gate_count": 1,
+                "final_gate_count": 1,
+                "initial_depth": 1,
+                "final_depth": 1,
+                "target_met": True,
+                "changed": [{"gate": "U1"}],
+                "num_changed_outputs": 1,
+            }
+
+        with patch("runtime.dispatcher.optimize_design_depth", side_effect=fake_bad_optimizer):
+            body = dispatch_plan(state, {"op": "optimize_design_depth", "args": {}})
+
+        self.assertIn("Rejected optimize_design_depth candidate", body)
+        self.assertIn("No structural changes were applied", body)
+        self.assertEqual(state.design.gates["U1"].type, "buf")
+        self.assertEqual(state.last_transform_result["transform"], "optimize_design_depth")
+        self.assertTrue(state.last_transform_result["result"]["rejected"])
+        self.assertEqual(state.last_transform_result["delta"]["total_gate_delta"], 0)
+
     def test_dispatcher_runs_formal_checks(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})

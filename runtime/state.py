@@ -21,6 +21,9 @@ class CurrentState:
     log_path: Path | None = None
     output_dir: Path = Path("output")
     log_dir: Path = Path("output/logs")
+    validation_enabled: bool = False
+    validation_dir: Path = Path("output/validation")
+    validation_ledger_path: Path | None = None
 
     def begin_testcase(self, case_name: str) -> None:
         """Start a clean testcase and create its log file."""
@@ -36,6 +39,11 @@ class CurrentState:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.log_dir / f"{case_name}.log"
         self.log_path.write_text("", encoding="utf-8")
+        if self.validation_enabled:
+            case_dir = self.validation_dir / case_name
+            case_dir.mkdir(parents=True, exist_ok=True)
+            self.validation_ledger_path = case_dir / "ledger.jsonl"
+            self.validation_ledger_path.write_text("", encoding="utf-8")
 
     def next_response_id(self) -> int:
         """Return the current response id and advance the counter."""

@@ -19,6 +19,7 @@ from runtime.config import load_config
 from runtime.dispatcher import dispatch_plan
 from runtime.response import emit_response
 from runtime.state import CurrentState
+from runtime.validation_ledger import append_validation_record, snapshot_design, snapshot_last_transform_input
 
 
 def main() -> int:
@@ -45,13 +46,18 @@ def main() -> int:
         action="store_true",
         help="reinstall the local OSS CAD Suite when used with --ensure-yosys",
     )
+    parser.add_argument(
+        "--validation-ledger",
+        action="store_true",
+        help="write per-response validation records and design snapshots for offline oracle checks",
+    )
     args = parser.parse_args()
 
     if args.ensure_yosys:
         _ensure_yosys_available(force=args.force_yosys_install)
 
     config = load_config(args.config)
-    state = CurrentState(config=config)
+    state = CurrentState(config=config, validation_enabled=args.validation_ledger)
     prompt = _load_prompt()
 
     for raw_line in sys.stdin:
@@ -59,21 +65,87 @@ def main() -> int:
         if not request:
             continue
 
+        response_id = state.response_id
+        plan = None
+        error_text = None
+        before_snapshot = snapshot_design(state, response_id, "before")
         try:
             plan = _make_plan(request, state, config, prompt, args.planner)
             body = dispatch_plan(state, plan)
         except PlanValidationError as exc:
+            error_text = str(exc)
             body = format_plan_error(exc)
         except LLMNotConfiguredError as exc:
+            error_text = str(exc)
             body = f"LLM planner is not configured: {exc}"
         except LLMAPIError as exc:
+            error_text = str(exc)
             body = f"LLM API error: {exc}"
         except Exception as exc:
+            error_text = str(exc)
             body = f"Error: {exc}"
 
+        after_snapshot = snapshot_design(state, response_id, "after")
+        last_transform_input_snapshot = (
+            snapshot_last_transform_input(state, response_id)
+            if _plan_primary_op(plan) == "check_equivalent_to_last_transform_input"
+            else None
+        )
+        _append_validation_record_safely(
+            state,
+            response_id=response_id,
+            prompt=request,
+            plan=plan,
+            body=body,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            last_transform_input_snapshot=last_transform_input_snapshot,
+            error=error_text,
+        )
         print(emit_response(state, body), flush=True)
 
     return 0
+
+
+def _append_validation_record_safely(
+    state: CurrentState,
+    *,
+    response_id: int,
+    prompt: str,
+    plan: dict | None,
+    body: str,
+    before_snapshot: str | None,
+    after_snapshot: str | None,
+    last_transform_input_snapshot: str | None,
+    error: str | None,
+) -> None:
+    try:
+        append_validation_record(
+            state,
+            response_id=response_id,
+            prompt=prompt,
+            plan=plan,
+            body=body,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            last_transform_input_snapshot=last_transform_input_snapshot,
+            error=error,
+        )
+    except Exception as exc:
+        print(f"Validation ledger write failed for response {response_id}: {exc}", file=sys.stderr)
+
+
+def _plan_primary_op(plan: dict | None) -> str | None:
+    if not isinstance(plan, dict):
+        return None
+    op = plan.get("op")
+    if isinstance(op, str):
+        return op
+    steps = plan.get("steps")
+    if isinstance(steps, list) and steps and isinstance(steps[0], dict):
+        step_op = steps[0].get("op")
+        return step_op if isinstance(step_op, str) else None
+    return None
 
 
 def _make_plan(request: str, state: CurrentState, config: dict, prompt: str, planner_mode: str) -> dict:

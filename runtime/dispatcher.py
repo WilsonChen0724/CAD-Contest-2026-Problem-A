@@ -870,16 +870,25 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         max_allowed_depth = args.get("max_depth")
         if max_allowed_depth is not None and not isinstance(max_allowed_depth, int):
             raise ValueError('Tool call rejected: "max_depth" must be an integer when provided.')
-        result = _run_transactional_transform(
-            state,
-            optimize_design_depth,
-            max_depth=max_allowed_depth,
-            allowed_gates=args.get("allowed_gates"),
-            cost_function=args.get("cost_function"),
-            cost_scope=args.get("cost_scope"),
-            constraints=args.get("constraints"),
-            verify_equivalence=False,
-        )
+        try:
+            result = _run_transactional_transform(
+                state,
+                optimize_design_depth,
+                max_depth=max_allowed_depth,
+                allowed_gates=args.get("allowed_gates"),
+                cost_function=args.get("cost_function"),
+                cost_scope=args.get("cost_scope"),
+                constraints=args.get("constraints"),
+                verify_equivalence=True,
+            )
+        except RuntimeError as exc:
+            result = _record_rejected_noop_transform(
+                state,
+                "optimize_design_depth",
+                "formal/structural guard rejected the optimization candidate",
+                str(exc),
+            )
+            return _format_rejected_optimization(result)
         engine = result.get("engine", "unknown")
         target_text = ""
         if max_allowed_depth is not None:
@@ -1249,6 +1258,60 @@ def _run_transactional_transform(
         "delta": _design_delta(original, candidate),
     }
     return result
+
+
+def _record_rejected_noop_transform(
+    state: CurrentState,
+    transform_name: str,
+    reason: str,
+    detail: str,
+) -> dict[str, Any]:
+    _require_design(state)
+    original = state.design
+    summary = _design_max_depth_summary(original)
+    result = {
+        "engine": "rejected_noop",
+        "rejected": True,
+        "fallback_reason": reason,
+        "guard_detail": _trim_guard_detail(detail),
+        "initial_gate_count": len(original.gates),
+        "final_gate_count": len(original.gates),
+        "initial_depth": summary,
+        "final_depth": summary,
+        "target_met": True,
+        "candidate_applied": False,
+        "changed": [],
+        "num_changed_outputs": 0,
+    }
+    state.last_transform_input = deepcopy(original)
+    state.last_transform_result = {
+        "transform": transform_name,
+        "result": result,
+        "delta": _design_delta(original, original),
+    }
+    return result
+
+
+def _design_max_depth_summary(design) -> int | None:
+    try:
+        return int(design_max_logic_depth(design)["max_depth"])
+    except Exception:
+        return None
+
+
+def _trim_guard_detail(detail: str, limit: int = 360) -> str:
+    detail = " ".join(str(detail).split())
+    if len(detail) <= limit:
+        return detail
+    return detail[: limit - 3].rstrip() + "..."
+
+
+def _format_rejected_optimization(result: dict[str, Any]) -> str:
+    detail = result.get("guard_detail") or result.get("fallback_reason") or "candidate failed validation"
+    return (
+        "Rejected optimize_design_depth candidate because it failed the "
+        f"post-transform guard. No structural changes were applied. Reason: {detail}"
+    )
 
 
 def _design_delta(before, after) -> dict[str, Any]:

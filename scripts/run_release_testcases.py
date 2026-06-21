@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -100,6 +101,11 @@ def main() -> int:
         default=60.0,
         help="Timeout in seconds for basic begin/read/write responses. Official default: 60 seconds.",
     )
+    parser.add_argument(
+        "--validation-ledger",
+        action="store_true",
+        help="Pass --validation-ledger to main.py and copy validation records into runner_output.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -146,6 +152,7 @@ def main() -> int:
                 ensure_yosys=args.ensure_yosys,
                 timeout=args.timeout,
                 basic_timeout=args.basic_timeout,
+                validation_ledger=args.validation_ledger,
             )
             results.append(result)
             _print_case_summary(result)
@@ -224,6 +231,7 @@ def _run_case(
     ensure_yosys: bool,
     timeout: float,
     basic_timeout: float,
+    validation_ledger: bool,
 ) -> CaseResult:
     prompt_path = case_dir / "prompt.txt"
     if not prompt_path.exists():
@@ -242,6 +250,8 @@ def _run_case(
     ]
     if ensure_yosys:
         command.append("--ensure-yosys")
+    if validation_ledger:
+        command.append("--validation-ledger")
 
     response_timeouts = [_timeout_for_prompt(prompt, basic_timeout, timeout) for prompt in prompts]
     stdout, stderr, returncode = _run_case_interactive(
@@ -256,6 +266,7 @@ def _run_case(
     out_path.write_text(stdout, encoding="utf-8")
     err_path.write_text(stderr, encoding="utf-8")
     _copy_generated_netlist(release_dir, result_root, case_dir.name)
+    _copy_validation_ledger(release_dir, result_root, case_dir.name)
 
     return CaseResult(
         name=case_dir.name,
@@ -312,6 +323,16 @@ def _copy_generated_netlist(release_dir: Path, result_root: Path, case_name: str
     if generated.exists():
         target = result_root / generated.name
         target.write_bytes(generated.read_bytes())
+
+
+def _copy_validation_ledger(release_dir: Path, result_root: Path, case_name: str) -> None:
+    source = release_dir / "output" / "validation" / case_name
+    if not source.exists():
+        return
+    target = result_root / "validation" / case_name
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
 
 
 def _is_failure(
