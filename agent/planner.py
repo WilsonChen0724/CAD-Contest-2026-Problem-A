@@ -306,7 +306,7 @@ def _plan_transform(text: str, low: str) -> dict[str, Any] | None:
         return {"op": "replace_buffers_with_and", "args": args}
 
     if (
-        any(word in low for word in ("remove", "eliminate", "delete", "sweep", "prune"))
+        any(word in low for word in ("remove", "eliminate", "delete", "sweep", "prune", "trim"))
         and (
             "dangling" in low
             or "unused" in low
