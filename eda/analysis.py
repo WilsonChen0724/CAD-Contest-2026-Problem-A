@@ -139,32 +139,7 @@ def direct_pi_to_po_paths(design: Design) -> dict:
 
 def enumerate_paths(design: Design, src: str, dst: str, max_paths: int = 100) -> dict:
     """Enumerate simple combinational paths with a cap for large netlists."""
-    rebuild_graph(design)
-    if max_paths <= 0:
-        raise ValueError("max_paths must be positive.")
-
-    paths: list[list[str]] = []
-    stack = [(src, [src], {src})]
-    while stack and len(paths) < max_paths:
-        net, path, seen_nets = stack.pop()
-        if net == dst:
-            paths.append(path)
-            continue
-        for sink in reversed(design.fanouts.get(net, [])):
-            if sink.startswith("PO:"):
-                output = sink.split(":", 1)[1]
-                if output == dst:
-                    paths.append(path + [output])
-                    if len(paths) >= max_paths:
-                        break
-                continue
-            if not sink.startswith("GATE:"):
-                continue
-            gate = design.gates[sink.split(":", 1)[1]]
-            if gate.output in seen_nets:
-                continue
-            stack.append((gate.output, path + [gate.name, gate.output], seen_nets | {gate.output}))
-    return {"src": src, "dst": dst, "paths": paths, "num_paths": len(paths), "truncated": bool(stack)}
+    return all_paths(design, src, dst, max_paths=max_paths)
 
 
 def output_with_deepest_fanin_cone(design: Design) -> dict:
@@ -652,7 +627,7 @@ def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
     paths: list[list[str]] = []
     truncated = False
     expansions = 0
-    expansion_limit = max(10000, max_paths * 500)
+    expansion_limit = max(10000, max_paths * 50)
 
     def dfs(node: str, path: list[str], active: set[str]) -> None:
         nonlocal expansions, truncated

@@ -1,3 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python3 "$(dirname "$0")/main.py" "$@"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+chmod u+rwx "${SCRIPT_DIR}" 2>/dev/null || true
+
+YOSYS_ROOT="${SCRIPT_DIR}/third_party/yosys"
+YOSYS_BIN="${YOSYS_ROOT}/oss-cad-suite/bin/yosys"
+PYTHON_ROOT="${SCRIPT_DIR}/third_party/python"
+BUNDLED_PYTHON="${PYTHON_ROOT}/python/bin/python3"
+PYTHON_BIN="python3"
+
+if ! command -v python3 >/dev/null 2>&1 || ! python3 - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+then
+    if [[ ! -x "${BUNDLED_PYTHON}" ]]; then
+        PY_ARCHIVE="$(find "${PYTHON_ROOT}" -maxdepth 1 -type f -name 'cpython-3.11*x86_64-unknown-linux-gnu-install_only_stripped.tar.gz' 2>/dev/null | head -n 1 || true)"
+        if [[ -n "${PY_ARCHIVE}" ]]; then
+            tar -xzf "${PY_ARCHIVE}" -C "${PYTHON_ROOT}"
+        fi
+    fi
+    if [[ -x "${BUNDLED_PYTHON}" ]]; then
+        PYTHON_BIN="${BUNDLED_PYTHON}"
+    fi
+fi
+
+if [[ -d "${PYTHON_ROOT}/python/bin" ]]; then
+    chmod u+rx "${PYTHON_ROOT}/python/bin"/* 2>/dev/null || true
+fi
+
+if [[ ! -x "${YOSYS_BIN}" ]]; then
+    ARCHIVE="$(find "${YOSYS_ROOT}" -maxdepth 1 -type f -name '*linux-x64*.tgz' 2>/dev/null | head -n 1 || true)"
+    if [[ -n "${ARCHIVE}" ]]; then
+        tar -xzf "${ARCHIVE}" -C "${YOSYS_ROOT}"
+    fi
+fi
+
+if [[ -d "${YOSYS_ROOT}/oss-cad-suite/bin" ]]; then
+    chmod u+rx "${YOSYS_ROOT}/oss-cad-suite/bin"/* 2>/dev/null || true
+fi
+
+if [[ -x "${YOSYS_BIN}" ]]; then
+    export PATH="${YOSYS_ROOT}/oss-cad-suite/bin:${PATH}"
+fi
+
+if [[ -d "${SCRIPT_DIR}/vendor/python" ]]; then
+    export PYTHONPATH="${SCRIPT_DIR}/vendor/python:${PYTHONPATH:-}"
+fi
+
+"${PYTHON_BIN}" "${SCRIPT_DIR}/main.py" "$@"

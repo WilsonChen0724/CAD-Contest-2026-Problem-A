@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from eda.design import Design, Gate
 from runtime.state import CurrentState
@@ -45,6 +46,27 @@ class ValidationLedgerTest(unittest.TestCase):
             self.assertEqual(record["response_id"], 2)
             self.assertEqual(record["plan"]["steps"][0]["op"], "report_gate_counts")
             self.assertEqual(record["last_transform_input_snapshot"], last_transform_input_snapshot)
+
+    def test_snapshot_falls_back_to_unvalidated_verilog_when_writer_validation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            validation_dir = Path(tmp) / "validation"
+            design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+            design.add_gate(Gate(name="U1", type="buf", inputs=["a"], output="y"))
+            state = CurrentState(validation_enabled=True, validation_dir=validation_dir)
+            state.begin_testcase("test01")
+            state.design = design
+
+            with patch("runtime.validation_ledger.write_verilog", side_effect=OSError("Yosys blocked")):
+                snapshot = snapshot_design(state, 3, "after")
+
+            self.assertIsNotNone(snapshot)
+            snapshot_path = Path(snapshot)
+            self.assertEqual(snapshot_path.suffix, ".v")
+            self.assertTrue(snapshot_path.exists())
+            self.assertIn("buf U1(y, a);", snapshot_path.read_text(encoding="utf-8"))
+            warning_path = snapshot_path.with_suffix(".warning.txt")
+            self.assertTrue(warning_path.exists())
+            self.assertIn("Yosys blocked", warning_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
