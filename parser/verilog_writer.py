@@ -13,13 +13,18 @@ WRITER_YOSYS_VALIDATE_DFF_LIMIT = 1000
 DECLARATION_MAX_LINE_LENGTH = 120
 
 
+def render_verilog(design: Design) -> str:
+    """Render a Design as primitive Verilog without running external validation."""
+    return _render_verilog(design)
+
+
 def write_verilog(design: Design, path: str | Path) -> None:
     """
     Write a Design as primitive Verilog and validate it with Yosys.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    content = _render_verilog(design)
+    content = render_verilog(design)
     if _should_validate_with_yosys(design):
         _validate_with_yosys(content, design.module_name)
     p.write_text(content, encoding="utf-8")

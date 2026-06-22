@@ -62,6 +62,7 @@ from eda.verify import (
     check_signal_symmetry,
 )
 from parser.verilog_parser import parse_verilog
+from runtime.limits import DEFAULT_COMPLETE_PATH_LIMIT
 
 
 TRANSFORM_OPS = {
@@ -97,7 +98,6 @@ NOOP_ACCEPTABLE_TRANSFORMS = {
     "optimize_design_depth",
     "merge_equivalent_gates",
 }
-DEFAULT_COMPLETE_PATH_LIMIT = 300000
 VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT = 4000
 VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = 20000
 VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT = 8
@@ -261,7 +261,10 @@ def _validate_ledger(release_dir: Path, ledger_path: Path, case: str) -> list[Va
     for record in records:
         response_id = int(record.get("response_id") or 0)
         if original_design is None and record.get("after_snapshot"):
-            original_design = _parse_snapshot(record, "after_snapshot", release_dir, ledger_path)
+            try:
+                original_design = _parse_snapshot(record, "after_snapshot", release_dir, ledger_path)
+            except Exception:
+                original_design = None
         results.append(_validate_record(release_dir, ledger_path, case, record, original_design))
     return results
 

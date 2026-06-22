@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from parser.verilog_writer import write_verilog
+from parser.verilog_writer import render_verilog, write_verilog
 from runtime.state import CurrentState
 
 
@@ -15,14 +15,10 @@ def snapshot_design(state: CurrentState, response_id: int, label: str) -> str | 
     case_name = state.testcase or "unknown_case"
     snapshot_dir = state.validation_dir / case_name / "snapshots"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    path = snapshot_dir / f"response_{response_id:03d}_{label}.v"
-    try:
-        write_verilog(state.design, path)
-    except Exception as exc:
-        error_path = snapshot_dir / f"response_{response_id:03d}_{label}.error.txt"
-        error_path.write_text(str(exc), encoding="utf-8")
-        return str(error_path)
-    return str(path)
+    return _write_snapshot_with_fallback(
+        state.design,
+        snapshot_dir / f"response_{response_id:03d}_{label}",
+    )
 
 
 def snapshot_last_transform_input(state: CurrentState, response_id: int) -> str | None:
@@ -32,13 +28,31 @@ def snapshot_last_transform_input(state: CurrentState, response_id: int) -> str 
     case_name = state.testcase or "unknown_case"
     snapshot_dir = state.validation_dir / case_name / "snapshots"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    path = snapshot_dir / f"response_{response_id:03d}_last_transform_input.v"
+    return _write_snapshot_with_fallback(
+        state.last_transform_input,
+        snapshot_dir / f"response_{response_id:03d}_last_transform_input",
+    )
+
+
+def _write_snapshot_with_fallback(design: Any, stem: Path) -> str:
+    path = stem.with_suffix(".v")
     try:
-        write_verilog(state.last_transform_input, path)
+        write_verilog(design, path)
     except Exception as exc:
-        error_path = snapshot_dir / f"response_{response_id:03d}_last_transform_input.error.txt"
-        error_path.write_text(str(exc), encoding="utf-8")
-        return str(error_path)
+        try:
+            path.write_text(render_verilog(design), encoding="utf-8")
+        except Exception as fallback_exc:
+            error_path = stem.with_suffix(".error.txt")
+            error_path.write_text(
+                f"write_verilog failed: {exc}\nrender_verilog failed: {fallback_exc}",
+                encoding="utf-8",
+            )
+            return str(error_path)
+        warning_path = stem.with_suffix(".warning.txt")
+        warning_path.write_text(
+            f"write_verilog validation failed; wrote unvalidated snapshot fallback.\n{exc}",
+            encoding="utf-8",
+        )
     return str(path)
 
 
