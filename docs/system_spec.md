@@ -252,9 +252,12 @@ The backend must validate every tool call before execution. Validation includes:
 - Existing design state when required.
 - Existing saved result keys when `targets_from` or similar references are used.
 
-If the LLM returns invalid JSON or an invalid tool call, the planner may attempt
-one repair pass. If repair fails, the request is rejected with the unsupported
-request message.
+If the LLM returns invalid JSON, an invalid tool call, a checker-rejected plan,
+or a high-confidence prompt/plan semantic mismatch, the planner may attempt a
+bounded repair pass. The retry count is controlled by `planner.max_retries` and
+all pre-dispatch repair reasons share the same budget. If repair fails, the
+request is rejected with the unsupported request message or the relevant tool
+rejection message.
 
 ## 8. Error Handling
 
@@ -328,7 +331,8 @@ Transformation rejected: <reason>
 
 ### M4: Submission Hardening
 
-- LLM planner supports schema validation and one repair pass.
+- LLM planner supports schema validation, semantic prompt/plan checking, and
+  bounded pre-dispatch repair retry.
 - Timeouts and graceful fallback paths exist.
 - Regression tests cover PDF-style examples.
 - Config files never expose API keys.

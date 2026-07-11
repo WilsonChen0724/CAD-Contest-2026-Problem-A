@@ -1,19 +1,53 @@
 # Release Testcase TODO Cheat Sheet
 
 This note tracks capabilities observed while running the A_release testcase_0510 suite.
-The alpha-test goal is to maximize supported, non-error responses across the 40 release
-testcases before widening into lower-priority optimization features.
+The beta-test goal is to maximize supported, non-error responses across the 40 release
+testcases, then validate the completed run with the ledger-based external
+validator before submission.
 
-## Immediate Alpha Checks
+## Immediate Beta Checks
 
-- Re-run `test25` after schema/rule exposure for `rename_gate` and confirm gate instance rename no longer becomes `rename_net`.
-  - Current local result: `test25` with `--planner rule` has 9 responses, 0 missing, 0 unsupported, 0 errors.
 - Re-run the higher-risk late cases with strict logging:
-  `test31`, `test32`, `test34`, `test38`, and `test40`.
-  - Current local result: `test31` with `--planner rule` has 20 responses, 0 missing, 0 unsupported, 0 errors.
-  - Current local observation: `test32` reached 20 supported responses in rule output before the multi-case run timed out on later cases.
+  `test31`, `test32`, `test34`, `test35`, `test38`, and `test40`.
+- Run at least one official timeout profile before submission:
+  `--basic-timeout 60 --timeout 300`.
 - Install `z3-solver` in every teammate's active Python environment so large-design equivalence checks do not fall back to the 12-variable brute-force limit.
 - Keep `agent/prompt.txt`, `agent/tool_schema.py`, `agent/plan_checker.py`, and `runtime/dispatcher.py` synchronized whenever a new operation is added.
+
+## Beta P0 Team Split
+
+- Person A: parser/writer and graph correctness. Prioritize any testcase that
+  fails during `read_design`, `write_design`, net connectivity rebuild, bus
+  handling, or DFF/pin parsing.
+- Person B: planner, tool schema, and prompt-to-operation mapping. Prioritize
+  unsupported responses, wrong tool selection, semantic guard behavior, and
+  provider schema synchronization.
+- Person C: release runner, validation ledger, transform guards, and external
+  correctness metrics. Prioritize runner errors, failed transform validation,
+  validator FAIL/INCONCLUSIVE classification, and reportable QoR metrics.
+
+Person C beta P0 commands:
+
+```powershell
+python -m unittest discover -s tests
+python scripts\run_release_testcases.py --all --planner rule --validation-ledger --fail-on-error --fail-on-unsupported --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --planner rule --all --output outputs\validator_rule.jsonl --metrics-output outputs\validator_rule_metrics.csv
+python scripts\run_release_testcases.py --all --planner llm_openai --validation-ledger --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --planner llm_openai --all --output outputs\validator_llm_openai.jsonl --metrics-output outputs\validator_llm_openai_metrics.csv
+```
+
+Person C completion criteria for beta P0:
+
+- Runner summary has no missing responses, unsupported responses, or runtime
+  errors for the target planner run.
+- Validator results are exported as JSONL and metrics CSV.
+- Every `FAIL` is either fixed or documented with testcase, response id,
+  operation, oracle evidence, and suspected owner.
+- Every remaining `INCONCLUSIVE` has an explicit reason, such as bounded
+  all-path output, large-design equivalence budget, X semantics, or missing
+  selected-output scope.
+- Generated runner outputs, copied output netlists, and metrics artifacts stay
+  out of the source commit unless the team explicitly wants a report snapshot.
 
 ## Implemented Or Exposed In Current Branch
 
@@ -31,8 +65,8 @@ testcases before widening into lower-priority optimization features.
 
 ## P1 Remaining Analysis / Report Tools
 
-- `derive_boolean_equation`: derive a Boolean equation for an output or internal signal in terms of primary inputs when tractable.
 - Better register-path filtering, for example PI-to-DFF-D or DFF-Q-to-PO if release prompts require those exact scopes.
+- Floating/unconnected-net reports and cut/articulation reports remain useful beta candidates.
 
 ## P0/P1 Remaining Transform Tools
 
@@ -47,6 +81,7 @@ testcases before widening into lower-priority optimization features.
 
 - Treat large-design equivalence as Z3-required, or introduce an explicit `inconclusive` result instead of hard failure when only brute force is available.
 - Keep the transactional transform guard: transforms should not introduce new connectivity issues, but should tolerate pre-existing release-netlist issues.
+- Keep LLM repair bounded and pre-dispatch only; runtime transform rejection retry remains a beta design item.
 - Add regression tests for every new op in dispatcher, plan_checker, planner, and LLM tool schema behavior.
 
 ## Documentation Sync

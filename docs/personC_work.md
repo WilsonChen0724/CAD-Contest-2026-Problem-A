@@ -6,6 +6,92 @@ Owner scope:
 - Testcase state and response/log handling
 - Transformation interface
 - Verification interface
+- Release runner and external validator
+- Transform guard and optimization metrics reporting
+
+## Beta P0 Status
+
+Person C's current beta responsibility is to make the finished testcase run
+externally checkable. The main deliverable is not only "the program printed an
+answer"; it is a ledger-backed validation result that can be discussed in the
+final report.
+
+Official timeout profile:
+
+- Basic operations from Section 4.1: 60 seconds.
+- All other analysis, transformation, optimization, and verification requests:
+  300 seconds.
+
+Primary beta P0 tasks:
+
+1. Run the release suite with `--validation-ledger`.
+2. Run `scripts\validate_release_outputs.py` on the saved ledgers.
+3. Export both JSONL verdicts and CSV QoR metrics.
+4. Fix transform-guard bugs when the validator reports a concrete `FAIL`.
+5. Document any remaining `INCONCLUSIVE` result with the bounded-policy reason
+   and the next stronger oracle needed.
+
+Recommended Person C commands:
+
+```powershell
+python -m unittest discover -s tests
+python scripts\run_release_testcases.py --all --planner rule --validation-ledger --fail-on-error --fail-on-unsupported --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --planner rule --all --output outputs\validator_rule.jsonl --metrics-output outputs\validator_rule_metrics.csv
+python scripts\run_release_testcases.py --all --planner llm_openai --validation-ledger --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --planner llm_openai --all --output outputs\validator_llm_openai.jsonl --metrics-output outputs\validator_llm_openai_metrics.csv
+```
+
+Completion criteria:
+
+- Unit tests pass.
+- Rule-mode release run has zero missing, unsupported, and error responses.
+- LLM-mode release run has zero missing and runtime error responses; any
+  unsupported response is handed to Person B with the prompt, response id, and
+  emitted tool-call trace.
+- Validator outputs are saved under `outputs/` for discussion but are not
+  committed unless the team intentionally wants a frozen report snapshot.
+- Every transform/optimization `FAIL` is either fixed or assigned with oracle
+  evidence from the validator report.
+
+## Latest Local Person C Check
+
+Date: 2026-07-10.
+
+Completed:
+
+- `python -m unittest discover -s tests`
+  - Result: 235 tests passed.
+- Rule-mode release runner with validation ledger and official timeout profile:
+  - `--basic-timeout 60 --timeout 300`
+  - Full run was split because the shell-level command timeout was shorter
+    than the whole 40-case regression.
+  - `test35-test40` summary: 114 prompts, 114 responses, 0 missing,
+    0 unsupported, 0 errors.
+  - All 40 rule stdout files were refreshed; a scan found no `Error`,
+    `Unsupported`, or `Traceback` markers.
+- Rule-mode offline validator:
+  - Result after fixing pre-existing-connectivity handling:
+    `PASS=418`, `FAIL=5`, `SKIP=0`, `INCONCLUSIVE=57` over 480 responses.
+  - Metrics export was generated at `outputs\validator_rule_metrics.csv`.
+
+Current validator FAIL items to assign or debug:
+
+- `test17 response 15 [check_equivalence]`: Z3 oracle disagreement.
+- `test33 response 5 [replace_xnor_nor_with_basic_gates]`: residual XNOR
+  gates remain.
+- `test35 response 18 [replace_xor_with_nand]`: residual XOR gates remain.
+  The validator output currently records this duplicate response twice.
+- `test39 response 18 [replace_xor_with_nand]`: residual XOR gates remain.
+
+Person C completed in this pass:
+
+- Updated beta timeout documentation to the official 60/300 policy.
+- Recorded P0/P1 ownership for Person A, Person B, and Person C.
+- Fixed validator large-design transform checking so pre-existing missing or
+  duplicate drivers are not reported as transform failures unless the transform
+  introduces a new connectivity regression.
+- Changed bounded `report_all_paths` validation so hitting the path cap is
+  `INCONCLUSIVE`, not a false exact-answer `FAIL`.
 
 ## Overall Priority
 
@@ -85,4 +171,3 @@ Done when:
 - A multi-request testcase can run end to end from stdin.
 - Output netlist and log file are generated in expected locations.
 - Known unsupported requests fail cleanly instead of crashing.
-

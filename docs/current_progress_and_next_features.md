@@ -7,7 +7,7 @@ features to prioritize after reviewing the contest-style testcase prompts.
 
 ### Basic Operations
 
-Implemented first version:
+Implemented:
 
 - `begin_testcase`: reset testcase-local runtime state and create response log.
 - `read_design`: load gate-level Verilog through the Yosys-backed parser into
@@ -16,19 +16,20 @@ Implemented first version:
   and validate it with Yosys before writing.
 - Planner safety boundary: natural-language requests are converted into Tool
   API JSON and checked before dispatch.
+- LLM semantic guard: prompt and plan categories are checked before dispatch;
+  high-confidence mismatches share the bounded LLM repair retry budget.
 
-Current limitation:
+Current limitations:
 
 - Parser/writer behavior depends on Yosys availability. Windows environments
-  may hit Yosys path issues such as `GetShortPathName() failed`.
-- Release testcases from `test31` onward include named-pin DFF instances such
-  as `.RN`, `.SN`, `.CK`, `.D`, and `.Q`. The current parser support for these
-  named-pin DFF cells is still pending, so these cases fail at `read_design`
-  before backend tools can run.
+  may hit Yosys path issues such as `GetShortPathName() failed`; the direct
+  contest-subset fallback parser handles the common flattened primitive cases.
+- The writer emits normalized primitive Verilog and does not preserve original
+  comments or formatting.
 
 ### Analysis Tasks
 
-Implemented or partially implemented:
+Implemented:
 
 - Gate-count report by primitive type.
 - Direct fanout reporting for both nets and gate/DFF instances.
@@ -45,19 +46,20 @@ Implemented or partially implemented:
 - Gate search by type or name substring.
 - Same-clock-domain structural DFF check.
 - Connectivity, fanout-bound, and depth-bound checks.
+- Shared-fanin cone reports.
+- DFF D-pin depth and output-depth threshold reports.
 
-Important gaps:
+Remaining improvement areas:
 
-- Complete path enumeration, not only one example path.
-- Cone-local gate type counts, such as "number of each gate type in the cone of
-  n8".
-- Output ranking queries, such as largest fanin cone or deepest fanin cone.
-- More complete structural reports, such as primary input/output widths,
-  floating inputs, unconnected outputs, and cut/articulation points.
+- Path enumeration is bounded and may spill to report files for large outputs.
+- More complete structural reports, such as floating inputs, unconnected
+  outputs, and cut/articulation points, are useful beta candidates.
+- Some report wording is still prompt/planner dependent in LLM mode, so
+  regression prompts should be expanded as new official examples appear.
 
 ### Formal Verification
 
-Implemented first version:
+Implemented:
 
 - `check_equivalence`: compare a Boolean expression against a target net.
 - `check_property`: prove a Boolean property over a combinational cone.
@@ -75,21 +77,19 @@ Scope decision:
 - Multi-cycle sequential equivalence is intentionally out of scope for the next
   implementation phase.
 
-Important gap:
+Remaining improvement area:
 
-- There is no pre-transform snapshot query yet for prompts such as proving
-  equivalence to the pre-transformation netlist other than the original loaded
-  design.
+- Runtime transform rejection is not retried automatically. We currently retry
+  only pre-dispatch LLM plan errors to avoid timeout and state-management risk.
 
 ### Transformation And Optimization Tasks
 
-Implemented first version:
+Implemented:
 
 - `rename_net`: safely rename one net and update structural references.
+- `rename_gate`: safely rename one gate instance.
 - `constant_propagation`: simplify gates with constant or redundant inputs
-  under connectivity and equivalence guards. Backend and deterministic planner
-  support are implemented first; OpenAI `tool_schema.py` exposure is pending
-  team approval.
+  under connectivity and equivalence guards.
 - `replace_nand_const1_with_not`: local rewrite for 2-input NAND gates with one
   constant-1 input.
 - `replace_buffers_with_and`: selected function-changing buffer-to-AND rewrite.
@@ -101,15 +101,21 @@ Implemented first version:
   buffer chains to equalize structural depth.
 - `optimize_cone`: local cone simplification for redundant internal buffers and
   double inverters.
+- `optimize_design_depth`: Yosys/ABC-backed candidate flow with conservative
+  local fallback and guards.
+- `replace_xor_with_nand`, `replace_xnor_with_nor`,
+  `replace_and_not_with_nand`, and `replace_with_and_not`: technology mapping
+  style rewrites for release prompts.
+- `merge_equivalent_gates`: structural duplicate merge.
+- `reconnect_gate_input`: guarded pin reconnect.
 
-Important gaps:
+Remaining improvement areas:
 
-- Rename operation for gates.
-- Boolean equation derivation.
-- Complete technology mapping, such as XOR-to-NAND, XNOR-to-NOR, full NAND/NOT
-  remap, and full AND/NOT remap.
-- Structural duplicate merge and functionally equivalent gate merge.
-- Pin reconnect with equivalence guard.
+- Optimization quality is still conservative and mostly structural/local.
+- ABC/Yosys resynthesis should remain optional and guarded by connectivity,
+  equivalence, fanout, and depth checks.
+- Transform response summaries can be made more domain-specific, such as
+  reporting exactly how many buffers, NANDs, or dangling gates changed.
 
 ## Testcase Coverage Summary
 
@@ -135,32 +141,24 @@ Mostly covered or partially covered:
 - Dangling or unused logic removal.
 - Simple local cone optimization.
 
-Not yet covered enough:
+Still worth improving:
 
-- Named-pin DFF parsing for later release cases.
-- Complete enumeration of all paths.
-- Cone-local gate type counts.
-- Rename gate.
-- Broader constant propagation cleanup after reported gate subsets.
-- Boolean equation derivation.
-- Full technology mapping and resynthesis-style restructuring.
-- Cut/articulation analysis.
-- Register-to-register path reports and DFF D-pin depth reports.
+- Better LLM prompt-to-tool robustness for unusual wording.
+- Faster large-design optimization under strict 60-second response profiles.
+- More complete cut/articulation and floating/unconnected structural reports.
+- More domain-specific transform statistics after each optimization pass.
 
 ## Next Feature Priority
 
-### P0: Highest Coverage And Foundation
+### P0: Submission Stability
 
-- `named_pin_dff_parser_support`
-  - Support named pins such as `Q`, `D`, `CK`/`CLK`, `RN`, `SN`, `RST`, and
-    `RESET`.
-  - Keep DFFs as combinational boundaries; no multi-cycle sequential reasoning
-    is required.
-- `all_paths`
-  - Enumerate combinational paths with practical limits to avoid path explosion.
-- cone-local structural reports
-  - Count gate types inside a target cone.
-  - Rank outputs by fanin cone size or depth.
+- Keep all current release-case regressions passing in both rule and LLM modes.
+- Run official timeout checks with `--basic-timeout 60 --timeout 300` before
+  beta-style submissions.
+- Keep `agent/tool_schema.py`, `agent/plan_checker.py`, rule planner mappings,
+  and dispatcher ops synchronized.
+- Maintain `z3-solver` in every teammate environment so large equivalence
+  checks do not fall back to small brute-force limits.
 
 ### Recently Completed P0 Items
 
@@ -194,38 +192,31 @@ Not yet covered enough:
 
 ### P1: Common Testcase Requests
 
-- `rename_gate`
-  - Rename an instance while preserving all connectivity.
 - `constant_propagation`
-  - Extend the first implementation with larger cleanup passes when needed,
-    such as simplifying newly dangling logic after propagation.
-- `derive_boolean_equation`
-  - Pretty-print a target net's Boolean equation in terms of primary inputs.
+  - Improve cleanup and summary reporting after propagation.
+- LLM semantic guard tuning
+  - Expand local classifier tests as new prompt phrasings appear.
+- Report polish
+  - Add more domain-specific wording for previous-transform deltas.
 
 ### P2: Advanced Transformations And Reports
 
-- `reconnect_gate_input`
-  - Try a pin reconnect on a copied design and commit only if connectivity and
-    equivalence checks pass.
 - Technology mapping
-  - XOR-to-NAND, XNOR-to-NOR, full NAND/NOT remap, and full AND/NOT remap.
+  - Improve optimization quality and consider ABC/Yosys candidate generation.
 - Graph-structure analysis
   - Cut/articulation points and structural reachability reports.
 - Sequential structural reports
-  - Register-to-register paths, DFF D-pin depth, clock/reset fanout reports.
-- Duplicate merge
-  - Merge structural duplicates first; later consider functionally equivalent
-    gate-pair merging with formal guards.
+  - Clock/reset fanout reports and richer register-path filtering.
+- Runtime repair
+  - Consider bounded retry after transform rejection only after adding strict
+    time/state guards.
 
 ## Implementation Notes
 
-- Prioritize `rename_net` before `pin reconnect`. Safe net-reference update is
-  a common foundation for later transformations.
 - Keep all function-preserving transformations transactional.
 - Continue using connectivity, equivalence, and explicit constraint checks
   before committing transformed designs.
-- Do not update `agent/tool_schema.py` immediately for newly implemented
-  backend operations. Record the pending schema exposure in docs first, then
-  update the OpenAI tool schema only after team review.
+- Keep backend ops, `agent/tool_schema.py`, `agent/plan_checker.py`, rule
+  planner mappings, prompt examples, and regression tests synchronized.
 - Keep equivalence combinational-only until there is a clear requirement for
   multi-cycle sequential reasoning.
