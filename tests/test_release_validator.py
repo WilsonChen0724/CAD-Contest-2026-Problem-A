@@ -730,6 +730,46 @@ class ReleaseValidatorTest(unittest.TestCase):
         self.assertEqual(result.status, "INCONCLUSIVE")
         self.assertIn("selected-output equivalence target unavailable", result.detail)
 
+    def test_large_transform_allows_preexisting_connectivity_issues_without_regression(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        before.add_gate(Gate("U1", "buf", ["a"], "y"))
+        before.add_gate(Gate("U2", "not", ["a"], "y"))
+        after = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        after.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after.add_gate(Gate("U2", "not", ["a"], "y"))
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            3,
+            "remove_dangling",
+            {},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "INCONCLUSIVE")
+        self.assertIn("selected-output equivalence target unavailable", result.detail)
+
+    def test_large_transform_fails_new_connectivity_regression(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
+        before.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
+        after.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after.add_gate(Gate("U2", "not", ["a"], "y"))
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            4,
+            "remove_dangling",
+            {},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("connectivity regression failed", result.detail)
+        self.assertIn("new_duplicate_drivers", result.detail)
+
 
 if __name__ == "__main__":
     unittest.main()

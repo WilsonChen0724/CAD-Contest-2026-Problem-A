@@ -10,9 +10,6 @@ Related planning documents:
   testcase coverage gaps, and the next implementation priorities.
 - `docs/implementation_alternatives.md` records alternative implementation
   approaches for optimization, renaming, reconnect, and equivalence scope.
-- `docs/person_b_tool_schema_handoff.md` records backend operations that are
-  ready for Person B to expose through `agent/tool_schema.py` for direct LLM
-  mode testing.
 
 ## Current Status
 
@@ -53,6 +50,49 @@ Known gaps:
   gate-driven endpoints and is guarded by connectivity, equivalence, and final
   depth-balance checks. `optimize_cone` is implemented as a first local
   simplification pass for redundant buffers and double inverters.
+
+## Beta P0/P1 Ownership
+
+Official response-time policy for local beta testing:
+
+- Basic operations from Section 4.1, such as begin/read/write, use 60 seconds.
+- All other analysis, transformation, optimization, and verification requests
+  use 300 seconds.
+- The release runner should therefore use
+  `--basic-timeout 60 --timeout 300` for official-style regression runs.
+
+### P0: Submission-Critical Work
+
+| Person | Owner Area | P0 Responsibility | Done When |
+| --- | --- | --- | --- |
+| Person A | Parser, writer, graph IR | Fix any load/write/connectivity rebuild issue, especially bus names, DFF pins, constants, and round-trip Verilog normalization. | All 40 cases can load/write without parser-caused runtime errors. |
+| Person B | Planner, tool schema, prompt mapping | Keep `agent/tool_schema.py`, `agent/plan_checker.py`, planner prompts, and semantic guards synchronized with implemented backend ops. | LLM mode has no unsupported responses caused by missing schema or wrong operation mapping. |
+| Person C | Runner, validator, transform guards | Run ledger-based regression, export validator JSONL/CSV metrics, classify FAIL/INCONCLUSIVE, and keep guarded transforms transactional. | Runner has no missing/error/unsupported responses, and validator findings are either fixed or documented with evidence. |
+
+### P1: Beta Hardening
+
+| Person | Owner Area | P1 Responsibility |
+| --- | --- | --- |
+| Person A | Analysis coverage | Improve register-path filtering, floating/unconnected-net reports, and cut/articulation reports when test prompts require them. |
+| Person B | LLM robustness | Add more paraphrase tests, provider retry checks, and semantic guard cases for unusual prompt wording. |
+| Person C | External validation | Reduce `INCONCLUSIVE` cases using selected-output ABC/Yosys equivalence, report-file validation for large outputs, and aggregate QoR metric summaries. |
+
+### Person C Immediate Checklist
+
+Person C owns the beta validation loop:
+
+```powershell
+python -m unittest discover -s tests
+python scripts\run_release_testcases.py --all --planner rule --validation-ledger --fail-on-error --fail-on-unsupported --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --planner rule --all --output outputs\validator_rule.jsonl --metrics-output outputs\validator_rule_metrics.csv
+python scripts\run_release_testcases.py --all --planner llm_openai --validation-ledger --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --planner llm_openai --all --output outputs\validator_llm_openai.jsonl --metrics-output outputs\validator_llm_openai_metrics.csv
+```
+
+Person C should treat a validator `FAIL` as a concrete bug unless the oracle is
+proven wrong. An `INCONCLUSIVE` is not a pass; it must be documented with the
+reason and the next stronger oracle, such as selected-output equivalence,
+bounded file-output validation, or a timeout-aware ABC/Yosys check.
 
 Depth-balancing rationale:
 
@@ -200,6 +240,8 @@ Owner files:
 ```text
 agent/planner.py
 agent/llm_api.py
+agent/llm_planner.py
+agent/intent_classifier.py
 agent/prompt.txt
 docs/tool_spec.md
 ```
@@ -210,19 +252,20 @@ Primary responsibilities:
 - Replace or supplement the rule-based planner with an LLM JSON planner.
 - Ensure the LLM only emits allowed Tool API operations.
 - Add JSON/schema validation before dispatch.
-- Add one repair pass for invalid LLM output.
+- Maintain bounded pre-dispatch repair retry for invalid LLM output and
+  semantic prompt/plan mismatches.
 - Write prompt examples for PDF-style requests.
 - Add planner tests for paraphrases and multi-step requests.
 
 Next concrete tasks:
 
-- Review `docs/person_b_tool_schema_handoff.md` and update
-  `agent/tool_schema.py` so direct `--planner llm` mode can call the newly
-  wired backend operations.
+- Keep provider tool schemas synchronized with approved backend operations.
+  Use `docs/tool_spec.md`, the provider schemas, plan checker, and regression
+  tests as the current source of truth.
 - Update planner tests for gate-instance fanout phrases, such as "number of
   gates driven by g0" and "immediate successors of gate g0".
-- Add mappings for `fanout_cone`, bounded `all_paths`, cone-local gate counts,
-  and output cone ranking once Person A exposes those backend tools.
+- Maintain regression coverage for `fanout_cone`, bounded `all_paths`,
+  cone-local gate counts, output cone ranking, and provider tool-call wording.
 - Keep `agent/tool_schema.py`, `agent/plan_checker.py`, `agent/planner.py`,
   `agent/prompt.txt`, and `docs/tool_spec.md` synchronized whenever a backend
   operation is approved for LLM exposure.

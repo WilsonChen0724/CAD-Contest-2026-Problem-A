@@ -657,6 +657,14 @@ def _validate_all_paths(
         if f'Combinational paths from "{src}" to "{dst}":' in body:
             return ValidationResult(case, response_id, "INCONCLUSIVE", "report_all_paths", "large-design all-path oracle skipped")
     result = all_paths(design, src=src, dst=dst, max_paths=max_paths)
+    if int(result.get("num_paths") or 0) >= max_paths:
+        return ValidationResult(
+            case,
+            response_id,
+            "INCONCLUSIVE",
+            "report_all_paths",
+            f"bounded all-path oracle reached max_paths={max_paths}",
+        )
     expected = f'Combinational paths from "{src}" to "{dst}": {result["num_paths"]}'
     status = "PASS" if expected in body else "FAIL"
     return ValidationResult(case, response_id, status, "report_all_paths", expected)
@@ -1359,9 +1367,15 @@ def _validate_large_transform_with_guards(
     before: Any,
     after: Any,
 ) -> ValidationResult:
-    connectivity = check_connectivity(after)
+    connectivity = _connectivity_regression(check_connectivity(before), check_connectivity(after))
     if not connectivity.get("ok", False):
-        return ValidationResult(case, response_id, "FAIL", op, f"large-design connectivity failed: {connectivity}")
+        return ValidationResult(
+            case,
+            response_id,
+            "FAIL",
+            op,
+            f"large-design connectivity regression failed: {connectivity}",
+        )
 
     selected_outputs = _selected_outputs_for_large_transform(before, after, args)
     if selected_outputs:
@@ -1372,7 +1386,7 @@ def _validate_large_transform_with_guards(
                 response_id,
                 "PASS",
                 op,
-                f"large-design connectivity passed; selected-output equivalence passed for {selected_outputs}",
+                f"large-design connectivity regression check passed; selected-output equivalence passed for {selected_outputs}",
             )
         if _equivalence_depends_on_unknown_constant(result):
             return ValidationResult(
@@ -1390,10 +1404,39 @@ def _validate_large_transform_with_guards(
         "INCONCLUSIVE",
         op,
         (
-            "large-design connectivity passed; selected-output equivalence target unavailable, "
+            "large-design connectivity regression check passed; selected-output equivalence target unavailable, "
             "so full transform equivalence remains bounded"
         ),
     )
+
+
+def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Return only connectivity problems introduced by a candidate transform."""
+    before_missing = set(before.get("missing_drivers", []))
+    after_missing = set(after.get("missing_drivers", []))
+    new_missing = sorted(after_missing - before_missing)
+
+    before_duplicates = {
+        net: sorted(drivers)
+        for net, drivers in (before.get("duplicate_drivers") or {}).items()
+    }
+    after_duplicates = {
+        net: sorted(drivers)
+        for net, drivers in (after.get("duplicate_drivers") or {}).items()
+    }
+    new_duplicates = {
+        net: drivers
+        for net, drivers in sorted(after_duplicates.items())
+        if net not in before_duplicates or drivers != before_duplicates[net]
+    }
+
+    return {
+        "ok": not new_missing and not new_duplicates,
+        "missing_drivers": sorted(after_missing),
+        "duplicate_drivers": after_duplicates,
+        "new_missing_drivers": new_missing,
+        "new_duplicate_drivers": new_duplicates,
+    }
 
 
 def _selected_outputs_for_large_transform(before: Any, after: Any, args: dict[str, Any]) -> list[str]:
