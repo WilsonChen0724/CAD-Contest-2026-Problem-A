@@ -50,7 +50,7 @@ Effects:
 - Reset current design state.
 - Clear saved previous results.
 - Reset response numbering for the new testcase.
-- Create `output/logs/<case_name>.log`.
+- Create `<case_name>.log` in the process working directory.
 
 ### read_design
 

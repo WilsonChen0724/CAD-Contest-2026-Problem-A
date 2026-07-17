@@ -58,8 +58,9 @@ Additional Q&A constraints for Problem A:
 - The official Docker working directory is `/app`.
 - Input files are mounted under `/app`; read the design from the path given in
   the prompt.
-- Write generated netlists and logs relative to the working directory / testcase
-  path requested by the prompt.
+- Write each testcase log directly in the process working directory as
+  `<case_name>.log`; do not place it under `output/` or another subdirectory.
+- Write generated netlists to the testcase path requested by the prompt.
 - Evaluation has internet access only to the designated model API endpoints, so
   do not rely on `pip install`, Yosys download, or other general internet access
   during evaluation.
