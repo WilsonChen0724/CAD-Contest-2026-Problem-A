@@ -318,7 +318,7 @@ Expected behavior:
 
 - The program reads each non-empty stdin line as one request.
 - It prints responses wrapped by `#RESPONSE <id>` and `#END <id>`.
-- `begin_testcase` creates `output/logs/<case_name>.log`.
+- `begin_testcase` creates `<case_name>.log` in the process working directory.
 - Later requests operate on the current testcase design state.
 - The smoke input loads `tests/design/netlist/test8.v`, finds `_gc__`
   buffers, replaces them with AND gates, reports max depth, and writes
@@ -386,8 +386,11 @@ scripts/     cross-platform Yosys install helpers
 docs/        system spec, Tool API spec, workflow notes
 tests/       unit tests, smoke input, sample netlists
 third_party/ local Yosys install location, not committed
-output/      generated logs and output netlists
+output/      generated reports and output netlists
 ```
+
+Contest testcase logs are written directly to the process working directory as
+`<case_name>.log`, where the evaluator can discover them.
 
 Useful planning and handoff docs:
 

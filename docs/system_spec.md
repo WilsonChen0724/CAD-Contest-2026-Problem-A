@@ -128,7 +128,7 @@ When `begin_testcase` is executed:
 - `state.response_id` is reset to 1.
 - `state.design` is cleared.
 - `state.previous_results` is cleared.
-- `output/logs/<case_name>.log` is created or overwritten.
+- `<case_name>.log` is created or overwritten in the process working directory.
 
 Every successful transformation modifies the current design. Later requests
 operate on the modified design, not the original design.

@@ -20,7 +20,10 @@ class CurrentState:
     last_transform_input: Design | None = None
     log_path: Path | None = None
     output_dir: Path = Path("output")
-    log_dir: Path = Path("output/logs")
+    # The contest collector looks for ``<case_name>.log`` in the process
+    # working directory.  Keep reports and other artifacts under ``output/``,
+    # but do not add an extra directory level to the required testcase log.
+    log_dir: Path = Path(".")
     validation_enabled: bool = False
     validation_dir: Path = Path("output/validation")
     validation_ledger_path: Path | None = None

@@ -114,9 +114,15 @@ Outputs are written to:
 ```text
 A_release testcase_0510/runner_output/<planner>/testNN.stdout.txt
 A_release testcase_0510/runner_output/<planner>/testNN.stderr.txt
+A_release testcase_0510/testNN.log
 ```
 
-Generated netlists are written relative to `A_release testcase_0510`, following each prompt's requested output path. The release runner also copies `testNN_out.v` into `runner_output/<planner>/` when that file is generated, which keeps OpenAI and Claude outputs comparable.
+The testcase log is written directly in the release working directory to match
+the contest collector's `<case_name>.log` lookup. Generated netlists are written
+relative to `A_release testcase_0510`, following each prompt's requested output
+path. The release runner also copies `testNN_out.v` into
+`runner_output/<planner>/` when that file is generated, which keeps OpenAI and
+Claude outputs comparable.
 
 ## 5. Run A_release Testcases with LLM Planners
 
