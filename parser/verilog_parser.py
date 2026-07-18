@@ -444,6 +444,7 @@ def _yosys_json_to_design(data: dict[str, Any], top_module: str) -> Design:
             continue
         design.wires.update(_expand_named_bits(net_name, net_info.get("bits", [])))
 
+    names = _YosysNameAllocator(design)
     for cell_name, cell in module.get("cells", {}).items():
         cell_type = cell.get("type", "")
         connections = cell.get("connections", {})
@@ -463,7 +464,7 @@ def _yosys_json_to_design(data: dict[str, Any], top_module: str) -> Design:
             )
             design.add_dff(dff)
         else:
-            _add_yosys_builtin_cell(design, cell_name, cell_type, connections, bit_names)
+            _add_yosys_builtin_cell(design, cell_name, cell_type, connections, bit_names, names)
 
     rebuild_graph(design)
     return design
@@ -483,7 +484,10 @@ def _add_yosys_builtin_cell(
     cell_type: str,
     connections: dict[str, list[Any]],
     bit_names: dict[Any, str],
+    names: "_YosysNameAllocator | None" = None,
 ) -> None:
+    if cell_type == "$scopeinfo":
+        return
     builtin_map = {
         "$and": "and",
         "$or": "or",
@@ -499,22 +503,27 @@ def _add_yosys_builtin_cell(
         if "B" in connections:
             inputs.append(_net_from_connection(connections["B"], bit_names))
         output = _net_from_connection(connections["Y"], bit_names)
-        design.add_gate(Gate(name=_unique_cell_name(design, cell_name, {output}), type=gate_type, inputs=inputs, output=output))
+        design.add_gate(
+            Gate(
+                name=_unique_cell_name(design, cell_name, {output}, names),
+                type=gate_type,
+                inputs=inputs,
+                output=output,
+            )
+        )
+        if names is not None:
+            names.note_nets([*inputs, output])
         return
+    if cell_type.startswith("$_"):
+        if _add_yosys_fine_cell(design, cell_name, cell_type, connections, bit_names, names):
+            return
     if cell_type == "$mux":
         base = _safe_cell_name(cell_name)
         input_a = _net_from_connection(connections["A"], bit_names)
         input_b = _net_from_connection(connections["B"], bit_names)
         select = _net_from_connection(connections["S"], bit_names)
         output = _net_from_connection(connections["Y"], bit_names)
-        not_select = design.make_unique_wire_name(f"{base}_not_s")
-        a_term = design.make_unique_wire_name(f"{base}_a_term")
-        b_term = design.make_unique_wire_name(f"{base}_b_term")
-        pending = {not_select, a_term, b_term, output}
-        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_not_s", pending), type="not", inputs=[select], output=not_select))
-        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_a_term", pending), type="and", inputs=[input_a, not_select], output=a_term))
-        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_b_term", pending), type="and", inputs=[input_b, select], output=b_term))
-        design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_or", pending), type="or", inputs=[a_term, b_term], output=output))
+        _add_mux_gates(design, base, input_a, input_b, select, output, names)
         return
     if cell_type == "$dff":
         design.add_dff(
@@ -527,6 +536,7 @@ def _add_yosys_builtin_cell(
                         _net_from_connection(connections["D"], bit_names),
                         _net_from_connection(connections["CLK"], bit_names),
                     },
+                    names,
                 ),
                 q=_net_from_connection(connections["Q"], bit_names),
                 d=_net_from_connection(connections["D"], bit_names),
@@ -546,6 +556,7 @@ def _add_yosys_builtin_cell(
                         _net_from_connection(connections["CLK"], bit_names),
                         _net_from_connection(connections["ARST"], bit_names),
                     },
+                    names,
                 ),
                 q=_net_from_connection(connections["Q"], bit_names),
                 d=_net_from_connection(connections["D"], bit_names),
@@ -556,6 +567,172 @@ def _add_yosys_builtin_cell(
         )
         return
     raise ValueError(f"Unsupported Yosys cell type in top module: {cell_type}")
+
+
+def _add_yosys_fine_cell(
+    design: Design,
+    cell_name: str,
+    cell_type: str,
+    connections: dict[str, list[Any]],
+    bit_names: dict[Any, str],
+    names: "_YosysNameAllocator | None" = None,
+) -> bool:
+    fine_map = {
+        "$_AND_": "and",
+        "$_OR_": "or",
+        "$_NAND_": "nand",
+        "$_NOR_": "nor",
+        "$_NOT_": "not",
+        "$_XOR_": "xor",
+        "$_XNOR_": "xnor",
+        "$_BUF_": "buf",
+    }
+    if cell_type in fine_map:
+        inputs = [_net_from_connection(connections["A"], bit_names)]
+        if "B" in connections:
+            inputs.append(_net_from_connection(connections["B"], bit_names))
+        output = _net_from_connection(connections["Y"], bit_names)
+        design.add_gate(
+            Gate(
+                name=_unique_cell_name(design, cell_name, {output}, names),
+                type=fine_map[cell_type],
+                inputs=inputs,
+                output=output,
+            )
+        )
+        if names is not None:
+            names.note_nets([*inputs, output])
+        return True
+
+    if cell_type in {"$_ANDNOT_", "$_ORNOT_"}:
+        base = _safe_cell_name(cell_name)
+        input_a = _net_from_connection(connections["A"], bit_names)
+        input_b = _net_from_connection(connections["B"], bit_names)
+        output = _net_from_connection(connections["Y"], bit_names)
+        not_b = _unique_wire_name(design, f"{base}_not_b", names)
+        pending = {not_b, output}
+        design.add_gate(
+            Gate(
+                name=_unique_cell_name(design, f"{base}_not_b", pending, names),
+                type="not",
+                inputs=[input_b],
+                output=not_b,
+            )
+        )
+        gate_type = "and" if cell_type == "$_ANDNOT_" else "or"
+        design.add_gate(
+            Gate(
+                name=_unique_cell_name(design, cell_name, pending, names),
+                type=gate_type,
+                inputs=[input_a, not_b],
+                output=output,
+            )
+        )
+        if names is not None:
+            names.note_nets([input_a, input_b, not_b, output])
+        return True
+
+    if cell_type == "$_MUX_":
+        _add_mux_gates(
+            design,
+            _safe_cell_name(cell_name),
+            _net_from_connection(connections["A"], bit_names),
+            _net_from_connection(connections["B"], bit_names),
+            _net_from_connection(connections["S"], bit_names),
+            _net_from_connection(connections["Y"], bit_names),
+            names,
+        )
+        return True
+
+    dffe_match = re.fullmatch(r"\$_DFFE_([NP])([NP])([01])?([NP])?_", cell_type)
+    if dffe_match:
+        data = _net_from_connection(connections["D"], bit_names)
+        clk = _net_from_connection(connections["C"], bit_names)
+        q = _net_from_connection(connections["Q"], bit_names)
+        enable = _net_from_connection(connections["E"], bit_names)
+        rst = _net_from_connection(connections["R"], bit_names) if "R" in connections else None
+        base = _safe_cell_name(cell_name)
+        enable_polarity = dffe_match.group(4) if dffe_match.group(3) is not None else dffe_match.group(2)
+        if enable_polarity == "N":
+            inverted_enable = _unique_wire_name(design, f"{base}_enable_n", names)
+            design.add_gate(
+                Gate(
+                    name=_unique_cell_name(design, f"{base}_enable_n", {inverted_enable}, names),
+                    type="not",
+                    inputs=[enable],
+                    output=inverted_enable,
+                )
+            )
+            if names is not None:
+                names.note_nets([enable, inverted_enable])
+            enable = inverted_enable
+        enabled_d = _unique_wire_name(design, f"{base}_enabled_d", names)
+        _add_mux_gates(design, f"{base}_enable_mux", q, data, enable, enabled_d, names)
+        _add_dff_cell(design, cell_name, q=q, d=enabled_d, clk=clk, rst=rst, rst_value=dffe_match.group(3), names=names)
+        return True
+
+    dff_match = re.fullmatch(r"\$_DFF_([NP])([NP])?([01])?_", cell_type)
+    if dff_match:
+        _add_dff_cell(
+            design,
+            cell_name,
+            q=_net_from_connection(connections["Q"], bit_names),
+            d=_net_from_connection(connections["D"], bit_names),
+            clk=_net_from_connection(connections["C"], bit_names),
+            rst=_net_from_connection(connections["R"], bit_names) if "R" in connections else None,
+            rst_value=dff_match.group(3),
+            names=names,
+        )
+        return True
+
+    return False
+
+
+def _add_mux_gates(
+    design: Design,
+    base: str,
+    input_a: str,
+    input_b: str,
+    select: str,
+    output: str,
+    names: "_YosysNameAllocator | None" = None,
+) -> None:
+    not_select = _unique_wire_name(design, f"{base}_not_s", names)
+    a_term = _unique_wire_name(design, f"{base}_a_term", names)
+    b_term = _unique_wire_name(design, f"{base}_b_term", names)
+    pending = {not_select, a_term, b_term, output}
+    design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_not_s", pending, names), type="not", inputs=[select], output=not_select))
+    design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_a_term", pending, names), type="and", inputs=[input_a, not_select], output=a_term))
+    design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_b_term", pending, names), type="and", inputs=[input_b, select], output=b_term))
+    design.add_gate(Gate(name=_unique_cell_name(design, f"{base}_or", pending, names), type="or", inputs=[a_term, b_term], output=output))
+    if names is not None:
+        names.note_nets([input_a, input_b, select, not_select, a_term, b_term, output])
+
+
+def _add_dff_cell(
+    design: Design,
+    cell_name: str,
+    *,
+    q: str,
+    d: str,
+    clk: str,
+    rst: str | None = None,
+    rst_value: str | None = None,
+    names: "_YosysNameAllocator | None" = None,
+) -> None:
+    design.add_dff(
+        DFF(
+            name=_unique_cell_name(design, cell_name, {q, d, clk} | ({rst} if rst else set()), names),
+            q=q,
+            d=d,
+            clk=clk,
+            rst=rst,
+            rst_value=rst_value,
+            attrs={"cell_type": "dff"},
+        )
+    )
+    if names is not None:
+        names.note_nets([q, d, clk, *( [rst] if rst else [] )])
 
 
 def _build_bit_name_map(module: dict[str, Any]) -> dict[Any, str]:
@@ -604,7 +781,20 @@ def _safe_cell_name(name: str) -> str:
     return safe
 
 
-def _unique_cell_name(design: Design, base: str, reserved: set[str] | None = None) -> str:
+def _unique_wire_name(design: Design, base: str, names: "_YosysNameAllocator | None" = None) -> str:
+    if names is not None:
+        return names.unique_wire(base)
+    return design.make_unique_wire_name(base)
+
+
+def _unique_cell_name(
+    design: Design,
+    base: str,
+    reserved: set[str] | None = None,
+    names: "_YosysNameAllocator | None" = None,
+) -> str:
+    if names is not None:
+        return names.unique_cell(base, reserved)
     name = _safe_cell_name(base)
     used = set(design.gates) | set(design.dffs) | design.all_nets()
     if reserved:
@@ -615,3 +805,31 @@ def _unique_cell_name(design: Design, base: str, reserved: set[str] | None = Non
     while f"{name}_{index}" in used:
         index += 1
     return f"{name}_{index}"
+
+
+class _YosysNameAllocator:
+    def __init__(self, design: Design) -> None:
+        self.used = set(design.gates) | set(design.dffs) | design.all_nets()
+
+    def unique_wire(self, base: str) -> str:
+        return self._take(_safe_cell_name(base))
+
+    def unique_cell(self, base: str, reserved: set[str] | None = None) -> str:
+        return self._take(_safe_cell_name(base), reserved)
+
+    def note_nets(self, nets: list[str]) -> None:
+        self.used.update(net for net in nets if net and not net.startswith("1'b"))
+
+    def _take(self, prefix: str, reserved: set[str] | None = None) -> str:
+        if not self._is_blocked(prefix, reserved):
+            self.used.add(prefix)
+            return prefix
+        index = 1
+        while self._is_blocked(f"{prefix}_{index}", reserved):
+            index += 1
+        name = f"{prefix}_{index}"
+        self.used.add(name)
+        return name
+
+    def _is_blocked(self, name: str, reserved: set[str] | None) -> bool:
+        return name in self.used or (reserved is not None and name in reserved)

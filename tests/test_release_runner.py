@@ -6,6 +6,7 @@ from pathlib import Path
 
 from scripts.run_release_testcases import (
     _append_timeout_response,
+    _clear_validation_ledger_source,
     _copy_generated_netlist,
     _copy_validation_ledger,
     _expand_case_range,
@@ -90,6 +91,17 @@ class ReleaseRunnerTest(unittest.TestCase):
 
             copied = result_root / "validation" / "test01" / "ledger.jsonl"
             self.assertEqual(copied.read_text(encoding="utf-8"), "{}\n")
+
+    def test_clears_validation_ledger_source_before_case_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            source = release_dir / "output" / "validation" / "test01"
+            source.mkdir(parents=True)
+            (source / "ledger.jsonl").write_text("{}\n", encoding="utf-8")
+
+            _clear_validation_ledger_source(release_dir, "test01")
+
+            self.assertFalse(source.exists())
 
     def test_timeout_response_is_visible_in_stdout_log(self) -> None:
         stdout_lines: list[str] = []

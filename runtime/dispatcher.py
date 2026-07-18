@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from runtime.state import CurrentState
+from runtime.limits import DEFAULT_COMPLETE_PATH_LIMIT
 from parser.verilog_parser import parse_verilog
 from parser.verilog_writer import write_verilog
 from eda.analysis import (
@@ -83,7 +84,6 @@ from eda.verify import (
     check_signal_symmetry,
 )
 
-DEFAULT_COMPLETE_PATH_LIMIT = 300000
 ALL_PATHS_STDOUT_LIMIT = 20
 BOOLEAN_EQUATION_MAX_TERMS = 5000
 BOOLEAN_EQUATION_STDOUT_LIMIT = 4000

@@ -93,7 +93,15 @@ python scripts/run_release_testcases.py --case-range test25-test40 --planner rul
 
 The runner now requires an explicit selection. Use `--all`, `--case`, or `--case-range`; this prevents accidental full-suite LLM runs.
 
-Timeouts follow the contest PDF by default: basic begin/read/write responses use 60 seconds, while analysis, transformation, optimization, and verification responses use 300 seconds. Override with `--basic-timeout` and `--timeout` when needed.
+Local default timeouts follow the contest response policy: 60 seconds for basic
+begin/read/write responses and 300 seconds for non-basic analysis,
+transformation, optimization, and verification responses. Override with
+`--basic-timeout` and `--timeout` when needed. For an official-style beta run,
+make the timeout profile explicit:
+
+```bash
+python scripts/run_release_testcases.py --all --planner llm_openai --basic-timeout 60 --timeout 300
+```
 
 Run all release testcases:
 

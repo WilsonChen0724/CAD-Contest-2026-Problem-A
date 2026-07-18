@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from eda.design import DFF, Design, Gate
-from parser.verilog_parser import parse_verilog
+from parser.verilog_parser import _yosys_json_to_design, parse_verilog
 from parser.verilog_writer import write_verilog
 
 
@@ -76,6 +76,77 @@ endmodule
         self.assertEqual(design.dffs["g0"].d, "d")
         self.assertEqual(design.dffs["g0"].clk, "clk")
         self.assertIsNone(design.dffs["g0"].rst)
+
+    def test_yosys_fine_cells_are_lowered_to_primitives(self) -> None:
+        data = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [1]},
+                        "b": {"direction": "input", "bits": [2]},
+                        "s": {"direction": "input", "bits": [3]},
+                        "y": {"direction": "output", "bits": [4]},
+                    },
+                    "netnames": {
+                        "a": {"bits": [1], "hide_name": 0},
+                        "b": {"bits": [2], "hide_name": 0},
+                        "s": {"bits": [3], "hide_name": 0},
+                        "y": {"bits": [4], "hide_name": 0},
+                    },
+                    "cells": {
+                        "scope": {"type": "$scopeinfo", "connections": {}},
+                        "mux$0": {"type": "$_MUX_", "connections": {"A": [1], "B": [2], "S": [3], "Y": [4]}},
+                    },
+                }
+            }
+        }
+
+        design = _yosys_json_to_design(data, "top")
+
+        self.assertEqual(len(design.gates), 4)
+        self.assertEqual([gate.type for gate in design.gates.values()].count("not"), 1)
+        self.assertEqual([gate.type for gate in design.gates.values()].count("and"), 2)
+        self.assertEqual([gate.type for gate in design.gates.values()].count("or"), 1)
+        self.assertEqual(len(design.dffs), 0)
+
+    def test_yosys_dffe_is_lowered_to_enable_mux_and_dff(self) -> None:
+        data = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "clk": {"direction": "input", "bits": [1]},
+                        "rst": {"direction": "input", "bits": [2]},
+                        "en": {"direction": "input", "bits": [3]},
+                        "d": {"direction": "input", "bits": [4]},
+                        "q": {"direction": "output", "bits": [5]},
+                    },
+                    "netnames": {
+                        "clk": {"bits": [1], "hide_name": 0},
+                        "rst": {"bits": [2], "hide_name": 0},
+                        "en": {"bits": [3], "hide_name": 0},
+                        "d": {"bits": [4], "hide_name": 0},
+                        "q": {"bits": [5], "hide_name": 0},
+                    },
+                    "cells": {
+                        "ff$0": {
+                            "type": "$_DFFE_PP0P_",
+                            "connections": {"C": [1], "R": [2], "E": [3], "D": [4], "Q": [5]},
+                        }
+                    },
+                }
+            }
+        }
+
+        design = _yosys_json_to_design(data, "top")
+        dff = next(iter(design.dffs.values()))
+
+        self.assertEqual(len(design.gates), 4)
+        self.assertEqual(len(design.dffs), 1)
+        self.assertEqual(dff.q, "q")
+        self.assertEqual(dff.clk, "clk")
+        self.assertEqual(dff.rst, "rst")
+        self.assertEqual(dff.rst_value, "0")
+        self.assertNotEqual(dff.d, "d")
 
     def test_parser_error_message_includes_source_location(self) -> None:
         source = """

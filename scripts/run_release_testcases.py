@@ -252,6 +252,7 @@ def _run_case(
         command.append("--ensure-yosys")
     if validation_ledger:
         command.append("--validation-ledger")
+        _clear_validation_ledger_source(release_dir, case_dir.name)
 
     response_timeouts = [_timeout_for_prompt(prompt, basic_timeout, timeout) for prompt in prompts]
     stdout, stderr, returncode = _run_case_interactive(
@@ -323,6 +324,12 @@ def _copy_generated_netlist(release_dir: Path, result_root: Path, case_name: str
     if generated.exists():
         target = result_root / generated.name
         target.write_bytes(generated.read_bytes())
+
+
+def _clear_validation_ledger_source(release_dir: Path, case_name: str) -> None:
+    source = release_dir / "output" / "validation" / case_name
+    if source.exists():
+        shutil.rmtree(source)
 
 
 def _copy_validation_ledger(release_dir: Path, result_root: Path, case_name: str) -> None:

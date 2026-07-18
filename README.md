@@ -62,9 +62,11 @@ python main.py -config config.example.yaml -planner llm_both
 - `llm_both`: tries OpenAI first, then falls back to Claude when OpenAI is
   missing, unavailable, or returns a checker-rejected plan.
 
-The LLM path includes one repair retry when the model returns an invalid tool
-call or a checker-rejected plan. Raw provider tool calls are logged to stderr as
-pretty-printed `[llm-tool-call]` JSON blocks, so contest stdout remains clean.
+The LLM path includes bounded pre-dispatch repair retries controlled by
+`planner.max_retries`. Invalid JSON/tool calls, checker-rejected plans, and
+high-confidence prompt/plan semantic mismatches share the same retry budget.
+Raw provider tool calls are logged to stderr as pretty-printed
+`[llm-tool-call]` JSON blocks, so contest stdout remains clean.
 
 ### Implemented Tool API operations
 
@@ -394,9 +396,10 @@ Useful planning and handoff docs:
 
 - `docs/current_progress_and_next_features.md`: current coverage and next
   backend priorities.
-- `docs/person_b_tool_schema_handoff.md`: newly wired backend operations that
-  Person B should review before updating `agent/tool_schema.py` for direct LLM
-  mode.
+- `docs/presentation/talk_plan_6min_QA.md`: six-minute presentation flow and
+  compact QA notes.
+- `docs/presentation/eda_professor_QA_challenges.md`: deeper professor-facing
+  challenge/solution notes for EDA architecture, optimization, and LLM safety.
 - `docs/implementation_alternatives.md`: alternative implementation directions
   for optimization, renaming, reconnect, and equivalence scope.
 
@@ -439,6 +442,9 @@ and Tool API safety boundary.
   original formatting or comments.
 - Named-pin, library-specific sequential cells are future work beyond the
   normalized DFF support.
+- LLM retry is currently plan-stage only. Runtime transform rejection is not
+  retried automatically, because retrying after mutation attempts would add
+  response-time and state-management risk.
 
 ## Milestones
 
@@ -525,8 +531,9 @@ broader release testcase coverage.
 
    `scripts/run_release_testcases.py` supports `rule`, `llm_openai`,
    `llm_claude`, and `llm_both`; stores provider outputs separately; pretty
-   prints LLM tool calls; and mirrors the contest timeout policy with 60-second
-   basic begin/read/write responses and 300-second non-basic responses.
+   prints LLM tool calls; and supports per-response timeout accounting with
+   60-second basic begin/read/write responses and configurable non-basic
+   response limits.
 
 ### v0.3.1 - Formal checks and guarded optimization tools (2026-05-28)
 
@@ -631,8 +638,8 @@ Yosys parser/writer path and the safer planner/runtime boundary.
 6. Regression coverage
 
    Unit tests cover Yosys resolution, parser/writer behavior, LLM repair retry,
-   plan validation, dispatcher behavior, analysis helpers, transformations, and
-   verification checks.
+   semantic prompt/plan classification, plan validation, dispatcher behavior,
+   analysis helpers, transformations, and verification checks.
 
 ### v0.2.0 - Day2 correctness fixes (2026-05-20)
 

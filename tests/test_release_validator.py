@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from eda.design import Design, Gate
 from scripts import validate_release_outputs as validator
@@ -66,6 +67,30 @@ class ReleaseValidatorTest(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].status, "PASS")
+            self.assertEqual(results[0].check, "report_gate_counts")
+
+    def test_snapshot_parse_error_marks_record_inconclusive_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "rule" / "validation" / "test_parse_blocked"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            (snapshot_dir / "after.v").write_text("module top(a, y); input a; output y; buf U1(y, a); endmodule")
+            ledger_path = case_dir / "ledger.jsonl"
+            record = {
+                "case": "test_parse_blocked",
+                "response_id": 1,
+                "plan": {"op": "report_gate_counts", "args": {}},
+                "body": "Gate counts:\n- buf: 1\nTotal gates: 1",
+                "after_snapshot": "snapshots/after.v",
+            }
+            ledger_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with patch.object(validator, "parse_verilog", side_effect=OSError("Yosys blocked")):
+                results = _validate_ledger(release_dir, ledger_path, "test_parse_blocked")
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].status, "INCONCLUSIVE")
             self.assertEqual(results[0].check, "report_gate_counts")
 
     def test_validates_path_depth_and_cone_records(self) -> None:
@@ -704,6 +729,46 @@ class ReleaseValidatorTest(unittest.TestCase):
 
         self.assertEqual(result.status, "INCONCLUSIVE")
         self.assertIn("selected-output equivalence target unavailable", result.detail)
+
+    def test_large_transform_allows_preexisting_connectivity_issues_without_regression(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        before.add_gate(Gate("U1", "buf", ["a"], "y"))
+        before.add_gate(Gate("U2", "not", ["a"], "y"))
+        after = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        after.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after.add_gate(Gate("U2", "not", ["a"], "y"))
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            3,
+            "remove_dangling",
+            {},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "INCONCLUSIVE")
+        self.assertIn("selected-output equivalence target unavailable", result.detail)
+
+    def test_large_transform_fails_new_connectivity_regression(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
+        before.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
+        after.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after.add_gate(Gate("U2", "not", ["a"], "y"))
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            4,
+            "remove_dangling",
+            {},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("connectivity regression failed", result.detail)
+        self.assertIn("new_duplicate_drivers", result.detail)
 
 
 if __name__ == "__main__":
