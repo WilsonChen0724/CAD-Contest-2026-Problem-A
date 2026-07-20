@@ -18,6 +18,7 @@ from parser.yosys_tools import quote_yosys_path, run_yosys_script
 
 ABC_CEC_TIMEOUT = 60.0
 ABC_YOSYS_TIMEOUT = 60.0
+ABC_FULL_DESIGN_GATE_LIMIT = 50000
 
 # todo
 # 1. check_duplicate_drivers
@@ -120,9 +121,12 @@ def check_design_equivalence(before: Design, after: Design, outputs: list[str] |
     if not selected_outputs:
         return {"ok": True, "engine": "none", "outputs": [], "failures": {}}
 
-    abc_result = _check_design_equivalence_with_abc(before, after, selected_outputs)
-    if abc_result is not None:
-        return abc_result
+    # Preparing a full-design BLIF can dominate the request budget on large
+    # netlists. The expression solver works directly on the parsed graph.
+    if max(len(before.gates), len(after.gates)) <= ABC_FULL_DESIGN_GATE_LIMIT:
+        abc_result = _check_design_equivalence_with_abc(before, after, selected_outputs)
+        if abc_result is not None:
+            return abc_result
 
     return _check_design_equivalence_with_expr_solver(before, after, selected_outputs)
 

@@ -91,6 +91,21 @@ def _semantic_mismatch_reason(
     user_request: str,
     plan: dict[str, Any],
 ) -> str | None:
+    low = _normalize(user_request)
+    ops = set(_plan_ops(plan))
+    asks_original_equivalence = (
+        ("equivalent" in low or "equivalence" in low)
+        and any(term in low for term in ("original", "loaded netlist", "loaded design", "last loaded", "loaded from disk"))
+    )
+    asks_previous_transform_equivalence = (
+        ("equivalent" in low or "equivalence" in low or "prove" in low)
+        and any(term in low for term in ("pre-transformation", "pre transformation", "previous transform"))
+    )
+    if asks_original_equivalence and "check_equivalent_to_last_transform_input" in ops:
+        return "the prompt asks for the original loaded snapshot, not the previous transform input."
+    if asks_previous_transform_equivalence and "check_equivalent_to_original" in ops:
+        return "the prompt asks for the previous transform input, not the original loaded snapshot."
+
     if actual == UNSUPPORTED_OR_AMBIGUOUS:
         return "the prompt appears to map to a supported EDA operation, but the plan is unsupported."
 
@@ -105,7 +120,6 @@ def _semantic_mismatch_reason(
         return None
 
     if expected == EXPLICIT_COST_OPTIMIZATION:
-        ops = set(_plan_ops(plan))
         if actual in {READ_ONLY_COST_ANALYSIS, READ_ONLY_VERIFICATION, DESIGN_IO}:
             return "the prompt asks for an optimization, but the plan is read-only."
         if actual == CONSTRAINT_PRESERVING_TRANSFORM and not _has_equivalent_explicit_cost_op(user_request, ops):

@@ -31,7 +31,5 @@ optimization_limits:
   high_fanout_budget_large_changed_nets: 4
   saved_output_cone_skip_gate_limit: 4000
   and_not_rewrite_skip_gate_limit: 50000
-  xnor_to_nor_skip_gate_limit: 10000
-  xor_to_nand_skip_gate_limit: 20000
   and_not_to_nand_skip_gate_limit: 10000
   merge_equivalent_skip_gate_limit: 20000

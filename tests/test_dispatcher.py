@@ -629,7 +629,7 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("large design", body)
         self.assertEqual(len(state.design.gates), 4)
 
-    def test_dispatcher_skips_large_original_equivalence_check(self) -> None:
+    def test_dispatcher_checks_large_original_equivalence(self) -> None:
         state = CurrentState()
         state.original_design = Design(module_name="top", inputs={"a"}, outputs={"y"})
         previous = "a"
@@ -639,11 +639,13 @@ class DispatcherTest(unittest.TestCase):
             previous = output
         state.design = deepcopy(state.original_design)
 
-        with patch("runtime.dispatcher.check_design_equivalence", side_effect=AssertionError("too expensive")):
+        proof = {"ok": True, "engine": "z3", "outputs": ["y"], "failures": {}}
+        with patch("runtime.dispatcher.check_design_equivalence", return_value=proof) as checker:
             body = dispatch_plan(state, {"op": "check_equivalent_to_original", "args": {}})
 
-        self.assertIn("Skipped full equivalence check", body)
-        self.assertIn("large design", body)
+        checker.assert_called_once_with(state.original_design, state.design)
+        self.assertIn("Equivalent to original loaded netlist", body)
+        self.assertIn("z3", body)
 
     def test_transactional_transform_skips_large_equivalence_guard(self) -> None:
         state = CurrentState(config={"optimization_limits": {"large_design_gate_limit": 1}})
@@ -655,6 +657,53 @@ class DispatcherTest(unittest.TestCase):
             body = dispatch_plan(state, {"op": "collapse_back_to_back_inverters", "args": {}})
 
         self.assertIn("Collapsed 1 back-to-back inverter", body)
+
+    def test_large_rename_uses_structural_equivalence_certificate(self) -> None:
+        state = CurrentState(config={"optimization_limits": {"large_design_gate_limit": 1}})
+        state.design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U0", type="buf", inputs=["a"], output="old_net"))
+        state.design.add_gate(Gate(name="U1", type="not", inputs=["old_net"], output="y"))
+        dispatch_plan(state, {"op": "rename_net", "args": {"old_net": "old_net", "new_net": "new_net"}})
+
+        with patch("runtime.dispatcher.check_design_equivalence", side_effect=AssertionError("too expensive")):
+            body = dispatch_plan(state, {"op": "check_equivalent_to_last_transform_input", "args": {}})
+
+        self.assertIn("Equivalent to the pre-transformation netlist", body)
+        self.assertIn("structural_alpha_rename", body)
+
+    def test_required_xnor_remap_ignores_obsolete_large_design_skip_limit(self) -> None:
+        state = CurrentState(config={"optimization_limits": {"xnor_to_nor_skip_gate_limit": 0}})
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U1", type="xnor", inputs=["a", "b"], output="y"))
+
+        body = dispatch_plan(
+            state,
+            {"op": "replace_xnor_nor_with_basic_gates", "args": {}},
+        )
+
+        self.assertIn("Remapped 1 XNOR gate", body)
+        self.assertEqual({gate.type for gate in state.design.gates.values()}, {"nor"})
+
+    def test_required_xor_remap_ignores_obsolete_large_design_skip_limit(self) -> None:
+        state = CurrentState(config={"optimization_limits": {"xor_to_nand_skip_gate_limit": 0}})
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U1", type="xor", inputs=["a", "b"], output="y"))
+
+        body = dispatch_plan(state, {"op": "replace_xor_with_nand", "args": {}})
+
+        self.assertIn("Remapped 1 XOR gate", body)
+        self.assertEqual({gate.type for gate in state.design.gates.values()}, {"nand"})
+
+    def test_required_remap_rejects_incomplete_candidate_without_mutating_design(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"a", "b", "c"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U1", type="xor", inputs=["a", "b", "c"], output="y"))
+
+        with self.assertRaisesRegex(RuntimeError, "required remap is incomplete"):
+            dispatch_plan(state, {"op": "replace_xor_with_nand", "args": {}})
+
+        self.assertEqual(state.design.gates["U1"].type, "xor")
+        self.assertEqual(state.design.gates["U1"].inputs, ["a", "b", "c"])
 
     def test_optimize_design_depth_rejects_non_equivalent_candidate(self) -> None:
         state = CurrentState()

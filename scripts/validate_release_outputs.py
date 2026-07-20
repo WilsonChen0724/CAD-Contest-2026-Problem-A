@@ -61,6 +61,7 @@ from eda.verify import (
     check_property,
     check_signal_symmetry,
 )
+from eda.graph import rebuild_graph
 from parser.verilog_parser import parse_verilog
 from runtime.limits import DEFAULT_COMPLETE_PATH_LIMIT
 
@@ -654,6 +655,11 @@ def _validate_all_paths(
     max_paths = _positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT)
     design = _require_snapshot(record, release_dir, ledger_path)
     if _is_expensive_analysis_design(design):
+        reachability_probe = all_paths(design, src=src, dst=dst, max_paths=1)
+        if not reachability_probe.get("truncated") and int(reachability_probe.get("num_paths") or 0) == 0:
+            expected = f'Combinational paths from "{src}" to "{dst}": 0'
+            status = "PASS" if expected in body else "FAIL"
+            return ValidationResult(case, response_id, status, "report_all_paths", "no path exists by reachability")
         if f'Combinational paths from "{src}" to "{dst}":' in body:
             return ValidationResult(case, response_id, "INCONCLUSIVE", "report_all_paths", "large-design all-path oracle skipped")
     result = all_paths(design, src=src, dst=dst, max_paths=max_paths)
@@ -771,15 +777,6 @@ def _validate_direct_pi_po_paths(
     record: dict[str, Any],
 ) -> ValidationResult:
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        if "Direct PI-to-PO zero-gate paths:" in body:
-            return ValidationResult(
-                case,
-                response_id,
-                "INCONCLUSIVE",
-                "report_direct_pi_po_paths",
-                "large-design direct PI/PO oracle skipped",
-            )
     result = direct_pi_to_po_paths(design)
     expected = f'Direct PI-to-PO zero-gate paths: {result["num_paths"]}'
     return _contains_result(case, response_id, "report_direct_pi_po_paths", body, expected)
@@ -796,10 +793,15 @@ def _validate_cut_signal(
 ) -> ValidationResult:
     signal = str(args.get("signal") or args.get("node") or "")
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        if body.startswith("Yes.") or body.startswith("No."):
-            return ValidationResult(case, response_id, "INCONCLUSIVE", "check_cut_signal", "large-design cut oracle skipped")
     result = cut_signal_between_pi_po(design, signal)
+    if result.get("truncated"):
+        return ValidationResult(
+            case,
+            response_id,
+            "INCONCLUSIVE",
+            "check_cut_signal",
+            f'cut oracle reached pair-search bound after {result.get("checked_pairs", 0)} pair(s)',
+        )
     expected = f'Yes. "{signal}" is a cut' if result.get("is_cut") else f'No. "{signal}" was not proven'
     return _contains_result(case, response_id, "check_cut_signal", body, expected)
 
@@ -989,26 +991,90 @@ def _validate_boolean_equation_derivation(
 ) -> ValidationResult:
     target = str(args.get("target") or "")
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        if f'Boolean equation for "{target}"' in body or "Final expression reference:" in body:
-            return ValidationResult(
-                case,
-                response_id,
-                "INCONCLUSIVE",
-                "derive_boolean_equation",
-                "large-design Boolean-equation oracle skipped",
-            )
     result = derive_boolean_equation(design, target, max_terms=5000)
     final_ref = str(result["expression"])
     expected_inline = f'Boolean equation for "{target}": {target} = {final_ref}'
-    expected_artifact = f"final_reference: {final_ref}"
     expected_report_line = f"Final expression reference: {final_ref}"
-    status = (
-        "PASS"
-        if expected_inline in body or expected_artifact in body or expected_report_line in body
-        else "FAIL"
+    equations = result.get("equations") or []
+    if not equations:
+        status = "PASS" if expected_inline in body else "FAIL"
+        return ValidationResult(case, response_id, status, "derive_boolean_equation", f"final_reference: {final_ref}")
+
+    if expected_report_line not in body or f"Equation count: {len(equations)}." not in body:
+        return ValidationResult(
+            case,
+            response_id,
+            "FAIL",
+            "derive_boolean_equation",
+            "stdout equation count or final reference does not match the structural DAG oracle",
+        )
+    report_path = _boolean_equation_report_path(release_dir, body)
+    if report_path is None or not report_path.is_file():
+        return ValidationResult(case, response_id, "FAIL", "derive_boolean_equation", "Boolean-equation report file is missing")
+
+    expected_lines = _expected_boolean_equation_report_lines(result)
+    actual_lines = report_path.read_text(encoding="utf-8").splitlines()
+    if actual_lines != expected_lines:
+        mismatch = next(
+            (
+                index
+                for index, (actual, expected) in enumerate(zip(actual_lines, expected_lines), 1)
+                if actual != expected
+            ),
+            min(len(actual_lines), len(expected_lines)) + 1,
+        )
+        return ValidationResult(
+            case,
+            response_id,
+            "FAIL",
+            "derive_boolean_equation",
+            f"Boolean-equation report differs from the structural DAG oracle at line {mismatch}",
+        )
+    return ValidationResult(
+        case,
+        response_id,
+        "PASS",
+        "derive_boolean_equation",
+        f"complete {len(equations)}-equation DAG matches gates, operators, feedback defaults, and final reference",
     )
-    return ValidationResult(case, response_id, status, "derive_boolean_equation", f"final_reference: {final_ref}")
+
+
+def _boolean_equation_report_path(release_dir: Path, body: str) -> Path | None:
+    match = re.search(r"written to\s+(.+?)\.\s*(?:\r?\n|$)", body)
+    if match is None:
+        return None
+    raw_path = match.group(1).strip().strip('"')
+    candidate = Path(raw_path.replace("\\", "/"))
+    resolved = candidate.resolve() if candidate.is_absolute() else (release_dir / candidate).resolve()
+    try:
+        resolved.relative_to(release_dir.resolve())
+    except ValueError:
+        return None
+    return resolved
+
+
+def _expected_boolean_equation_report_lines(result: dict[str, Any]) -> list[str]:
+    equations = result.get("equations") or []
+    feedback_defaults = result.get("sequential_feedback_defaults") or []
+    lines = [
+        f'Boolean equation DAG for "{result["target"]}"',
+        "boundary: primary inputs and constants",
+        "DFF handling: DFF Q references are expanded to their D input cones",
+        "sequential feedback default: 1'b0",
+        f"equation_count: {len(equations)}",
+    ]
+    if feedback_defaults:
+        lines.append("feedback_defaults:")
+        lines.extend(f'- {item["net"]} = {item["value"]}' for item in feedback_defaults)
+    lines.append("equations:")
+    lines.extend(
+        f'{index}. {item["net"]} = {item["expr"]} # gate={item["gate"]}, type={item["type"]}'
+        for index, item in enumerate(equations, 1)
+    )
+    if not equations:
+        lines.append("- none")
+    lines.extend(["final:", f'final_reference: {result["expression"]}'])
+    return lines
 
 
 def _validate_nand_equivalent_pair(
@@ -1273,14 +1339,6 @@ def _validate_last_transform_input_equivalence(
     body: str,
     record: dict[str, Any],
 ) -> ValidationResult:
-    if _is_bounded_skip_response(body):
-        return ValidationResult(
-            case,
-            response_id,
-            "INCONCLUSIVE",
-            "check_equivalent_to_last_transform_input",
-            _first_line(body),
-        )
     before = _parse_snapshot(record, "last_transform_input_snapshot", release_dir, ledger_path)
     after = _parse_snapshot(record, "after_snapshot", release_dir, ledger_path)
     if before is None:
@@ -1307,8 +1365,52 @@ def _validate_last_transform_input_equivalence(
             "check_equivalent_to_last_transform_input",
             "missing current design snapshot",
         )
+    certificate = _last_transform_structural_certificate(record, before, after)
+    if certificate is not None:
+        if _is_bounded_skip_response(body):
+            return ValidationResult(
+                case,
+                response_id,
+                "INCONCLUSIVE",
+                "check_equivalent_to_last_transform_input",
+                _first_line(body),
+            )
+        status = "PASS" if "Equivalent to the pre-transformation netlist." in body else "FAIL"
+        return ValidationResult(
+            case,
+            response_id,
+            status,
+            "check_equivalent_to_last_transform_input",
+            certificate,
+        )
+    if _is_bounded_skip_response(body):
+        return ValidationResult(
+            case,
+            response_id,
+            "INCONCLUSIVE",
+            "check_equivalent_to_last_transform_input",
+            _first_line(body),
+        )
     result = check_design_equivalence(before, after)
     return _verdict_from_equivalence_text(case, response_id, "check_equivalent_to_last_transform_input", body, result)
+
+
+def _last_transform_structural_certificate(record: dict[str, Any], before: Any, after: Any) -> str | None:
+    if _designs_match_with_net_map(before, after, {}):
+        return "exact structural identity certificate"
+    last_transform = record.get("last_transform")
+    if not isinstance(last_transform, dict) or last_transform.get("transform") != "rename_net":
+        return None
+    result = last_transform.get("result")
+    if not isinstance(result, dict):
+        return None
+    old_net = result.get("old_net")
+    new_net = result.get("new_net")
+    if not isinstance(old_net, str) or not isinstance(new_net, str):
+        return None
+    if _designs_match_with_net_map(before, after, {old_net: new_net}):
+        return f'exact alpha-equivalence certificate for "{old_net}" -> "{new_net}"'
+    return None
 
 
 def _validate_transform(
@@ -1332,13 +1434,48 @@ def _validate_transform(
     no_change_reason = _no_structural_change_reason(record, release_dir, ledger_path)
 
     if max(_design_gate_total(before), _design_gate_total(after)) > VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT:
+        compositional = _check_large_compositional_transform(before, after, op, args)
+        if compositional is not None:
+            if compositional[0] != "PASS":
+                return ValidationResult(case, response_id, compositional[0], op, compositional[1])
+            connectivity = _connectivity_regression(check_connectivity(before), check_connectivity(after))
+            if not connectivity.get("ok", False):
+                return ValidationResult(
+                    case,
+                    response_id,
+                    "FAIL",
+                    op,
+                    f"large-design connectivity regression failed: {connectivity}",
+                )
+            return ValidationResult(
+                case,
+                response_id,
+                "PASS",
+                op,
+                f"large-design connectivity regression passed; {compositional[1]}",
+            )
         residual = _check_transform_residual(after, op, residual_args)
         if residual is not None and residual[0] == "FAIL":
             return ValidationResult(case, response_id, residual[0], op, residual[1])
         if residual is not None and residual[0] == "INCONCLUSIVE":
             return ValidationResult(case, response_id, residual[0], op, residual[1])
         if residual is not None and residual[0] == "PASS":
-            return ValidationResult(case, response_id, residual[0], op, residual[1])
+            connectivity = _connectivity_regression(check_connectivity(before), check_connectivity(after))
+            if not connectivity.get("ok", False):
+                return ValidationResult(
+                    case,
+                    response_id,
+                    "FAIL",
+                    op,
+                    f"large-design connectivity regression failed: {connectivity}",
+                )
+            return ValidationResult(
+                case,
+                response_id,
+                "PASS",
+                op,
+                f"large-design connectivity regression passed; {residual[1]}",
+            )
         if no_change_reason is not None and op in NOOP_ACCEPTABLE_TRANSFORMS:
             return ValidationResult(case, response_id, "PASS", op, no_change_reason)
         if _is_bounded_skip_response(body):
@@ -1376,6 +1513,26 @@ def _validate_large_transform_with_guards(
             op,
             f"large-design connectivity regression failed: {connectivity}",
         )
+
+    if op == "remove_dangling":
+        result = check_design_equivalence(before, after)
+        if result.get("ok"):
+            return ValidationResult(
+                case,
+                response_id,
+                "PASS",
+                op,
+                f"large-design connectivity regression passed; full-output equivalence passed by {result.get('engine')}",
+            )
+        if _equivalence_depends_on_unknown_constant(result):
+            return ValidationResult(
+                case,
+                response_id,
+                "INCONCLUSIVE",
+                op,
+                f"full-output equivalence depends on unknown/X constant: {result}",
+            )
+        return ValidationResult(case, response_id, "FAIL", op, f"full-output equivalence failed: {result}")
 
     selected_outputs = _selected_outputs_for_large_transform(before, after, args)
     if selected_outputs:
@@ -1464,7 +1621,210 @@ def _check_transform_residual(design: Any, op: str, args: dict[str, Any]) -> tup
         forbidden = "xor" if op == "replace_xor_with_nand" else "xnor"
         count = gate_type_count(design, forbidden)["count"]
         return ("PASS", f"{forbidden} count is 0") if count == 0 else ("FAIL", f"{forbidden} count remains {count}")
+    if op == "collapse_back_to_back_inverters":
+        count = _count_collapsible_inverter_pairs(design)
+        if count == 0:
+            return ("PASS", "no collapsible back-to-back inverter pairs remain")
+        return ("FAIL", f"{count} collapsible back-to-back inverter pair(s) remain")
     return None
+
+
+def _check_large_compositional_transform(
+    before: Any,
+    after: Any,
+    op: str,
+    args: dict[str, Any],
+) -> tuple[str, str] | None:
+    if op == "rename_net":
+        old_net = str(args.get("old_net") or "")
+        new_net = str(args.get("new_net") or "")
+        if not old_net or not new_net:
+            return ("FAIL", "rename-net proof is missing old_net or new_net")
+        if _designs_match_with_net_map(before, after, {old_net: new_net}):
+            return ("PASS", f'exact alpha-equivalence proved for net rename "{old_net}" -> "{new_net}"')
+        return ("FAIL", "before/after designs differ beyond the requested net rename")
+
+    if op == "remove_dangling":
+        if _same_logic_ignoring_unused_wire_declarations(before, after):
+            removed = len(set(before.wires) - set(after.wires))
+            return ("PASS", f"logic and ports are identical; only {removed} unused wire declaration(s) were removed")
+        return None
+
+    if op == "insert_dedicated_buffers_for_each_load":
+        target = str(args.get("net") or "")
+        if not target:
+            return ("FAIL", "dedicated-buffer proof is missing target net")
+        return _check_dedicated_buffer_identity(before, after, target)
+
+    return None
+
+
+def _designs_match_with_net_map(before: Any, after: Any, net_map: dict[str, str]) -> bool:
+    def mapped(net: str | None) -> str | None:
+        return net_map.get(net, net) if net is not None else None
+
+    if before.module_name != after.module_name:
+        return False
+    if {mapped(net) for net in before.inputs} != set(after.inputs):
+        return False
+    if {mapped(net) for net in before.outputs} != set(after.outputs):
+        return False
+    if {mapped(net) for net in before.wires} != set(after.wires):
+        return False
+    if set(before.gates) != set(after.gates) or set(before.dffs) != set(after.dffs):
+        return False
+
+    for name, gate in before.gates.items():
+        candidate = after.gates[name]
+        if (
+            gate.type != candidate.type
+            or [mapped(net) for net in gate.inputs] != candidate.inputs
+            or mapped(gate.output) != candidate.output
+            or gate.attrs != candidate.attrs
+        ):
+            return False
+    for name, dff in before.dffs.items():
+        candidate = after.dffs[name]
+        if (
+            mapped(dff.d) != candidate.d
+            or mapped(dff.q) != candidate.q
+            or mapped(dff.clk) != candidate.clk
+            or mapped(dff.rst) != candidate.rst
+            or dff.rst_value != candidate.rst_value
+            or dff.attrs != candidate.attrs
+        ):
+            return False
+    return True
+
+
+def _same_logic_ignoring_unused_wire_declarations(before: Any, after: Any) -> bool:
+    if (
+        before.module_name != after.module_name
+        or set(before.inputs) != set(after.inputs)
+        or set(before.outputs) != set(after.outputs)
+        or set(before.gates) != set(after.gates)
+        or set(before.dffs) != set(after.dffs)
+        or not set(after.wires).issubset(before.wires)
+    ):
+        return False
+    for name, gate in before.gates.items():
+        candidate = after.gates[name]
+        if (
+            gate.type != candidate.type
+            or gate.inputs != candidate.inputs
+            or gate.output != candidate.output
+        ):
+            return False
+    for name, dff in before.dffs.items():
+        candidate = after.dffs[name]
+        if (
+            dff.d != candidate.d
+            or dff.q != candidate.q
+            or dff.clk != candidate.clk
+            or dff.rst != candidate.rst
+            or dff.rst_value != candidate.rst_value
+        ):
+            return False
+    referenced = set(before.inputs) | set(before.outputs)
+    for gate in before.gates.values():
+        referenced.add(gate.output)
+        referenced.update(gate.inputs)
+    for dff in before.dffs.values():
+        referenced.update(net for net in (dff.d, dff.q, dff.clk, dff.rst) if net is not None)
+    return not ((set(before.wires) - set(after.wires)) & referenced)
+
+
+def _check_dedicated_buffer_identity(before: Any, after: Any, target: str) -> tuple[str, str]:
+    if set(before.gates) - set(after.gates) or set(before.dffs) != set(after.dffs):
+        return ("FAIL", "dedicated-buffer transform removed existing gates or changed DFF instances")
+    added_names = set(after.gates) - set(before.gates)
+    if not added_names:
+        return ("FAIL", "dedicated-buffer transform added no BUF gates")
+    added = [after.gates[name] for name in sorted(added_names)]
+    if any(gate.type != "buf" or gate.inputs != [target] for gate in added):
+        return ("FAIL", "an added gate is not a one-input BUF driven by the target net")
+    outputs = [gate.output for gate in added]
+    if len(set(outputs)) != len(outputs):
+        return ("FAIL", "dedicated BUF outputs are not unique")
+
+    output_map = {output: target for output in outputs}
+    normalized_after = _designs_match_with_net_map_excluding_gates(after, before, output_map, added_names)
+    if not normalized_after:
+        return ("FAIL", "removing added BUF identities does not reconstruct the before design")
+
+    rebuild_graph(before)
+    rebuild_graph(after)
+    original_sinks = list(before.fanouts.get(target, []))
+    expected_buffered_sinks = sorted(sink for sink in original_sinks if not sink.startswith("PO:"))
+    actual_buffered_sinks: list[str] = []
+    for gate in added:
+        sinks = after.fanouts.get(gate.output, [])
+        if len(sinks) != 1:
+            return ("FAIL", f'dedicated BUF "{gate.name}" drives {len(sinks)} load(s), expected 1')
+        actual_buffered_sinks.append(sinks[0])
+    if sorted(actual_buffered_sinks) != expected_buffered_sinks:
+        return ("FAIL", "dedicated BUF sinks do not match the original target-net loads")
+    return ("PASS", f"{len(added)} dedicated BUF identity insertion(s) reconstructed exactly")
+
+
+def _designs_match_with_net_map_excluding_gates(
+    transformed: Any,
+    reference: Any,
+    net_map: dict[str, str],
+    excluded_gates: set[str],
+) -> bool:
+    def mapped(net: str | None) -> str | None:
+        return net_map.get(net, net) if net is not None else None
+
+    if transformed.module_name != reference.module_name:
+        return False
+    if {mapped(net) for net in transformed.inputs} != set(reference.inputs):
+        return False
+    if {mapped(net) for net in transformed.outputs} != set(reference.outputs):
+        return False
+    if {mapped(net) for net in transformed.wires} != set(reference.wires):
+        return False
+    if set(transformed.gates) - excluded_gates != set(reference.gates):
+        return False
+    for name, expected in reference.gates.items():
+        candidate = transformed.gates[name]
+        if (
+            candidate.type != expected.type
+            or [mapped(net) for net in candidate.inputs] != expected.inputs
+            or mapped(candidate.output) != expected.output
+            or candidate.attrs != expected.attrs
+        ):
+            return False
+    for name, expected in reference.dffs.items():
+        candidate = transformed.dffs[name]
+        if (
+            mapped(candidate.d) != expected.d
+            or mapped(candidate.q) != expected.q
+            or mapped(candidate.clk) != expected.clk
+            or mapped(candidate.rst) != expected.rst
+            or candidate.rst_value != expected.rst_value
+            or candidate.attrs != expected.attrs
+        ):
+            return False
+    return True
+
+
+def _count_collapsible_inverter_pairs(design: Any) -> int:
+    rebuild_graph(design)
+    count = 0
+    for second in design.gates.values():
+        if second.type != "not" or len(second.inputs) != 1:
+            continue
+        mid_net = second.inputs[0]
+        driver = design.drivers.get(mid_net)
+        if not driver or not driver.startswith("GATE:"):
+            continue
+        first = design.gates.get(driver.split(":", 1)[1])
+        if first is None or first.type != "not" or len(first.inputs) != 1:
+            continue
+        if design.fanouts.get(mid_net, []) == [f"GATE:{second.name}"]:
+            count += 1
+    return count
 
 
 def _equivalence_depends_on_unknown_constant(result: dict[str, Any]) -> bool:

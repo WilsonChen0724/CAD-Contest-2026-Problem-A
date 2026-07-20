@@ -96,8 +96,6 @@ HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS = 24
 HIGH_FANOUT_BUDGET_LARGE_CHANGED_NETS = 4
 SAVED_OUTPUT_CONE_SKIP_GATE_LIMIT = 4000
 AND_NOT_REWRITE_SKIP_GATE_LIMIT = 50000
-XNOR_TO_NOR_SKIP_GATE_LIMIT = 10000
-XOR_TO_NAND_SKIP_GATE_LIMIT = 20000
 AND_NOT_TO_NAND_SKIP_GATE_LIMIT = 10000
 MERGE_EQUIVALENT_SKIP_GATE_LIMIT = 20000
 
@@ -670,11 +668,6 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "collapse_back_to_back_inverters":
         _require_design(state)
-        if _skip_expensive_whole_design_transform(state.design):
-            return (
-                "Skipped back-to-back inverter collapse for this large design to stay "
-                "within the bounded large-design time budget. No structural changes were applied."
-            )
         result = _run_transactional_transform(state, collapse_back_to_back_inverters, verify_equivalence=True)
         return (
             f'Collapsed {result["num_changed"]} back-to-back inverter pair(s). '
@@ -962,9 +955,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_xnor_nor_with_basic_gates":
         _require_design(state)
-        if len(state.design.gates) > _optimization_limit(state.config, "xnor_to_nor_skip_gate_limit", XNOR_TO_NOR_SKIP_GATE_LIMIT):
-            return _skip_large_technology_mapping(state, "replace_xnor_with_nor", "xnor", "nor")
-        result = _run_transactional_transform(state, replace_xnor_nor_with_basic_gates)
+        result = _run_transactional_transform(
+            state,
+            replace_xnor_nor_with_basic_gates,
+            verify_equivalence=True,
+            required_absent_gate_type="xnor",
+        )
         return (
             f'Remapped {result["num_changed"]} XNOR gate(s) into NOR-only logic. '
             f'{_format_change_sample(result["changed"])}'
@@ -972,7 +968,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_xnor_with_nor":
         _require_design(state)
-        result = _run_transactional_transform(state, replace_xnor_with_nor)
+        result = _run_transactional_transform(
+            state,
+            replace_xnor_with_nor,
+            verify_equivalence=True,
+            required_absent_gate_type="xnor",
+        )
         return (
             f'Remapped {result["num_changed"]} XNOR gate(s) into NOR-only logic. '
             f'Added {result["added_gate_counts"].get("nor", 0)} extra NOR gate(s). '
@@ -981,9 +982,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_xor_with_nand":
         _require_design(state)
-        if len(state.design.gates) > _optimization_limit(state.config, "xor_to_nand_skip_gate_limit", XOR_TO_NAND_SKIP_GATE_LIMIT):
-            return _skip_large_technology_mapping(state, "replace_xor_with_nand", "xor", "nand")
-        result = _run_transactional_transform(state, replace_xor_with_nand)
+        result = _run_transactional_transform(
+            state,
+            replace_xor_with_nand,
+            verify_equivalence=True,
+            required_absent_gate_type="xor",
+        )
         return (
             f'Remapped {result["num_changed"]} XOR gate(s) into NAND-only logic. '
             f'Added {result["added_gate_counts"].get("nand", 0)} extra NAND gate(s). '
@@ -1068,11 +1072,6 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         if state.original_design is None:
             raise RuntimeError("No original design snapshot is available. Load a design with read_design first.")
-        if _skip_expensive_equivalence_check(state.original_design, state.design, state.config):
-            return (
-                "Skipped full equivalence check for this large design to stay within the bounded "
-                "large-design time budget. Successful transforms have already passed structural guards."
-            )
         result = check_design_equivalence(state.original_design, state.design)
         return _format_original_equivalence_result(result)
 
@@ -1080,6 +1079,9 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         _require_design(state)
         if state.last_transform_input is None:
             return "No previous successful transform input snapshot is available. Run a transform first."
+        certificate = _certified_last_transform_equivalence(state)
+        if certificate is not None:
+            return _format_last_transform_equivalence_result(certificate)
         if _skip_expensive_equivalence_check(state.last_transform_input, state.design, state.config):
             return (
                 "Skipped full equivalence check against the previous transform input for this large design "
@@ -1211,6 +1213,7 @@ def _run_transactional_transform(
     fanout_bound_net: str | None = None,
     depth_balance: tuple[str, list[str]] | None = None,
     cone_depth: tuple[str, int | None] | None = None,
+    required_absent_gate_type: str | None = None,
     **kwargs: Any,
 ) -> dict:
     """
@@ -1224,6 +1227,17 @@ def _run_transactional_transform(
     original_connectivity = check_connectivity(original)
     candidate = deepcopy(original)
     result = transform(candidate, *args, **kwargs)
+    if required_absent_gate_type is not None:
+        residual = sum(
+            1
+            for gate in candidate.gates.values()
+            if gate.type.lower() == required_absent_gate_type.lower()
+        )
+        if residual:
+            raise RuntimeError(
+                "Transformation rejected: required remap is incomplete; "
+                f"{residual} {required_absent_gate_type.upper()} gate(s) remain."
+            )
     candidate_connectivity = check_connectivity(candidate)
     connectivity = _connectivity_regression(original_connectivity, candidate_connectivity)
     if not connectivity.get("ok", False):
@@ -1345,6 +1359,65 @@ def _design_delta(before, after) -> dict[str, Any]:
     }
 
 
+def _certified_last_transform_equivalence(state: CurrentState) -> dict[str, Any] | None:
+    before = state.last_transform_input
+    after = state.design
+    if before is None or after is None:
+        return None
+    if _designs_match_after_net_map(before, after, {}):
+        return {"ok": True, "engine": "structural_identity"}
+
+    last_transform = state.last_transform_result
+    if not isinstance(last_transform, dict) or last_transform.get("transform") != "rename_net":
+        return None
+    result = last_transform.get("result")
+    if not isinstance(result, dict):
+        return None
+    old_net = result.get("old_net")
+    new_net = result.get("new_net")
+    if not isinstance(old_net, str) or not isinstance(new_net, str):
+        return None
+    if _designs_match_after_net_map(before, after, {old_net: new_net}):
+        return {"ok": True, "engine": "structural_alpha_rename"}
+    return None
+
+
+def _designs_match_after_net_map(before, after, net_map: dict[str, str]) -> bool:
+    def mapped(net: str | None) -> str | None:
+        return net_map.get(net, net) if net is not None else None
+
+    if (
+        before.module_name != after.module_name
+        or {mapped(net) for net in before.inputs} != set(after.inputs)
+        or {mapped(net) for net in before.outputs} != set(after.outputs)
+        or {mapped(net) for net in before.wires} != set(after.wires)
+        or set(before.gates) != set(after.gates)
+        or set(before.dffs) != set(after.dffs)
+    ):
+        return False
+    for name, gate in before.gates.items():
+        candidate = after.gates[name]
+        if (
+            gate.type != candidate.type
+            or [mapped(net) for net in gate.inputs] != candidate.inputs
+            or mapped(gate.output) != candidate.output
+            or gate.attrs != candidate.attrs
+        ):
+            return False
+    for name, dff in before.dffs.items():
+        candidate = after.dffs[name]
+        if (
+            mapped(dff.d) != candidate.d
+            or mapped(dff.q) != candidate.q
+            or mapped(dff.clk) != candidate.clk
+            or mapped(dff.rst) != candidate.rst
+            or dff.rst_value != candidate.rst_value
+            or dff.attrs != candidate.attrs
+        ):
+            return False
+    return True
+
+
 def _try_reconnect_gate_input(state: CurrentState, *, gate: str, pin: str, new_net: str) -> str:
     original = state.design
     candidate = deepcopy(original)
@@ -1387,28 +1460,6 @@ def _try_reconnect_gate_input(state: CurrentState, *, gate: str, pin: str, new_n
         f'"{result["old_net"]}" to "{new_net}" while preserving equivalence.'
     )
 
-
-def _skip_large_technology_mapping(
-    state: CurrentState,
-    transform: str,
-    source_type: str,
-    target_type: str,
-) -> str:
-    candidates = sum(1 for gate in state.design.gates.values() if gate.type == source_type)
-    result = {
-        "changed": [],
-        "num_changed": 0,
-        "num_candidates": candidates,
-        "added_gate_counts": {target_type: 0},
-        "skipped": True,
-    }
-    state.last_transform_result = {"transform": transform, "result": result}
-    return (
-        f'Skipped {source_type.upper()}-to-{target_type.upper()} remapping for this large design '
-        "to stay within the bounded large-design time budget. "
-        f'Found {candidates} candidate {source_type.upper()} gate(s); added 0 {target_type.upper()} gate(s). '
-        "No structural changes were applied."
-    )
 
 def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     """Return only connectivity problems introduced by a candidate transform."""
@@ -1750,11 +1801,6 @@ def _high_fanout_transform_budget(design, config: dict[str, Any] | None = None) 
             HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS,
         )
     return None
-
-
-def _skip_expensive_whole_design_transform(design) -> bool:
-    """Avoid slow whole-design cleanup passes on very large release cases."""
-    return len(design.gates) + len(design.dffs) > 80000
 
 
 def _optimize_saved_output_cones(

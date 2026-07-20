@@ -11,7 +11,9 @@ from agent.intent_classifier import (
     UNSUPPORTED_OR_AMBIGUOUS,
     classify_plan,
     classify_prompt,
+    validate_semantic_plan_match,
 )
+from agent.plan_checker import PlanValidationError
 
 
 class IntentClassifierTest(unittest.TestCase):
@@ -51,6 +53,18 @@ class IntentClassifierTest(unittest.TestCase):
             classify_plan({"op": "unsupported", "args": {"reason": "ambiguous"}}),
             UNSUPPORTED_OR_AMBIGUOUS,
         )
+
+    def test_rejects_original_vs_previous_transform_equivalence_mismatch(self) -> None:
+        with self.assertRaisesRegex(PlanValidationError, "original loaded snapshot"):
+            validate_semantic_plan_match(
+                "Check whether the current netlist is equivalent to the netlist as last loaded from disk.",
+                {"op": "check_equivalent_to_last_transform_input", "args": {}},
+            )
+        with self.assertRaisesRegex(PlanValidationError, "previous transform input"):
+            validate_semantic_plan_match(
+                "Prove the current design is equivalent to the pre-transformation netlist.",
+                {"op": "check_equivalent_to_original", "args": {}},
+            )
 
 
 if __name__ == "__main__":
