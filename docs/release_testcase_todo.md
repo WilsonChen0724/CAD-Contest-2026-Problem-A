@@ -14,6 +14,21 @@ validator before submission.
 - Install `z3-solver` in every teammate's active Python environment so large-design equivalence checks do not fall back to the 12-variable brute-force limit.
 - Keep `agent/prompt.txt`, `agent/tool_schema.py`, `agent/plan_checker.py`, and `runtime/dispatcher.py` synchronized whenever a new operation is added.
 
+Latest LLM/OpenAI validation baseline (2026-07-20):
+
+- 40 cases, 459 responses, and no runner error/unsupported markers.
+- After regenerating test29/test40: `PASS=447`, `FAIL=2`, `SKIP=0`,
+  `INCONCLUSIVE=10`.
+- `test32 response 14` now revalidates as PASS using the exact unused-wire
+  certificate.
+- `test33 response 17` used an old large-design skip. Batched fixed-point
+  merging now completes its 83,463-gate snapshot in 13.95 seconds, merges
+  2,894 gates, and leaves zero structural duplicates.
+- Expected after regenerating test33 and exporting validation again:
+  `PASS=449`, `FAIL=0`, `SKIP=0`, `INCONCLUSIVE=10`.
+- Do not claim the projected result as final until the test33 rerun and full
+  validator export have completed.
+
 ## Beta P0 Team Split
 
 - Person A: parser/writer and graph correctness. Prioritize any testcase that

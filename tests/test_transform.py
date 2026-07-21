@@ -19,12 +19,14 @@ from eda.transform import (
     constant_propagation,
     insert_dedicated_buffers_for_each_load,
     insert_buffers_for_fanout,
+    merge_equivalent_gates,
     optimize_cone,
     optimize_design_depth,
     replace_nand_const1_with_not,
     remove_dangling,
     rename_net,
     replace_buffers_with_and,
+    replace_and_not_with_nand,
     replace_inv_buf_with_inv,
     replace_or_with_nand_not,
     replace_with_and_not,
@@ -100,6 +102,50 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["num_changed"], 5)
         self.assertTrue(all(gate.type in {"and", "not"} for gate in design.gates.values()))
         self.assertTrue(check_design_equivalence(original, design)["ok"])
+
+    def test_replace_multi_input_and_and_not_with_nand(self) -> None:
+        design = Design(inputs={"a", "b", "c"}, outputs={"y"})
+        design.add_gate(Gate(name="U_and", type="and", inputs=["a", "b", "c"], output="n"))
+        design.add_gate(Gate(name="U_not", type="not", inputs=["n"], output="y"))
+        original = deepcopy(design)
+
+        result = replace_and_not_with_nand(design)
+
+        self.assertEqual(result["num_changed"], 2)
+        self.assertEqual({gate.type for gate in design.gates.values()}, {"nand"})
+        self.assertTrue(check_design_equivalence(original, design)["ok"])
+
+    def test_merge_equivalent_gates_reaches_fixed_point(self) -> None:
+        design = Design(inputs={"a", "c"}, outputs={"y"})
+        design.add_gate(Gate("A_down1", "and", ["n1", "c"], "d1"))
+        design.add_gate(Gate("A_down2", "and", ["n2", "c"], "d2"))
+        design.add_gate(Gate("Y_out", "or", ["d1", "d2"], "y"))
+        design.add_gate(Gate("Z_up1", "not", ["a"], "n1"))
+        design.add_gate(Gate("Z_up2", "not", ["a"], "n2"))
+        original = deepcopy(design)
+
+        result = merge_equivalent_gates(design)
+
+        self.assertEqual(result["num_merged"], 2)
+        self.assertGreaterEqual(result["passes"], 2)
+        self.assertTrue(check_design_equivalence(original, design)["ok"])
+
+    def test_merge_equivalent_gates_batches_gate_and_dff_redirects(self) -> None:
+        design = Design(inputs={"a", "b", "clk"}, outputs={"y"})
+        design.add_gate(Gate("U0", "and", ["a", "b"], "n0"))
+        design.add_gate(Gate("U1", "and", ["b", "a"], "n1"))
+        design.add_gate(Gate("U2", "and", ["a", "b"], "n2"))
+        design.add_gate(Gate("U_sink", "or", ["n1", "n2"], "sink"))
+        design.add_dff(DFF("FF0", d="n2", q="y", clk="clk"))
+
+        result = merge_equivalent_gates(design)
+
+        self.assertEqual(result["num_merged"], 2)
+        self.assertEqual(set(design.gates), {"U0", "U_sink"})
+        self.assertEqual(design.gates["U_sink"].inputs, ["n0", "n0"])
+        self.assertEqual(design.dffs["FF0"].d, "n0")
+        self.assertNotIn("n1", design.wires)
+        self.assertNotIn("n2", design.wires)
 
     def test_xnor_to_nor_avoids_gate_net_name_collisions(self) -> None:
         design = Design(inputs={"a", "b"}, outputs={"y"})

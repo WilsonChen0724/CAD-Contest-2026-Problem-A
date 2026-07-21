@@ -1160,7 +1160,7 @@ def replace_and_not_with_nand(design: Design) -> dict:
             gate.type = "nand"
             gate.inputs = [gate.inputs[0], gate.inputs[0]]
             changed.append({"rewritten_gate": name, "old_type": "not", "added_gates": []})
-        elif gate.type == "and" and len(gate.inputs) == 2:
+        elif gate.type == "and" and len(gate.inputs) >= 2:
             out_net = gate.output
             mid_net = names.wire(f"{name}_nand_pre")
             gate.type = "nand"
@@ -1274,38 +1274,62 @@ def replace_with_and_not(design: Design) -> dict:
 
 @_rebuild_graph_after_transform
 def merge_equivalent_gates(design: Design) -> dict:
-    """Merge structurally identical primitive gates when the duplicate output is internal."""
-    rebuild_graph(design)
-    canonical_by_key: dict[tuple[str, tuple[str, ...]], str] = {}
+    """Merge structurally identical primitive gates to a fixed point."""
     changed: list[dict[str, Any]] = []
     commutative = {"and", "or", "nand", "nor", "xor", "xnor"}
+    passes = 0
 
-    for name in sorted(list(design.gates)):
-        gate = design.gates.get(name)
-        if gate is None:
-            continue
-        inputs = tuple(sorted(gate.inputs)) if gate.type in commutative else tuple(gate.inputs)
-        key = (gate.type, inputs)
-        canonical_name = canonical_by_key.get(key)
-        if canonical_name is None:
-            canonical_by_key[key] = name
-            continue
-        canonical = design.gates.get(canonical_name)
-        if canonical is None or gate.output in design.outputs:
-            continue
-        for sink in list(design.fanouts.get(gate.output, [])):
-            if sink.startswith("PO:"):
-                break
-        else:
-            for sink in list(design.fanouts.get(gate.output, [])):
-                _redirect_sink(design, sink, old_net=gate.output, new_net=canonical.output)
-            removed_output = gate.output
+    while True:
+        passes += 1
+        rebuild_graph(design)
+        canonical_by_key: dict[tuple[str, tuple[str, ...]], str] = {}
+        redirects: dict[str, str] = {}
+        removed_gates: dict[str, tuple[str, str, str]] = {}
+
+        for name in sorted(design.gates):
+            gate = design.gates[name]
+            inputs = tuple(sorted(gate.inputs)) if gate.type in commutative else tuple(gate.inputs)
+            key = (gate.type, inputs)
+            canonical_name = canonical_by_key.get(key)
+            if canonical_name is None:
+                canonical_by_key[key] = name
+                continue
+            canonical = design.gates.get(canonical_name)
+            if canonical is None or gate.output in design.outputs:
+                continue
+            sinks = list(design.fanouts.get(gate.output, []))
+            if any(sink.startswith("PO:") for sink in sinks):
+                continue
+            redirects[gate.output] = canonical.output
+            removed_gates[name] = (canonical_name, gate.output, canonical.output)
+
+        if not removed_gates:
+            break
+
+        # Apply every redirect in one graph sweep. Rebuilding after each merge is
+        # quadratic on large netlists; later passes expose duplicates created by
+        # the redirects and preserve the same fixed-point behavior.
+        for name in removed_gates:
             del design.gates[name]
-            _discard_internal_wire(design, removed_output)
-            changed.append({"removed_gate": name, "canonical_gate": canonical_name, "redirected_net": removed_output, "replacement_net": canonical.output})
-            rebuild_graph(design)
+        for gate in design.gates.values():
+            gate.inputs = [redirects.get(net, net) for net in gate.inputs]
+        for dff in design.dffs.values():
+            dff.d = redirects.get(dff.d, dff.d)
+            dff.clk = redirects.get(dff.clk, dff.clk)
+            dff.rst = redirects.get(dff.rst, dff.rst)
 
-    return {"changed": changed, "num_merged": len(changed)}
+        for removed_name, (canonical_name, removed_output, replacement_net) in removed_gates.items():
+            _discard_internal_wire(design, removed_output)
+            changed.append(
+                {
+                    "removed_gate": removed_name,
+                    "canonical_gate": canonical_name,
+                    "redirected_net": removed_output,
+                    "replacement_net": replacement_net,
+                }
+            )
+
+    return {"changed": changed, "num_merged": len(changed), "passes": passes}
 
 
 def _collapse_inverter_chains_once(design: Design) -> tuple[list[dict[str, Any]], int]:

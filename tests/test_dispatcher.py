@@ -694,6 +694,17 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("Remapped 1 XOR gate", body)
         self.assertEqual({gate.type for gate in state.design.gates.values()}, {"nand"})
 
+    def test_required_and_not_remap_ignores_obsolete_large_design_skip_limit(self) -> None:
+        state = CurrentState(config={"optimization_limits": {"and_not_to_nand_skip_gate_limit": 0}})
+        state.design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        state.design.add_gate(Gate(name="U1", type="and", inputs=["a", "b"], output="n"))
+        state.design.add_gate(Gate(name="U2", type="not", inputs=["n"], output="y"))
+
+        body = dispatch_plan(state, {"op": "replace_and_not_with_nand", "args": {}})
+
+        self.assertIn("Remapped 2 AND/NOT gate", body)
+        self.assertEqual({gate.type for gate in state.design.gates.values()}, {"nand"})
+
     def test_required_remap_rejects_incomplete_candidate_without_mutating_design(self) -> None:
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "b", "c"}, outputs={"y"})

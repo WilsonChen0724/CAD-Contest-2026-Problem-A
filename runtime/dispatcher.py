@@ -96,8 +96,6 @@ HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS = 24
 HIGH_FANOUT_BUDGET_LARGE_CHANGED_NETS = 4
 SAVED_OUTPUT_CONE_SKIP_GATE_LIMIT = 4000
 AND_NOT_REWRITE_SKIP_GATE_LIMIT = 50000
-AND_NOT_TO_NAND_SKIP_GATE_LIMIT = 10000
-MERGE_EQUIVALENT_SKIP_GATE_LIMIT = 20000
 
 SUPPORTED_OPS = {
     "begin_testcase",
@@ -959,7 +957,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             replace_xnor_nor_with_basic_gates,
             verify_equivalence=True,
-            required_absent_gate_type="xnor",
+            required_absent_gate_types=("xnor",),
         )
         return (
             f'Remapped {result["num_changed"]} XNOR gate(s) into NOR-only logic. '
@@ -972,7 +970,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             replace_xnor_with_nor,
             verify_equivalence=True,
-            required_absent_gate_type="xnor",
+            required_absent_gate_types=("xnor",),
         )
         return (
             f'Remapped {result["num_changed"]} XNOR gate(s) into NOR-only logic. '
@@ -986,7 +984,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             replace_xor_with_nand,
             verify_equivalence=True,
-            required_absent_gate_type="xor",
+            required_absent_gate_types=("xor",),
         )
         return (
             f'Remapped {result["num_changed"]} XOR gate(s) into NAND-only logic. '
@@ -996,9 +994,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_and_not_with_nand":
         _require_design(state)
-        if len(state.design.gates) > _optimization_limit(state.config, "and_not_to_nand_skip_gate_limit", AND_NOT_TO_NAND_SKIP_GATE_LIMIT):
-            return "Skipped full-design AND/NOT-to-NAND remap for this large design to stay within the bounded large-design time budget. No structural changes were applied."
-        result = _run_transactional_transform(state, replace_and_not_with_nand)
+        result = _run_transactional_transform(
+            state,
+            replace_and_not_with_nand,
+            verify_equivalence=True,
+            required_absent_gate_types=("and", "not"),
+        )
         return (
             f'Remapped {result["num_changed"]} AND/NOT gate(s) into NAND logic. '
             f'{_format_change_sample(result["changed"])}'
@@ -1006,13 +1007,6 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "merge_equivalent_gates":
         _require_design(state)
-        if len(state.design.gates) > _optimization_limit(state.config, "merge_equivalent_skip_gate_limit", MERGE_EQUIVALENT_SKIP_GATE_LIMIT):
-            result = {"changed": [], "num_merged": 0, "skipped": True}
-            state.last_transform_result = {"transform": "merge_equivalent_gates", "result": result}
-            return (
-                "Skipped structural duplicate merge for this large design to stay within "
-                "the bounded large-design time budget. Merged 0 gate(s); no structural changes were applied."
-            )
         result = _run_transactional_transform(state, merge_equivalent_gates, verify_equivalence=True)
         return (
             f'Merged {result["num_merged"]} structurally equivalent gate(s). '
@@ -1213,7 +1207,7 @@ def _run_transactional_transform(
     fanout_bound_net: str | None = None,
     depth_balance: tuple[str, list[str]] | None = None,
     cone_depth: tuple[str, int | None] | None = None,
-    required_absent_gate_type: str | None = None,
+    required_absent_gate_types: tuple[str, ...] = (),
     **kwargs: Any,
 ) -> dict:
     """
@@ -1227,16 +1221,12 @@ def _run_transactional_transform(
     original_connectivity = check_connectivity(original)
     candidate = deepcopy(original)
     result = transform(candidate, *args, **kwargs)
-    if required_absent_gate_type is not None:
-        residual = sum(
-            1
-            for gate in candidate.gates.values()
-            if gate.type.lower() == required_absent_gate_type.lower()
-        )
+    for forbidden_type in required_absent_gate_types:
+        residual = sum(1 for gate in candidate.gates.values() if gate.type.lower() == forbidden_type.lower())
         if residual:
             raise RuntimeError(
                 "Transformation rejected: required remap is incomplete; "
-                f"{residual} {required_absent_gate_type.upper()} gate(s) remain."
+                f"{residual} {forbidden_type.upper()} gate(s) remain."
             )
     candidate_connectivity = check_connectivity(candidate)
     connectivity = _connectivity_regression(original_connectivity, candidate_connectivity)

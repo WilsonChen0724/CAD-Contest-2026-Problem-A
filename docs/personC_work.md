@@ -55,43 +55,63 @@ Completion criteria:
 
 ## Latest Local Person C Check
 
-Date: 2026-07-10.
+Date: 2026-07-20.
 
-Completed:
+Completed 40-case LLM/OpenAI run:
 
-- `python -m unittest discover -s tests`
-  - Result: 235 tests passed.
-- Rule-mode release runner with validation ledger and official timeout profile:
-  - `--basic-timeout 60 --timeout 300`
-  - Full run was split because the shell-level command timeout was shorter
-    than the whole 40-case regression.
-  - `test35-test40` summary: 114 prompts, 114 responses, 0 missing,
-    0 unsupported, 0 errors.
-  - All 40 rule stdout files were refreshed; a scan found no `Error`,
-    `Unsupported`, or `Traceback` markers.
-- Rule-mode offline validator:
-  - Result after fixing pre-existing-connectivity handling:
-    `PASS=418`, `FAIL=5`, `SKIP=0`, `INCONCLUSIVE=57` over 480 responses.
-  - Metrics export was generated at `outputs\validator_rule_metrics.csv`.
+- Runner produced 459 responses across 40 stdout files.
+- Response and `#END` counts match; no runtime `Error:` or `Unsupported:`
+  markers were found.
+- Initial offline validator result was `PASS=439`, `FAIL=2`, `SKIP=0`,
+  `INCONCLUSIVE=18`.
+- Metrics covered 68 transform/optimization responses: 16 gate-count
+  improvements, 1 depth improvement, and 14 validator-confirmed improvements.
 
-Current validator FAIL items to assign or debug:
+The two initial FAIL results were analyzed and fixed:
 
-- `test17 response 15 [check_equivalence]`: Z3 oracle disagreement.
-- `test33 response 5 [replace_xnor_nor_with_basic_gates]`: residual XNOR
-  gates remain.
-- `test35 response 18 [replace_xor_with_nand]`: residual XOR gates remain.
-  The validator output currently records this duplicate response twice.
-- `test39 response 18 [replace_xor_with_nand]`: residual XOR gates remain.
+- `test32 response 14 [remove_dangling]` was a stale/false formal verdict.
+  The before/after snapshots have identical 14,114 non-wire lines and identical
+  gate/DFF structures; only 73 unused wire declarations were removed. The
+  validator now prefers this exact structural certificate.
+- `test40 response 10 [find_gates]` correctly reported no XOR gates as
+  `Matched gates: none.` The validator now accepts this canonical zero-result
+  wording instead of requiring `Matched gates: 0`.
 
-Person C completed in this pass:
+Additional P0 fixes from the same validation pass:
 
-- Updated beta timeout documentation to the official 60/300 policy.
-- Recorded P0/P1 ownership for Person A, Person B, and Person C.
-- Fixed validator large-design transform checking so pre-existing missing or
-  duplicate drivers are not reported as transform failures unless the transform
-  introduces a new connectivity regression.
-- Changed bounded `report_all_paths` validation so hitting the path cap is
-  `INCONCLUSIVE`, not a false exact-answer `FAIL`.
+- Removed the obsolete large-design skip for required AND/NOT-to-NAND remap.
+  On the test40 snapshot, 1,421 NOT gates were remapped in about one second and
+  both AND and NOT residual counts became zero. Full-output Z3 equivalence
+  proved all 134 outputs in 17.75 seconds with zero failures.
+- Extended AND-to-NAND remapping to arbitrary input counts of two or greater.
+- Changed structural duplicate merging to fixed-point passes. The test29
+  snapshot now merges 178 gates in four passes with zero mergeable duplicates
+  remaining, instead of leaving two newly formed duplicates after one pass.
+  Full-output Z3 equivalence proved all 71 outputs in 1.33 seconds.
+- Added deterministic validator certificates for instance rename, AND/NOT-only
+  reconstruction, constant-1 NAND replacement, NAND-only remap, and structural
+  duplicate merging.
+
+After regenerating the test29/test40 ledgers, the measured full-suite result was
+`PASS=447`, `FAIL=2`, `SKIP=0`, `INCONCLUSIVE=10`. The two FAIL results were
+then resolved as follows:
+
+- `test32 response 14 [remove_dangling]` passes when revalidated with the
+  current exact unused-wire certificate. No testcase rerun is required.
+- `test33 response 17 [merge_equivalent_gates]` still contained an old bounded
+  skip generated before the fixed-point implementation. The large-design skip
+  is now removed and the merge is performed in batched graph passes. On its
+  83,463-gate snapshot, the dispatcher merged 2,894 gates in 9 passes in 13.95
+  seconds, leaving zero structural duplicates and reducing the design to
+  80,569 gates.
+
+The projected result after regenerating test33 and exporting the validator
+again is `PASS=449`, `FAIL=0`, `SKIP=0`, `INCONCLUSIVE=10`; it remains a
+projection until that runner/validator rerun is complete. The remaining
+inconclusive classes are bounded all-path
+enumeration (4), bounded/optimization evidence (3), targeted buffer formal
+scope (1), and unknown/X semantics (2); they must not be relabeled as PASS
+without a stronger oracle.
 
 ## Overall Priority
 

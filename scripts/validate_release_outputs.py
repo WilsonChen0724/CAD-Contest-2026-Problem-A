@@ -62,7 +62,7 @@ from eda.verify import (
     check_signal_symmetry,
 )
 from eda.graph import rebuild_graph
-from parser.verilog_parser import parse_verilog
+from parser.verilog_parser import _find_top_module, _parse_gate_level_verilog_direct, parse_verilog
 from runtime.limits import DEFAULT_COMPLETE_PATH_LIMIT
 
 
@@ -473,6 +473,8 @@ def _validate_find_gates(
 ) -> ValidationResult:
     design = _require_snapshot(record, release_dir, ledger_path)
     gates = find_gates(design, gate_type=args.get("gate_type"), name_contains=args.get("name_contains"))
+    if not gates and "matched gates: none" in body.lower():
+        return ValidationResult(case, response_id, "PASS", "find_gates", "Matched gates: 0")
     expected = f"Matched gates: {len(gates)}"
     return _contains_result(case, response_id, "find_gates", body, expected)
 
@@ -1423,6 +1425,11 @@ def _validate_transform(
     body: str,
     record: dict[str, Any],
 ) -> ValidationResult:
+    if op == "remove_dangling":
+        wire_only = _wire_declaration_only_snapshot_certificate(record, release_dir, ledger_path)
+        if wire_only is not None:
+            return ValidationResult(case, response_id, "PASS", op, wire_only)
+
     before = _parse_snapshot(record, "before_snapshot", release_dir, ledger_path)
     after = _parse_snapshot(record, "after_snapshot", release_dir, ledger_path)
     if before is None or after is None:
@@ -1494,6 +1501,56 @@ def _validate_transform(
     if no_change_reason is not None and op in NOOP_ACCEPTABLE_TRANSFORMS:
         return ValidationResult(case, response_id, "PASS", op, no_change_reason)
     return ValidationResult(case, response_id, "PASS", op, f"before/after equivalent by {equiv.get('engine')}")
+
+
+def _wire_declaration_only_snapshot_certificate(
+    record: dict[str, Any],
+    release_dir: Path,
+    ledger_path: Path,
+) -> str | None:
+    """Prove that a transform only removed flattened wire declarations."""
+    before_path = _resolve_snapshot_path(record.get("before_snapshot"), release_dir, ledger_path)
+    after_path = _resolve_snapshot_path(record.get("after_snapshot"), release_dir, ledger_path)
+    if before_path is None or after_path is None or not before_path.exists() or not after_path.exists():
+        return None
+    try:
+        before_text = before_path.read_text(encoding="utf-8")
+        after_text = after_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    before_logic, _ = _split_wire_declarations(before_text)
+    after_logic, _ = _split_wire_declarations(after_text)
+    if before_logic != after_logic:
+        return None
+    try:
+        before = _parse_gate_level_verilog_direct(before_text, _find_top_module(before_text))
+        after = _parse_gate_level_verilog_direct(after_text, _find_top_module(after_text))
+    except (TypeError, ValueError):
+        return None
+    if not _same_logic_ignoring_unused_wire_declarations(before, after):
+        return None
+    removed = set(before.wires) - set(after.wires)
+    if not removed:
+        return None
+    return (
+        "source-level structural identity proved: all non-wire Verilog text is identical; "
+        f"only {len(removed)} wire declaration(s) were removed"
+    )
+
+
+def _split_wire_declarations(text: str) -> tuple[str, set[str]]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    pattern = re.compile(r"(?ms)^[ \t]*wire\b(.*?);[ \t]*(?:\n|$)")
+    wires: set[str] = set()
+
+    def remove_declaration(match: re.Match[str]) -> str:
+        body = match.group(1)
+        wires.update(item.strip() for item in body.split(",") if item.strip())
+        return ""
+
+    logic = pattern.sub(remove_declaration, normalized)
+    return logic.strip(), wires
 
 
 def _validate_large_transform_with_guards(
@@ -1621,6 +1678,32 @@ def _check_transform_residual(design: Any, op: str, args: dict[str, Any]) -> tup
         forbidden = "xor" if op == "replace_xor_with_nand" else "xnor"
         count = gate_type_count(design, forbidden)["count"]
         return ("PASS", f"{forbidden} count is 0") if count == 0 else ("FAIL", f"{forbidden} count remains {count}")
+    if op == "replace_and_not_with_nand":
+        residual = {gate_type: gate_type_count(design, gate_type)["count"] for gate_type in ("and", "not")}
+        if not any(residual.values()):
+            return ("PASS", "AND and NOT counts are both 0")
+        return ("FAIL", f"non-NAND source gates remain: {residual}")
+    if op == "replace_with_and_not":
+        residual = sorted({gate.type for gate in design.gates.values()} - {"and", "not"})
+        if not residual:
+            return ("PASS", "all combinational gates use only AND/NOT")
+        return ("FAIL", f"non-AND/NOT gate types remain: {residual}")
+    if op == "replace_nand_const1_with_not":
+        count = sum(
+            1
+            for gate in design.gates.values()
+            if gate.type == "nand"
+            and len(gate.inputs) == 2
+            and any(net in {"1", "1'b1"} for net in gate.inputs)
+        )
+        if count == 0:
+            return ("PASS", "no 2-input NAND gate with a constant-1 input remains")
+        return ("FAIL", f"{count} constant-1 NAND candidate(s) remain")
+    if op == "merge_equivalent_gates":
+        count = _count_structural_duplicate_gates(design)
+        if count == 0:
+            return ("PASS", "no mergeable structurally equivalent gates remain")
+        return ("FAIL", f"{count} mergeable structurally equivalent gate(s) remain")
     if op == "collapse_back_to_back_inverters":
         count = _count_collapsible_inverter_pairs(design)
         if count == 0:
@@ -1643,6 +1726,15 @@ def _check_large_compositional_transform(
         if _designs_match_with_net_map(before, after, {old_net: new_net}):
             return ("PASS", f'exact alpha-equivalence proved for net rename "{old_net}" -> "{new_net}"')
         return ("FAIL", "before/after designs differ beyond the requested net rename")
+
+    if op == "rename_gate":
+        old_name = str(args.get("old_name") or "")
+        new_name = str(args.get("new_name") or "")
+        if not old_name or not new_name:
+            return ("FAIL", "rename-gate proof is missing old_name or new_name")
+        if _designs_match_after_instance_rename(before, after, old_name, new_name):
+            return ("PASS", f'exact alpha-equivalence proved for instance rename "{old_name}" -> "{new_name}"')
+        return ("FAIL", "before/after designs differ beyond the requested instance rename")
 
     if op == "remove_dangling":
         if _same_logic_ignoring_unused_wire_declarations(before, after):
@@ -1732,6 +1824,35 @@ def _same_logic_ignoring_unused_wire_declarations(before: Any, after: Any) -> bo
     for dff in before.dffs.values():
         referenced.update(net for net in (dff.d, dff.q, dff.clk, dff.rst) if net is not None)
     return not ((set(before.wires) - set(after.wires)) & referenced)
+
+
+def _designs_match_after_instance_rename(before: Any, after: Any, old_name: str, new_name: str) -> bool:
+    if (
+        before.module_name != after.module_name
+        or set(before.inputs) != set(after.inputs)
+        or set(before.outputs) != set(after.outputs)
+        or set(before.wires) != set(after.wires)
+    ):
+        return False
+
+    def gate_signatures(design: Any, rename: bool) -> dict[str, tuple[Any, ...]]:
+        return {
+            (new_name if rename and name == old_name else name):
+            (gate.type, tuple(gate.inputs), gate.output, tuple(sorted(gate.attrs.items())))
+            for name, gate in design.gates.items()
+        }
+
+    def dff_signatures(design: Any, rename: bool) -> dict[str, tuple[Any, ...]]:
+        return {
+            (new_name if rename and name == old_name else name):
+            (dff.d, dff.q, dff.clk, dff.rst, dff.rst_value, tuple(sorted(dff.attrs.items())))
+            for name, dff in design.dffs.items()
+        }
+
+    return (
+        gate_signatures(before, True) == gate_signatures(after, False)
+        and dff_signatures(before, True) == dff_signatures(after, False)
+    )
 
 
 def _check_dedicated_buffer_identity(before: Any, after: Any, target: str) -> tuple[str, str]:
@@ -1825,6 +1946,21 @@ def _count_collapsible_inverter_pairs(design: Any) -> int:
         if design.fanouts.get(mid_net, []) == [f"GATE:{second.name}"]:
             count += 1
     return count
+
+
+def _count_structural_duplicate_gates(design: Any) -> int:
+    commutative = {"and", "or", "nand", "nor", "xor", "xnor"}
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    duplicates = 0
+    for name in sorted(design.gates):
+        gate = design.gates[name]
+        inputs = tuple(sorted(gate.inputs)) if gate.type in commutative else tuple(gate.inputs)
+        key = (gate.type, inputs)
+        if key in seen and gate.output not in design.outputs:
+            duplicates += 1
+        else:
+            seen.add(key)
+    return duplicates
 
 
 def _equivalence_depends_on_unknown_constant(result: dict[str, Any]) -> bool:
@@ -1963,7 +2099,16 @@ def _verdict_from_equivalence_text(
         ):
             return ValidationResult(case, response_id, "PASS", check, f"oracle ok by {result.get('engine')}")
         return ValidationResult(case, response_id, "FAIL", check, "oracle says true but response did not")
-    if result.get("counterexample") is None and result.get("engine") in {"bruteforce", "z3"}:
+    failures = result.get("failures")
+    has_failure_counterexample = isinstance(failures, dict) and any(
+        isinstance(failure, dict) and failure.get("counterexample") is not None
+        for failure in failures.values()
+    )
+    if (
+        result.get("counterexample") is None
+        and not has_failure_counterexample
+        and result.get("engine") in {"bruteforce", "z3"}
+    ):
         return ValidationResult(case, response_id, "INCONCLUSIVE", check, str(result))
     if any(token in body_lower for token in ("not equivalent", "does not hold", "no.")):
         return ValidationResult(case, response_id, "PASS", check, f"oracle false by {result.get('engine')}")

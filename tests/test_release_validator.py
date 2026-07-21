@@ -17,6 +17,23 @@ from scripts.validate_release_outputs import (
 
 
 class ReleaseValidatorTest(unittest.TestCase):
+    def test_find_gates_accepts_none_wording_for_zero_matches(self) -> None:
+        design = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate("U0", "buf", ["a"], "y"))
+
+        with patch.object(validator, "_require_snapshot", return_value=design):
+            result = validator._validate_find_gates(
+                Path("release"),
+                Path("ledger.jsonl"),
+                "test00",
+                1,
+                {"gate_type": "xor"},
+                "Matched gates: none.",
+                {},
+            )
+
+        self.assertEqual(result.status, "PASS")
+
     def test_validates_gate_count_record_from_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             release_dir = Path(tmp) / "release"
@@ -427,6 +444,42 @@ class ReleaseValidatorTest(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].status, "INCONCLUSIVE")
 
+    def test_remove_dangling_uses_wire_only_source_certificate_before_parser(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "rule" / "validation" / "test_wire"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            before_path = snapshot_dir / "before.v"
+            after_path = snapshot_dir / "after.v"
+            before_path.write_text(
+                "module top(a, y);\ninput a;\noutput y;\nwire unused, y;\nbuf U0(y, a);\nendmodule\n",
+                encoding="utf-8",
+            )
+            after_path.write_text(
+                "module top(a, y);\ninput a;\noutput y;\nwire y;\nbuf U0(y, a);\nendmodule\n",
+                encoding="utf-8",
+            )
+            record = {
+                "before_snapshot": "snapshots/before.v",
+                "after_snapshot": "snapshots/after.v",
+            }
+
+            with patch.object(validator, "_parse_snapshot", side_effect=AssertionError("parser should not run")):
+                result = validator._validate_transform(
+                    release_dir,
+                    case_dir / "ledger.jsonl",
+                    "test_wire",
+                    1,
+                    "remove_dangling",
+                    {},
+                    "Removed dangling logic: 0 gate(s), 1 net(s).",
+                    record,
+                )
+
+            self.assertEqual(result.status, "PASS")
+            self.assertIn("only 1 wire declaration(s) were removed", result.detail)
+
     def test_validates_last_transform_input_equivalence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             release_dir = Path(tmp) / "release"
@@ -804,6 +857,11 @@ class ReleaseValidatorTest(unittest.TestCase):
         rename_after.add_gate(Gate("U0", "buf", ["a"], "new_net"))
         rename_after.add_gate(Gate("U1", "not", ["new_net"], "y"))
 
+        gate_rename_before = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        gate_rename_before.add_gate(Gate("old_gate", "buf", ["a"], "y"))
+        gate_rename_after = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        gate_rename_after.add_gate(Gate("new_gate", "buf", ["a"], "y"))
+
         dangling_before = Design(module_name="top", inputs={"a"}, outputs={"y"}, wires={"unused"})
         dangling_before.add_gate(Gate("U0", "buf", ["a"], "y", attrs={"src": "before.v:1"}))
         dangling_after = Design(module_name="top", inputs={"a"}, outputs={"y"})
@@ -824,6 +882,12 @@ class ReleaseValidatorTest(unittest.TestCase):
             "rename_net",
             {"old_net": "old_net", "new_net": "new_net"},
         )
+        gate_rename = validator._check_large_compositional_transform(
+            gate_rename_before,
+            gate_rename_after,
+            "rename_gate",
+            {"old_name": "old_gate", "new_name": "new_gate"},
+        )
         dangling = validator._check_large_compositional_transform(
             dangling_before,
             dangling_after,
@@ -838,8 +902,25 @@ class ReleaseValidatorTest(unittest.TestCase):
         )
 
         self.assertEqual(rename[0], "PASS")
+        self.assertEqual(gate_rename[0], "PASS")
         self.assertEqual(dangling[0], "PASS")
         self.assertEqual(buffers[0], "PASS")
+
+    def test_deterministic_transform_residual_proofs(self) -> None:
+        and_not = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        and_not.add_gate(Gate("U0", "and", ["a", "a"], "y"))
+        nand_only = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        nand_only.add_gate(Gate("U0", "nand", ["a", "a"], "y"))
+        duplicate_free = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        duplicate_free.add_gate(Gate("U0", "buf", ["a"], "y"))
+
+        self.assertEqual(validator._check_transform_residual(and_not, "replace_with_and_not", {})[0], "PASS")
+        self.assertEqual(
+            validator._check_transform_residual(nand_only, "replace_nand_const1_with_not", {})[0],
+            "PASS",
+        )
+        self.assertEqual(validator._check_transform_residual(nand_only, "replace_and_not_with_nand", {})[0], "PASS")
+        self.assertEqual(validator._check_transform_residual(duplicate_free, "merge_equivalent_gates", {})[0], "PASS")
 
     def test_large_last_transform_equivalence_uses_alpha_rename_certificate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
