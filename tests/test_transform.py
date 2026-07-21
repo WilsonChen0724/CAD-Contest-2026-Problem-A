@@ -133,6 +133,34 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(design.gates["U1"].inputs, ["a"])
         self.assertTrue(check_design_equivalence(before, design)["ok"])
 
+    def test_collapse_long_inverter_chain_in_one_batch(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="not", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["n0"], output="n1"))
+        design.add_gate(Gate(name="U2", type="not", inputs=["n1"], output="n2"))
+        design.add_gate(Gate(name="U3", type="not", inputs=["n2"], output="y"))
+        before = deepcopy(design)
+
+        result = collapse_back_to_back_inverters(design)
+
+        self.assertEqual(result["num_changed"], 2)
+        self.assertEqual(set(design.gates), {"U3"})
+        self.assertEqual(design.gates["U3"].type, "buf")
+        self.assertEqual(design.gates["U3"].inputs, ["a"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_collapse_preserves_inverter_with_shared_output(self) -> None:
+        design = Design(inputs={"a"}, outputs={"y", "tap"})
+        design.add_gate(Gate(name="U0", type="not", inputs=["a"], output="tap"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["tap"], output="y"))
+        before = deepcopy(design)
+
+        result = collapse_back_to_back_inverters(design)
+
+        self.assertEqual(result["num_changed"], 0)
+        self.assertEqual(set(design.gates), {"U0", "U1"})
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+
     def test_replace_or_with_nand_not_rewrites_only_target_cone(self) -> None:
         design = Design(inputs={"a", "b", "c"}, outputs={"flag", "other"})
         design.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="flag"))

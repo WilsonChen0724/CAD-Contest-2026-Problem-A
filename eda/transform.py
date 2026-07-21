@@ -515,20 +515,22 @@ def insert_dedicated_buffers_for_each_load(design: Design, net: str) -> dict:
 
 @_rebuild_graph_after_transform
 def collapse_back_to_back_inverters(design: Design) -> dict:
-    """Collapse safe NOT->NOT chains by reconnecting downstream sinks."""
+    """Collapse safe NOT chains in graph-wide batches."""
     changed: list[dict[str, Any]] = []
-    max_iterations = max(1, len(design.gates) + 1)
+    num_changed = 0
+    max_rounds = max(1, len(design.gates) + 1)
 
-    for _ in range(max_iterations):
+    for _ in range(max_rounds):
         rebuild_graph(design)
-        rewrite = _collapse_one_back_to_back_inverter(design)
-        if rewrite is None:
+        round_changes, round_count = _collapse_inverter_chains_once(design)
+        if round_count == 0:
             break
-        changed.append(rewrite)
+        changed.extend(round_changes)
+        num_changed += round_count
     else:
         raise RuntimeError("collapse_back_to_back_inverters did not converge.")
 
-    return {"changed": changed, "num_changed": len(changed)}
+    return {"changed": changed, "num_changed": num_changed}
 
 
 @_rebuild_graph_after_transform
@@ -1056,7 +1058,6 @@ def optimize_design_depth(
     )
 
 
-@_rebuild_graph_after_transform
 def replace_xnor_nor_with_basic_gates(design: Design) -> dict:
     """Backward-compatible alias for XNOR-to-NOR-only remapping."""
     return replace_xnor_with_nor(design)
@@ -1307,50 +1308,112 @@ def merge_equivalent_gates(design: Design) -> dict:
     return {"changed": changed, "num_merged": len(changed)}
 
 
-def _collapse_one_back_to_back_inverter(design: Design) -> dict[str, Any] | None:
-    for second_name in sorted(list(design.gates)):
-        second = design.gates.get(second_name)
-        if second is None or second.type != "not" or len(second.inputs) != 1:
+def _collapse_inverter_chains_once(design: Design) -> tuple[list[dict[str, Any]], int]:
+    not_gates = {
+        name: gate
+        for name, gate in design.gates.items()
+        if gate.type == "not" and len(gate.inputs) == 1
+    }
+    next_gate: dict[str, str] = {}
+    previous_gate: dict[str, str] = {}
+
+    for first_name, first in not_gates.items():
+        if design.drivers.get(first.output) != f"GATE:{first_name}":
             continue
-        mid_net = second.inputs[0]
-        driver = design.drivers.get(mid_net)
-        if not driver or not driver.startswith("GATE:"):
+        sinks = design.fanouts.get(first.output, [])
+        if len(sinks) != 1 or not sinks[0].startswith("GATE:"):
             continue
-        first_name = driver.split(":", 1)[1]
-        first = design.gates.get(first_name)
-        if first is None or first.type != "not" or len(first.inputs) != 1:
+        second_name = sinks[0].split(":", 1)[1]
+        second = not_gates.get(second_name)
+        if second is None or second.inputs != [first.output]:
             continue
-        if design.fanouts.get(mid_net, []) != [f"GATE:{second_name}"]:
+        next_gate[first_name] = second_name
+        previous_gate[second_name] = first_name
+
+    changes: list[dict[str, Any]] = []
+    num_collapsed_pairs = 0
+    for start in sorted(name for name in next_gate if name not in previous_gate):
+        chain = [start]
+        seen = {start}
+        current = start
+        while current in next_gate:
+            following = next_gate[current]
+            if following in seen:
+                chain = []
+                break
+            chain.append(following)
+            seen.add(following)
+            current = following
+        if len(chain) < 2:
             continue
 
-        source_net = first.inputs[0]
-        output_net = second.output
-        if output_net in design.outputs or any(sink.startswith("PO:") for sink in design.fanouts.get(output_net, [])):
-            second.type = "buf"
-            second.inputs = [source_net]
-            del design.gates[first_name]
-            _discard_internal_wire(design, mid_net)
-            return {
-                "rule": "back_to_back_inverter_to_output_buffer",
-                "removed_gates": [first_name],
-                "rewritten_gate": second_name,
-                "removed_nets": [mid_net],
-            }
+        change = _collapse_inverter_chain(design, chain)
+        changes.append(change)
+        num_collapsed_pairs += int(change["num_collapsed_pairs"])
 
-        for sink in list(design.fanouts.get(output_net, [])):
-            _redirect_sink(design, sink, old_net=output_net, new_net=source_net)
-        del design.gates[first_name]
-        del design.gates[second_name]
-        _discard_internal_wire(design, mid_net)
-        _discard_internal_wire(design, output_net)
+    return changes, num_collapsed_pairs
+
+
+def _collapse_inverter_chain(design: Design, chain: list[str]) -> dict[str, Any]:
+    gates = [design.gates[name] for name in chain]
+    source_net = gates[0].inputs[0]
+    terminal = gates[-1]
+    terminal_output = terminal.output
+    num_collapsed_pairs = len(chain) // 2
+
+    if len(chain) % 2 == 1:
+        removed_names = chain[:-1]
+        removed_nets = [gate.output for gate in gates[:-1]]
+        terminal.inputs = [source_net]
+        for name in removed_names:
+            del design.gates[name]
+        for net in removed_nets:
+            _discard_internal_wire(design, net)
         return {
-            "rule": "remove_back_to_back_inverters",
-            "removed_gates": [first_name, second_name],
-            "redirected_net": output_net,
+            "rule": "collapse_inverter_chain_to_not",
+            "chain": chain,
+            "num_collapsed_pairs": num_collapsed_pairs,
+            "removed_gates": removed_names,
+            "rewritten_gate": terminal.name,
             "replacement_net": source_net,
-            "removed_nets": [mid_net, output_net],
+            "removed_nets": removed_nets,
         }
-    return None
+
+    if _must_keep_output_driver(design, terminal_output):
+        removed_names = chain[:-1]
+        removed_nets = [gate.output for gate in gates[:-1]]
+        terminal.type = "buf"
+        terminal.inputs = [source_net]
+        for name in removed_names:
+            del design.gates[name]
+        for net in removed_nets:
+            _discard_internal_wire(design, net)
+        return {
+            "rule": "collapse_inverter_chain_to_output_buffer",
+            "chain": chain,
+            "num_collapsed_pairs": num_collapsed_pairs,
+            "removed_gates": removed_names,
+            "rewritten_gate": terminal.name,
+            "replacement_net": source_net,
+            "removed_nets": removed_nets,
+        }
+
+    for sink in list(design.fanouts.get(terminal_output, [])):
+        _redirect_sink(design, sink, old_net=terminal_output, new_net=source_net)
+    removed_nets = [gate.output for gate in gates]
+    for name in chain:
+        del design.gates[name]
+    for net in removed_nets:
+        _discard_internal_wire(design, net)
+    return {
+        "rule": "collapse_inverter_chain_to_wire",
+        "chain": chain,
+        "num_collapsed_pairs": num_collapsed_pairs,
+        "removed_gates": chain,
+        "redirected_net": terminal_output,
+        "replacement_net": source_net,
+        "removed_nets": removed_nets,
+    }
 
 
 def _redirect_sink(design: Design, sink: str, old_net: str, new_net: str) -> None:

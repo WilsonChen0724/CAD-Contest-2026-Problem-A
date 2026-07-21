@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from eda.design import Design, Gate
 from eda.verify import (
@@ -98,6 +99,25 @@ class VerifyTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("y", result["failures"])
+
+    def test_large_design_equivalence_uses_expression_solver_directly(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        after = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        before.gates = {
+            f"U{index}": Gate(name=f"U{index}", type="buf", inputs=["a"], output="y")
+            for index in range(50001)
+        }
+        after.gates = dict(before.gates)
+        proof = {"ok": True, "engine": "z3", "outputs": ["y"], "failures": {}}
+
+        with (
+            patch("eda.verify._check_design_equivalence_with_abc", side_effect=AssertionError("ABC should be bypassed")),
+            patch("eda.verify._check_design_equivalence_with_expr_solver", return_value=proof) as solver,
+        ):
+            result = check_design_equivalence(before, after)
+
+        solver.assert_called_once_with(before, after, ["y"])
+        self.assertEqual(result, proof)
 
     def test_abc_expression_emitter_reuses_shared_subtrees(self) -> None:
         design = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
