@@ -40,6 +40,7 @@ from eda.analysis import (
     gates_by_type,
     highest_fanout_primary_input,
     io_counts,
+    iter_combinational_paths,
     largest_fanin_cone_output,
     logic_cone,
     max_depth_to_dff_d,
@@ -103,7 +104,7 @@ NOOP_ACCEPTABLE_TRANSFORMS = {
 VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT = 4000
 VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = 20000
 VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT = 8
-VALIDATOR_COMPLETE_PATH_REPORT_LIMIT = 10000
+VALIDATOR_COMPLETE_PATH_REPORT_LIMIT = 300000
 EXACT_VALIDATED_OPS = {
     "begin_testcase",
     "read_design",
@@ -744,25 +745,25 @@ def _validate_complete_all_paths_report(
     if report_path is None or not report_path.is_file():
         return ("FAIL", "runtime claimed a complete path report, but the report file is missing")
 
-    enumerated = all_paths(design, src=src, dst=dst, max_paths=exact_count + 1)
-    if enumerated.get("truncated") or int(enumerated.get("num_paths") or 0) != exact_count:
-        return ("FAIL", "complete path report could not be reproduced by bounded enumeration")
-    expected_lines = [header]
-    expected_lines.extend(
-        f"{index}. " + " -> ".join(path)
-        for index, path in enumerate(enumerated["paths"], 1)
-    )
-    actual_lines = report_path.read_text(encoding="utf-8").splitlines()
-    if actual_lines != expected_lines:
-        mismatch = next(
-            (
-                index
-                for index, (actual, expected) in enumerate(zip(actual_lines, expected_lines), 1)
-                if actual != expected
-            ),
-            min(len(actual_lines), len(expected_lines)) + 1,
+    with report_path.open("r", encoding="utf-8") as handle:
+        if handle.readline().rstrip("\r\n") != header:
+            return ("FAIL", "complete path report differs from the exact oracle at line 1")
+        reproduced = 0
+        for reproduced, path in enumerate(iter_combinational_paths(design, src, dst), 1):
+            expected = f"{reproduced}. " + " -> ".join(path)
+            actual = handle.readline().rstrip("\r\n")
+            if actual != expected:
+                return (
+                    "FAIL",
+                    f"complete path report differs from the exact oracle at line {reproduced + 1}",
+                )
+        if handle.readline() != "":
+            return ("FAIL", f"complete path report has extra content after line {reproduced + 1}")
+    if reproduced != exact_count:
+        return (
+            "FAIL",
+            f"complete path iterator produced {reproduced} paths, expected exact count {exact_count}",
         )
-        return ("FAIL", f"complete path report differs from the exact oracle at line {mismatch}")
     return (
         "PASS",
         f"complete report matches all {exact_count} exact path(s) in deterministic enumeration order",

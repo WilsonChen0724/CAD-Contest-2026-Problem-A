@@ -38,6 +38,7 @@ from eda.analysis import (
     gate_type_connections,
     highest_fanout_primary_input,
     io_counts,
+    iter_combinational_paths,
     logic_cone,
     max_depth_to_dff_d,
     max_depth,
@@ -87,6 +88,7 @@ from eda.verify import (
 
 ALL_PATHS_STDOUT_LIMIT = 20
 ALL_PATHS_COMPLETE_ENUMERATION_LIMIT = 10000
+ALL_PATHS_COMPLETE_STREAM_LIMIT = 300000
 BOOLEAN_EQUATION_MAX_TERMS = 5000
 BOOLEAN_EQUATION_STDOUT_LIMIT = 4000
 LARGE_DESIGN_GATE_LIMIT = 10000
@@ -371,6 +373,18 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
                 # all_paths marks len(paths) == max_paths as truncated, so use
                 # one extra slot when the exact total is known and affordable.
                 max_paths = max(1, exact_count + 1)
+            elif (
+                exact.get("acyclic")
+                and isinstance(exact_count, int)
+                and exact_count <= ALL_PATHS_COMPLETE_STREAM_LIMIT
+            ):
+                return _format_streamed_all_paths(
+                    state.design,
+                    args["src"],
+                    args["dst"],
+                    exact_count,
+                    state,
+                )
         result = all_paths(
             state.design,
             src=args["src"],
@@ -1666,6 +1680,44 @@ def _format_all_paths(result: dict[str, Any], state: CurrentState | None = None)
         lines.append(f'{index}. ' + " -> ".join(path))
     if not paths:
         lines.append("- none")
+    return "\n".join(lines)
+
+
+def _format_streamed_all_paths(
+    design,
+    src: str,
+    dst: str,
+    exact_count: int,
+    state: CurrentState,
+) -> str:
+    report_dir = _report_dir(state)
+    path = report_dir / (
+        f"{_safe_filename_token(_case_name(state))}_"
+        f"{_safe_filename_token(src)}_to_{_safe_filename_token(dst)}_paths.txt"
+    )
+    header = f'Combinational paths from "{src}" to "{dst}": {exact_count}'
+    shown_paths: list[list[str]] = []
+    written = 0
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(header + "\n")
+        for written, item in enumerate(iter_combinational_paths(design, src, dst), 1):
+            if len(shown_paths) < ALL_PATHS_STDOUT_LIMIT:
+                shown_paths.append(item)
+            handle.write(f"{written}. " + " -> ".join(item) + "\n")
+    if written != exact_count:
+        raise RuntimeError(
+            f"Exact path count changed during streaming: expected {exact_count}, wrote {written}."
+        )
+
+    lines = [
+        header,
+        f"Full path listing written to {path}.",
+        f"Showing first {len(shown_paths)} path(s) in this response.",
+    ]
+    lines.extend(
+        f"{index}. " + " -> ".join(item)
+        for index, item in enumerate(shown_paths, 1)
+    )
     return "\n".join(lines)
 
 

@@ -18,6 +18,7 @@ from eda.analysis import (
     gate_type_count_in_cone,
     derive_boolean_equation,
     io_counts,
+    iter_combinational_paths,
     largest_fanin_cone_output,
     max_register_to_register_depth,
     max_depth_to_dff_d,
@@ -102,6 +103,19 @@ class AnalysisTest(unittest.TestCase):
 
         self.assertTrue(result["acyclic"])
         self.assertEqual(result["num_paths"], 1)
+
+    def test_iter_combinational_paths_matches_bounded_enumerator(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        design.add_gate(Gate("U0", "buf", ["src"], "n0"))
+        design.add_gate(Gate("U1", "not", ["n0"], "n1"))
+        design.add_gate(Gate("U2", "buf", ["n0"], "n2"))
+        design.add_gate(Gate("U3", "or", ["n1", "n2"], "dst"))
+
+        streamed = list(iter_combinational_paths(design, "src", "dst"))
+        bounded = all_paths(design, "src", "dst", max_paths=3)
+
+        self.assertEqual(streamed, bounded["paths"])
+        self.assertEqual(len(streamed), 2)
 
     def test_path_queries_accept_bus_base_destinations(self) -> None:
         design = Design(module_name="top", inputs={"src"}, outputs={"out[0]", "out[1]"})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterator
 from eda.design import Design
 from eda.graph import rebuild_graph
 
@@ -606,54 +607,12 @@ def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
     """Enumerate bounded combinational paths from src to dst."""
     if max_paths < 1:
         raise ValueError("max_paths must be at least 1.")
-    rebuild_graph(design)
-    adjacency = _combinational_adjacency(design)
-    src_candidates = _resolve_signal_candidates(design, src)
-    dst_candidates = set(_resolve_signal_candidates(design, dst))
-    if not src_candidates or not dst_candidates:
-        return {
-            "src": src,
-            "dst": dst,
-            "paths": [],
-            "num_paths": 0,
-            "max_paths": max_paths,
-            "truncated": False,
-        }
-    reverse = _reverse_adjacency(adjacency)
-    can_reach_dst: set[str] = set()
-    for candidate in dst_candidates:
-        can_reach_dst.update(_reachable_nodes(reverse, candidate))
-    can_reach_dst.update(dst_candidates)
     paths: list[list[str]] = []
     truncated = False
-    expansions = 0
-    expansion_limit = max(10000, max_paths * 50)
-
-    def dfs(node: str, path: list[str], active: set[str]) -> None:
-        nonlocal expansions, truncated
-        if truncated:
-            return
-        expansions += 1
-        if expansions > expansion_limit:
+    for path in iter_combinational_paths(design, src, dst):
+        paths.append(path)
+        if len(paths) >= max_paths:
             truncated = True
-            return
-        if node in dst_candidates:
-            paths.append(path)
-            if len(paths) >= max_paths:
-                truncated = True
-            return
-        for nxt in sorted(adjacency.get(node, set())):
-            if nxt in active or nxt not in can_reach_dst:
-                continue
-            dfs(nxt, path + [nxt], active | {nxt})
-            if truncated:
-                return
-
-    for start in src_candidates:
-        if start not in can_reach_dst and start not in dst_candidates:
-            continue
-        dfs(start, [start], {start})
-        if truncated:
             break
     return {
         "src": src,
@@ -663,6 +622,35 @@ def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
         "max_paths": max_paths,
         "truncated": truncated,
     }
+
+
+def iter_combinational_paths(design: Design, src: str, dst: str) -> Iterator[list[str]]:
+    """Yield simple combinational paths in deterministic DFS order."""
+    rebuild_graph(design)
+    adjacency = _combinational_adjacency(design)
+    src_candidates = _resolve_signal_candidates(design, src)
+    dst_candidates = set(_resolve_signal_candidates(design, dst))
+    if not src_candidates or not dst_candidates:
+        return
+    reverse = _reverse_adjacency(adjacency)
+    can_reach_dst: set[str] = set()
+    for candidate in dst_candidates:
+        can_reach_dst.update(_reachable_nodes(reverse, candidate))
+    can_reach_dst.update(dst_candidates)
+
+    def dfs(node: str, path: list[str], active: set[str]) -> Iterator[list[str]]:
+        if node in dst_candidates:
+            yield path
+            return
+        for nxt in sorted(adjacency.get(node, set())):
+            if nxt in active or nxt not in can_reach_dst:
+                continue
+            yield from dfs(nxt, path + [nxt], active | {nxt})
+
+    for start in src_candidates:
+        if start not in can_reach_dst and start not in dst_candidates:
+            continue
+        yield from dfs(start, [start], {start})
 
 
 def count_paths(design: Design, src: str, dst: str) -> dict:

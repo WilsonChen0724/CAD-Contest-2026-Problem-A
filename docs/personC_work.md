@@ -62,10 +62,9 @@ Completed in `fix/validator-followup`:
 - Added exact DAG path counting without enumerating every path. The validator
   can now prove the exact path count for large acyclic cones even when the
   response intentionally lists only a bounded prefix.
-- The runtime now expands a default all-path request when the exact count is at
-  most 10,000. On the current `test18` snapshot, all 5,402 paths are generated
-  in about 0.36 seconds; the testcase must be rerun to replace its old
-  5,000-path truncated ledger.
+- The runtime materializes a default all-path request in memory when the exact
+  count is at most 10,000, and streams larger acyclic results up to 300,000
+  paths directly to a report file.
 - Added exact compositional certificates for single-net buffer trees and
   whole-design buffer forests. Contracting every added BUF must reconstruct
   the before design, and every resulting driver must satisfy the requested
@@ -87,13 +86,16 @@ Completed in `fix/validator-followup`:
   46,979-gate design. Z3 proves equivalence of `n1168` in about 2.2 seconds,
   and the residual cone contains only NAND/NOT gates. `test37` must be rerun.
 
-Current bounded result that should remain honest:
+Large complete-path implementation:
 
 - `test14` has 289,366 and 203,810 exact paths for its two all-path requests.
-  Exact counts are now proven, but fully listing those paths would produce
-  excessive output. These responses remain `INCONCLUSIVE` under the current
-  output-bound policy unless the official checker accepts a report file plus
-  exact-count certificate as complete fulfillment.
+- Streaming writes the complete 226.5 MB and 148.1 MB report artifacts in
+  about 10.25 and 8.91 seconds without retaining every path in memory.
+- The validator independently streams and compares every line in about 10.12
+  and 7.79 seconds. Both benchmark artifacts pass.
+- The old `test14` ledger remains `INCONCLUSIVE` until the testcase is rerun,
+  but the backend and external oracle are now complete within the 300-second
+  request budget.
 
 Latest targeted rerun result:
 
@@ -107,8 +109,8 @@ Latest targeted rerun result:
 Full existing-ledger audit after the P1 commit:
 
 - 459 responses: `PASS=453`, `FAIL=4`, `INCONCLUSIVE=2`.
-- The two inconclusive responses are the known `test14` complete-path requests
-  with 289,366 and 203,810 exact paths.
+- The two inconclusive responses are old bounded `test14` complete-path
+  artifacts; the streaming backend above now addresses them.
 - `test17 response 15` exposed an ABC input-alignment false positive. ABC
   expression miter inputs now use the union of both variable sets, and a Z3
   counterexample overrides an ABC equivalent verdict. The real snapshot now
@@ -118,8 +120,10 @@ Full existing-ledger audit after the P1 commit:
   NOR/NOT or NAND/NOT constraints. `test26` takes about 1 second; the two
   80k-gate `test33` dry runs take about 73 and 103 seconds, both under the
   300-second request limit and both pass selected-D-input equivalence.
-- Regenerate `test17`, `test26`, and `test33` with an API-configured shell
-  before publishing a new full-suite validator total.
+- Regenerate `test14`, `test17`, `test26`, and `test33` with an API-configured
+  shell before publishing a new full-suite validator total. The projected
+  result is 459 PASS, zero FAIL, and zero INCONCLUSIVE; this is not a measured
+  full-suite result until those ledgers are regenerated.
 
 ## Latest Local Person C Check
 

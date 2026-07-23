@@ -92,10 +92,10 @@ For an acyclic combinational source-to-destination region, the validator counts
 paths with dynamic programming over the relevant DAG. This computes an exact
 integer without materializing every path.
 
-- If the exact count is affordable to emit (currently at most 10,000), the
-  runtime writes every path to a report artifact. The validator independently
-  re-enumerates the paths and compares every report line in deterministic
-  order.
+- Results up to 10,000 paths may be materialized in memory. Larger acyclic
+  results up to 300,000 paths are streamed directly to a report artifact.
+- The validator independently streams the same deterministic path order and
+  compares every report line without loading the complete artifact.
 - If the exact count is much larger, the validator checks the bounded prefix
   and reports the exact total, but leaves the answer `INCONCLUSIVE` because the
   user requested a complete listing.

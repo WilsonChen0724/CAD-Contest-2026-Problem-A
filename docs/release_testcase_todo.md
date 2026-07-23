@@ -33,8 +33,9 @@ Latest P1 implementation update (2026-07-24):
 
 - Exact DAG path counting is implemented. `test12` can be validated directly;
   rerun `test18` so its affordable 5,402-path result is emitted completely.
-- `test14` exact path counts are 289,366 and 203,810. Keep these bounded unless
-  a complete report-file response is confirmed as acceptable.
+- `test14` exact path counts are 289,366 and 203,810. Complete deterministic
+  streaming artifacts and line-by-line validator comparison now finish well
+  within 300 seconds; rerun `test14` to replace its old bounded ledger.
 - Whole-design fanout repair is no longer capped at 24 nets. Rerun `test36`;
   the response-14 snapshot benchmark repairs all 168 roots in about 28.7
   seconds and passes an exact BUF-forest identity certificate.
@@ -59,7 +60,7 @@ python scripts\validate_release_outputs.py --case test18 --case test36 --case te
 Required follow-up rerun after the formal/cone fixes:
 
 ```powershell
-python scripts\run_release_testcases.py --case test17 --case test26 --case test33 --planner llm_openai --validation-ledger --basic-timeout 60 --timeout 300
+python scripts\run_release_testcases.py --case test14 --case test17 --case test26 --case test33 --planner llm_openai --validation-ledger --basic-timeout 60 --timeout 300
 python scripts\validate_release_outputs.py --planner llm_openai --all --output outputs\validator_p1_full.jsonl --metrics-output outputs\validator_p1_full_metrics.csv
 ```
 
@@ -120,9 +121,8 @@ Person C completion criteria for beta P0:
 
 - Better register-path filtering, for example PI-to-DFF-D or DFF-Q-to-PO if release prompts require those exact scopes.
 - Floating/unconnected-net reports and cut/articulation reports remain useful beta candidates.
-- Decide the official completion policy for all-path requests whose exact
-  count is too large to print inline. The validator can prove the count but
-  does not treat a bounded listing as a complete answer.
+- Monitor disk usage for complete path reports. The current `test14` pair uses
+  about 375 MB and remains excluded from Git.
 
 ## P0/P1 Remaining Transform Tools
 

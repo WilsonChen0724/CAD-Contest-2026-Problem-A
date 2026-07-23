@@ -30,6 +30,29 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn('Combinational paths from "src" to "dst": 2', body)
         self.assertNotIn("truncated", body.lower())
 
+    def test_report_all_paths_streams_complete_report_above_memory_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = CurrentState(output_dir=Path(tmp) / "output")
+            state.testcase = "stream_paths"
+            state.design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+            state.design.add_gate(Gate("U0", "buf", ["src"], "n0"))
+            state.design.add_gate(Gate("U1", "not", ["n0"], "n1"))
+            state.design.add_gate(Gate("U2", "buf", ["n0"], "n2"))
+            state.design.add_gate(Gate("U3", "or", ["n1", "n2"], "dst"))
+
+            with patch("runtime.dispatcher.ALL_PATHS_COMPLETE_ENUMERATION_LIMIT", 1):
+                body = dispatch_plan(
+                    state,
+                    {"op": "report_all_paths", "args": {"src": "src", "dst": "dst"}},
+                )
+            report_path = state.output_dir / "reports" / "stream_paths_src_to_dst_paths.txt"
+            report_lines = report_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertIn('Combinational paths from "src" to "dst": 2', body)
+        self.assertIn("Full path listing written to", body)
+        self.assertNotIn("truncated", body.lower())
+        self.assertEqual(len(report_lines), 3)
+
     def test_dispatcher_accepts_checked_unsupported_plan(self) -> None:
         body = dispatch_plan(
             CurrentState(),
