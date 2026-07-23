@@ -85,11 +85,12 @@ def check_equivalence(design: Design, expr: str, target: str) -> dict:
     target_expr = engine.net_expr(design, target)
     user_expr = engine.parse_expr(expr, design)
     abc_result = _check_boolean_equivalence_with_abc(target_expr, user_expr)
-    if abc_result is not None and abc_result.get("ok"):
-        return abc_result
-
     solver_result = _prove_no_counterexample(engine, target_expr != user_expr)
-    if abc_result is not None and not solver_result.get("ok") and solver_result.get("counterexample") is None:
+    if solver_result.get("ok") and abc_result is not None and abc_result.get("ok"):
+        return {"ok": True, "engine": "abc+z3", "counterexample": None}
+    if not solver_result.get("ok") and solver_result.get("counterexample") is not None:
+        return solver_result
+    if abc_result is not None and solver_result.get("counterexample") is None:
         return abc_result
     return solver_result
 
@@ -329,9 +330,10 @@ def _trim_tool_output(text: str, limit: int = 800) -> str:
 
 def _check_boolean_equivalence_with_abc(left: "_ExprNode", right: "_ExprNode") -> dict | None:
     try:
-        output = _abc_output_name(left.vars() | right.vars())
-        left_design = _expr_to_abc_design(left, output, "expr_left")
-        right_design = _expr_to_abc_design(right, output, "expr_right")
+        common_inputs = left.vars() | right.vars()
+        output = _abc_output_name(common_inputs)
+        left_design = _expr_to_abc_design(left, output, "expr_left", inputs=common_inputs)
+        right_design = _expr_to_abc_design(right, output, "expr_right", inputs=common_inputs)
         completed = _run_abc_cec(left_design, right_design)
     except Exception:
         return None
@@ -349,8 +351,18 @@ def _check_boolean_equivalence_with_abc(left: "_ExprNode", right: "_ExprNode") -
     return None
 
 
-def _expr_to_abc_design(expr: "_ExprNode", output: str, module_name: str) -> Design:
-    design = Design(module_name=module_name, inputs=set(expr.vars()), outputs={output})
+def _expr_to_abc_design(
+    expr: "_ExprNode",
+    output: str,
+    module_name: str,
+    *,
+    inputs: set[str] | None = None,
+) -> Design:
+    design = Design(
+        module_name=module_name,
+        inputs=set(expr.vars()) if inputs is None else set(inputs),
+        outputs={output},
+    )
     counter = [0]
     expr_net = _emit_expr_node(design, expr, counter, memo={})
     if expr_net != output:

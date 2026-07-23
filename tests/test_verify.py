@@ -52,6 +52,32 @@ class VerifyTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIsInstance(result["counterexample"], dict)
 
+    def test_check_equivalence_distinguishes_different_input_variables(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
+        design.add_gate(Gate(name="U1", type="buf", inputs=["a"], output="z"))
+
+        result = check_equivalence(design, "b", "z")
+
+        self.assertFalse(result["ok"])
+        self.assertIsInstance(result["counterexample"], dict)
+
+    def test_z3_counterexample_overrides_false_abc_equivalence(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b"}, outputs={"z"})
+        design.add_gate(Gate(name="U1", type="buf", inputs=["a"], output="z"))
+        solver_result = {
+            "ok": False,
+            "engine": "z3",
+            "counterexample": {"a": True, "b": False},
+        }
+
+        with (
+            patch("eda.verify._check_boolean_equivalence_with_abc", return_value={"ok": True, "engine": "abc"}),
+            patch("eda.verify._prove_no_counterexample", return_value=solver_result),
+        ):
+            result = check_equivalence(design, "b", "z")
+
+        self.assertEqual(result, solver_result)
+
     def test_check_property_accepts_implication(self) -> None:
         design = Design(module_name="top", inputs={"req", "busy"}, outputs={"done"})
         design.add_gate(Gate(name="U_not_busy", type="not", inputs=["busy"], output="n_busy"))
@@ -130,6 +156,19 @@ class VerifyTest(unittest.TestCase):
         emitted = _expr_to_abc_design(expr, output, "expr_test")
 
         self.assertEqual(len(emitted.gates), 3)
+
+    def test_abc_expression_emitter_accepts_common_input_universe(self) -> None:
+        engine = _BooleanEngine()
+        expr = engine.parse_expr("a")
+
+        emitted = _expr_to_abc_design(
+            expr,
+            "__abc_equiv_out",
+            "expr_test",
+            inputs={"a", "b"},
+        )
+
+        self.assertEqual(emitted.inputs, {"a", "b"})
 
 
 if __name__ == "__main__":

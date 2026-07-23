@@ -104,6 +104,23 @@ Latest targeted rerun result:
 - `test37 response 15` now validates the `floating_signals` placeholder by
   recomputing missing and duplicate drivers with the connectivity oracle.
 
+Full existing-ledger audit after the P1 commit:
+
+- 459 responses: `PASS=453`, `FAIL=4`, `INCONCLUSIVE=2`.
+- The two inconclusive responses are the known `test14` complete-path requests
+  with 289,366 and 203,810 exact paths.
+- `test17 response 15` exposed an ABC input-alignment false positive. ABC
+  expression miter inputs now use the union of both variable sets, and a Z3
+  counterexample overrides an ABC equivalent verdict. The real snapshot now
+  reports `n2122 != n2116` with a three-input counterexample.
+- `test26 response 4` and `test33 responses 9/19` are old empty-DFF-cone
+  ledgers. New dry runs resolve their D-input cones and satisfy the requested
+  NOR/NOT or NAND/NOT constraints. `test26` takes about 1 second; the two
+  80k-gate `test33` dry runs take about 73 and 103 seconds, both under the
+  300-second request limit and both pass selected-D-input equivalence.
+- Regenerate `test17`, `test26`, and `test33` with an API-configured shell
+  before publishing a new full-suite validator total.
+
 ## Latest Local Person C Check
 
 Date: 2026-07-20.

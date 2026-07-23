@@ -56,6 +56,17 @@ python scripts\run_release_testcases.py --case test18 --case test36 --case test3
 python scripts\validate_release_outputs.py --case test18 --case test36 --case test37 --planner llm_openai --output outputs\validator_p1_rerun.jsonl --metrics-output outputs\validator_p1_rerun_metrics.csv
 ```
 
+Required follow-up rerun after the formal/cone fixes:
+
+```powershell
+python scripts\run_release_testcases.py --case test17 --case test26 --case test33 --planner llm_openai --validation-ledger --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --planner llm_openai --all --output outputs\validator_p1_full.jsonl --metrics-output outputs\validator_p1_full_metrics.csv
+```
+
+The first command needs `OPENAI_API_KEY` in the same shell or a local
+`config.yaml`. Do not interpret an immediate all-response error run as an EDA
+failure; check stderr for `LLM planner is not configured`.
+
 ## Beta P0 Team Split
 
 - Person A: parser/writer and graph correctness. Prioritize any testcase that

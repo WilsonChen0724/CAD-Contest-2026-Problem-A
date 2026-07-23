@@ -80,6 +80,12 @@ network:
 These are complete proofs for the stated structural rewrite, not heuristic
 connectivity checks.
 
+For expression equivalence, ABC receives the union of variables used by both
+expressions as a common primary-input universe. Z3 is also evaluated; a
+concrete Z3 counterexample overrides an ABC equivalent verdict. This prevents
+positional PI matching from declaring expressions over different signals
+equivalent.
+
 ## Exact Path Counts
 
 For an acyclic combinational source-to-destination region, the validator counts
