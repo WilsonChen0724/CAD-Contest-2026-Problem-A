@@ -29,6 +29,33 @@ Latest LLM/OpenAI validation baseline (2026-07-20):
 - Do not claim the projected result as final until the test33 rerun and full
   validator export have completed.
 
+Latest P1 implementation update (2026-07-24):
+
+- Exact DAG path counting is implemented. `test12` can be validated directly;
+  rerun `test18` so its affordable 5,402-path result is emitted completely.
+- `test14` exact path counts are 289,366 and 203,810. Keep these bounded unless
+  a complete report-file response is confirmed as acceptable.
+- Whole-design fanout repair is no longer capped at 24 nets. Rerun `test36`;
+  the response-14 snapshot benchmark repairs all 168 roots in about 28.7
+  seconds and passes an exact BUF-forest identity certificate.
+- Rerun `test37`; constrained `optimize_cone` now resolves output `n8` through
+  its DFF to D-input `n1168`, avoids redundant whole-design rewrites, and
+  passes Z3 next-state-cone equivalence plus NAND/NOT residual checking.
+- Existing `test38` ledgers now validate all 20 responses as PASS with the
+  buffer-tree compositional certificate.
+- Existing `test28` ledgers now validate all 8 responses as PASS. Its 23
+  `AND(x,x) -> x` removals pass exact structural contraction and the
+  whole-design AND/NOT residual check.
+- Targeted `test18/test36/test37` rerun: all 52 responses validate as PASS,
+  with zero FAIL and zero INCONCLUSIVE.
+
+P1 targeted rerun:
+
+```powershell
+python scripts\run_release_testcases.py --case test18 --case test36 --case test37 --planner llm_openai --validation-ledger --basic-timeout 60 --timeout 300
+python scripts\validate_release_outputs.py --case test18 --case test36 --case test37 --planner llm_openai --output outputs\validator_p1_rerun.jsonl --metrics-output outputs\validator_p1_rerun_metrics.csv
+```
+
 ## Beta P0 Team Split
 
 - Person A: parser/writer and graph correctness. Prioritize any testcase that
@@ -82,6 +109,9 @@ Person C completion criteria for beta P0:
 
 - Better register-path filtering, for example PI-to-DFF-D or DFF-Q-to-PO if release prompts require those exact scopes.
 - Floating/unconnected-net reports and cut/articulation reports remain useful beta candidates.
+- Decide the official completion policy for all-path requests whose exact
+  count is too large to print inline. The validator can prove the count but
+  does not treat a bounded listing as a complete answer.
 
 ## P0/P1 Remaining Transform Tools
 

@@ -131,6 +131,41 @@ class PlanCheckerTest(unittest.TestCase):
             {"steps": [{"op": "insert_buffers_for_all_high_fanout", "args": {"max_fanout": 16}}]},
         )
 
+    def test_drops_whole_design_rewrites_after_constrained_cone_plan(self) -> None:
+        plan = validate_domain_tool_plan(
+            "run_transform_plan",
+            {
+                "steps": [
+                    {
+                        "op": "optimize_cone",
+                        "args": {
+                            "target": "n8",
+                            "allowed_gates": ["nand", "not"],
+                            "objective": "preserve_functionality",
+                        },
+                    },
+                    {"op": "replace_with_and_not", "args": {}},
+                    {"op": "replace_and_not_with_nand", "args": {}},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            {
+                "steps": [
+                    {
+                        "op": "optimize_cone",
+                        "args": {
+                            "target": "n8",
+                            "allowed_gates": ["nand", "not"],
+                            "objective": "preserve_functionality",
+                        },
+                    }
+                ]
+            },
+        )
+
     def test_normalizes_find_path_avoid_string_and_drops_empty_steps(self) -> None:
         plan = validate_domain_tool_plan(
             "run_analysis_plan",

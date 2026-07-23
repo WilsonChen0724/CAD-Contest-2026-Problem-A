@@ -53,6 +53,57 @@ Completion criteria:
 - Every transform/optimization `FAIL` is either fixed or assigned with oracle
   evidence from the validator report.
 
+## Beta P1 Progress
+
+Date: 2026-07-24.
+
+Completed in `fix/validator-followup`:
+
+- Added exact DAG path counting without enumerating every path. The validator
+  can now prove the exact path count for large acyclic cones even when the
+  response intentionally lists only a bounded prefix.
+- The runtime now expands a default all-path request when the exact count is at
+  most 10,000. On the current `test18` snapshot, all 5,402 paths are generated
+  in about 0.36 seconds; the testcase must be rerun to replace its old
+  5,000-path truncated ledger.
+- Added exact compositional certificates for single-net buffer trees and
+  whole-design buffer forests. Contracting every added BUF must reconstruct
+  the before design, and every resulting driver must satisfy the requested
+  fanout bound.
+- Added an identity-gate removal certificate for `AND(x,x)`, `OR(x,x)`, and
+  BUF contraction. The existing `test28 response 7` ledger now validates
+  without a rerun: all 8 responses PASS, and the 23 removed degenerate AND
+  gates reconstruct exactly while the whole design remains AND/NOT-only.
+- Removed the default 24-net cap from required whole-design fanout repair.
+  On `test36 response 14`, all 168 high-fanout roots are repaired with 2,615
+  BUF gates in about 28.7 seconds, final maximum fanout is 16, and the buffer
+  forest certificate passes. `test36` must be rerun to replace the old partial
+  ledger.
+- Constrained cone optimization now resolves a DFF-Q output to its D-input
+  combinational cone. The plan checker also removes redundant whole-design
+  gate-library rewrites after a constrained `optimize_cone`.
+- On `test37 response 5`, target `n8` resolves to D input `n1168`; only its
+  three-gate cone is transformed, rather than reconstructing the entire
+  46,979-gate design. Z3 proves equivalence of `n1168` in about 2.2 seconds,
+  and the residual cone contains only NAND/NOT gates. `test37` must be rerun.
+
+Current bounded result that should remain honest:
+
+- `test14` has 289,366 and 203,810 exact paths for its two all-path requests.
+  Exact counts are now proven, but fully listing those paths would produce
+  excessive output. These responses remain `INCONCLUSIVE` under the current
+  output-bound policy unless the official checker accepts a report file plus
+  exact-count certificate as complete fulfillment.
+
+Latest targeted rerun result:
+
+- `test18`, `test36`, and `test37` produced 52 responses.
+- Validator result: `PASS=52`, `FAIL=0`, `SKIP=0`, `INCONCLUSIVE=0`.
+- `test18 response 6` now validates the complete 5,402-path artifact line by
+  line against deterministic re-enumeration.
+- `test37 response 15` now validates the `floating_signals` placeholder by
+  recomputing missing and duplicate drivers with the connectivity oracle.
+
 ## Latest Local Person C Check
 
 Date: 2026-07-20.

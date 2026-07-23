@@ -2597,31 +2597,6 @@ def optimize_cone(
         )
 
     rebuild_graph(design)
-    if target in design.outputs and not logic_cone(design, target):
-        if max_depth is not None and max_depth < 0:
-            raise ValueError("optimize_cone requires max_depth >= 0 when provided.")
-        return {
-            "target": target,
-            "resolved_target": target,
-            "target_resolution": {
-                "target": target,
-                "original_target": target,
-                "kind": "primary_output_empty_cone",
-                "reason": "primary output has no combinational fanin cone to restructure",
-            },
-            "engine": "constraint_aware_cone",
-            "allowed_gates": sorted(allowed),
-            "max_depth": max_depth,
-            "initial_gate_count": 0,
-            "final_gate_count": 0,
-            "removed_gate_count": 0,
-            "initial_depth": 0,
-            "final_depth": 0,
-            "target_met": True,
-            "changed": [],
-            "num_changed": 0,
-        }
-
     resolved = _resolve_optimization_cone_target(design, target)
     resolved_target = resolved["target"]
     initial_gates = logic_cone(design, resolved_target)

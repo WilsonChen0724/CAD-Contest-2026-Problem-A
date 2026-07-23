@@ -688,7 +688,7 @@ class TransformTest(unittest.TestCase):
         self.assertTrue(all(design.gates[name].type in {"nand", "not"} for name in logic_cone(design, "y")))
         self.assertTrue(check_design_equivalence(original, design)["ok"])
 
-    def test_optimize_cone_keeps_empty_primary_output_cone_as_noop(self) -> None:
+    def test_constrained_optimize_cone_resolves_dff_q_to_d_input_cone(self) -> None:
         design = Design(inputs={"a", "clk"}, outputs={"q"})
         design.add_gate(Gate(name="U_or", type="or", inputs=["a", "clk"], output="d"))
         design.add_dff(DFF(name="FF0", d="d", q="q", clk="clk"))
@@ -696,11 +696,11 @@ class TransformTest(unittest.TestCase):
 
         result = optimize_cone(design, "q", allowed_gates=["nand", "not"], allow_yosys_abc=False)
 
-        self.assertEqual(result["target_resolution"]["kind"], "primary_output_empty_cone")
-        self.assertEqual(result["initial_gate_count"], 0)
-        self.assertEqual(result["final_gate_count"], 0)
-        self.assertEqual(result["num_changed"], 0)
-        self.assertEqual({name: gate.type for name, gate in design.gates.items()}, {name: gate.type for name, gate in original.gates.items()})
+        self.assertEqual(result["target_resolution"]["kind"], "dff_q_to_d")
+        self.assertEqual(result["resolved_target"], "d")
+        self.assertGreater(result["initial_gate_count"], 0)
+        self.assertTrue(all(design.gates[name].type in {"nand", "not"} for name in logic_cone(design, "d")))
+        self.assertTrue(check_design_equivalence(original, design)["ok"])
 
     def test_rename_net_updates_references_and_preserves_function(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})

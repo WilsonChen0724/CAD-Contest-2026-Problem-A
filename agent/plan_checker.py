@@ -250,6 +250,7 @@ def validate_domain_tool_plan(tool_name: str, tool_args: Any) -> dict[str, Any]:
 
     normalized_steps = [_normalize_tool_step(step) for step in steps]
     normalized_steps = _drop_fanout_gate_count_depth_overplan(normalized_steps)
+    normalized_steps = _drop_redundant_cone_library_followups(normalized_steps)
     return validate_plan({"steps": normalized_steps})
 
 
@@ -331,6 +332,25 @@ def _drop_fanout_gate_count_depth_overplan(steps: list[Any]) -> list[Any]:
             continue
         repaired.append(step)
     return repaired
+
+
+def _drop_redundant_cone_library_followups(steps: list[Any]) -> list[Any]:
+    """Keep a target-local gate-library request inside optimize_cone."""
+    has_constrained_cone = any(
+        isinstance(step, dict)
+        and step.get("op") == "optimize_cone"
+        and isinstance(step.get("args"), dict)
+        and bool(step["args"].get("allowed_gates"))
+        for step in steps
+    )
+    if not has_constrained_cone:
+        return steps
+    whole_design_library_rewrites = {"replace_with_and_not", "replace_and_not_with_nand"}
+    return [
+        step
+        for step in steps
+        if not (isinstance(step, dict) and step.get("op") in whole_design_library_rewrites)
+    ]
 
 
 def validate_plan(plan: Any) -> dict[str, Any]:

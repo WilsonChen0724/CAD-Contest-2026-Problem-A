@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from eda.design import Design, Gate
+from eda.design import DFF, Design, Gate
 from scripts import validate_release_outputs as validator
 from scripts.validate_release_outputs import (
     ValidationResult,
@@ -17,6 +17,94 @@ from scripts.validate_release_outputs import (
 
 
 class ReleaseValidatorTest(unittest.TestCase):
+    def test_all_paths_validator_uses_exact_count_above_enumeration_bound(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        design.add_gate(Gate("U0", "buf", ["src"], "n0"))
+        design.add_gate(Gate("U1", "not", ["n0"], "n1"))
+        design.add_gate(Gate("U2", "buf", ["n0"], "n2"))
+        design.add_gate(Gate("U3", "or", ["n1", "n2"], "dst"))
+
+        with patch.object(validator, "_require_snapshot", return_value=design):
+            result = validator._validate_all_paths(
+                Path("release"),
+                Path("ledger.jsonl"),
+                "test00",
+                1,
+                {"src": "src", "dst": "dst", "max_paths": 1},
+                'Combinational paths from "src" to "dst": 1\nEnumeration was truncated after 1 path(s).',
+                {},
+            )
+
+        self.assertEqual(result.status, "INCONCLUSIVE")
+        self.assertIn("1 of 2 exact path(s)", result.detail)
+
+    def test_all_paths_validator_checks_complete_report_above_inline_bound(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        design.add_gate(Gate("U0", "buf", ["src"], "n0"))
+        design.add_gate(Gate("U1", "not", ["n0"], "n1"))
+        design.add_gate(Gate("U2", "buf", ["n0"], "n2"))
+        design.add_gate(Gate("U3", "or", ["n1", "n2"], "dst"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp)
+            report_path = release_dir / "output" / "reports" / "paths.txt"
+            report_path.parent.mkdir(parents=True)
+            result = validator.all_paths(design, "src", "dst", max_paths=3)
+            report_lines = ['Combinational paths from "src" to "dst": 2']
+            report_lines.extend(
+                f"{index}. " + " -> ".join(path)
+                for index, path in enumerate(result["paths"], 1)
+            )
+            report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+            body = (
+                'Combinational paths from "src" to "dst": 2\n'
+                "Full path listing written to output\\reports\\paths.txt.\n"
+                "Showing first 2 path(s) in this response."
+            )
+            with (
+                patch.object(validator, "_require_snapshot", return_value=design),
+                patch.object(validator, "DEFAULT_COMPLETE_PATH_LIMIT", 1),
+            ):
+                verdict = validator._validate_all_paths(
+                    release_dir,
+                    Path("ledger.jsonl"),
+                    "test00",
+                    1,
+                    {"src": "src", "dst": "dst"},
+                    body,
+                    {},
+                )
+
+        self.assertEqual(verdict.status, "PASS")
+        self.assertIn("all 2 exact path(s)", verdict.detail)
+
+    def test_fanout_validator_handles_floating_signal_placeholder(self) -> None:
+        design = Design(module_name="top", inputs={"a"}, outputs={"y"}, wires={"floating_wire"})
+        design.add_gate(Gate("U0", "buf", ["a"], "y"))
+        body = "\n".join(
+            [
+                "Floating/unconnected signal report: 1 issue(s) found.",
+                "- missing drivers: 1",
+                "- duplicate drivers: 0",
+                "Signals with missing drivers:",
+                "- floating_wire",
+            ]
+        )
+
+        with patch.object(validator, "_require_snapshot", return_value=design):
+            result = validator._validate_fanout(
+                Path("release"),
+                Path("ledger.jsonl"),
+                "test00",
+                1,
+                {"net": "floating_signals"},
+                body,
+                {},
+            )
+
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("connectivity oracle", result.detail)
+
     def test_find_gates_accepts_none_wording_for_zero_matches(self) -> None:
         design = Design(module_name="top", inputs={"a"}, outputs={"y"})
         design.add_gate(Gate("U0", "buf", ["a"], "y"))
@@ -905,6 +993,110 @@ class ReleaseValidatorTest(unittest.TestCase):
         self.assertEqual(gate_rename[0], "PASS")
         self.assertEqual(dangling[0], "PASS")
         self.assertEqual(buffers[0], "PASS")
+
+    def test_large_buffer_tree_compositional_proof(self) -> None:
+        before = Design(module_name="top", inputs={"src"}, outputs={"y0", "y1", "y2", "y3"})
+        for index in range(4):
+            before.add_gate(Gate(f"U{index}", "not", ["src"], f"y{index}"))
+        after = Design(module_name="top", inputs={"src"}, outputs={"y0", "y1", "y2", "y3"})
+        after.add_gate(Gate("B0", "buf", ["src"], "b0"))
+        after.add_gate(Gate("B1", "buf", ["src"], "b1"))
+        for index in range(4):
+            after.add_gate(Gate(f"U{index}", "not", ["b0" if index < 2 else "b1"], f"y{index}"))
+
+        result = validator._check_large_compositional_transform(
+            before,
+            after,
+            "insert_buffers_for_fanout",
+            {"net": "src", "max_fanout": 2},
+        )
+
+        self.assertEqual(result[0], "PASS")
+        self.assertIn("fanout <= 2", result[1])
+
+    def test_large_buffer_forest_compositional_proof(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1", "y2", "y3"})
+        before.add_gate(Gate("U0", "not", ["a"], "y0"))
+        before.add_gate(Gate("U1", "not", ["a"], "y1"))
+        before.add_gate(Gate("U2", "not", ["b"], "y2"))
+        before.add_gate(Gate("U3", "not", ["b"], "y3"))
+        after = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1", "y2", "y3"})
+        after.add_gate(Gate("BA0", "buf", ["a"], "a_buf"))
+        after.add_gate(Gate("BB0", "buf", ["b"], "b_buf"))
+        after.add_gate(Gate("U0", "not", ["a_buf"], "y0"))
+        after.add_gate(Gate("U1", "not", ["a_buf"], "y1"))
+        after.add_gate(Gate("U2", "not", ["b_buf"], "y2"))
+        after.add_gate(Gate("U3", "not", ["b_buf"], "y3"))
+
+        result = validator._check_large_compositional_transform(
+            before,
+            after,
+            "insert_buffers_for_all_high_fanout",
+            {"max_fanout": 2},
+        )
+
+        self.assertEqual(result[0], "PASS")
+        self.assertIn("2 root net(s)", result[1])
+        self.assertIn("full-design fanout <= 2", result[1])
+
+    def test_large_cone_validation_selects_dff_input_and_checks_gate_library(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b", "clk"}, outputs={"q"})
+        before.add_gate(Gate("U0", "or", ["a", "b"], "d"))
+        before.add_dff(DFF("FF0", d="d", q="q", clk="clk"))
+        after = Design(module_name="top", inputs={"a", "b", "clk"}, outputs={"q"})
+        after.add_gate(Gate("N0", "not", ["a"], "na"))
+        after.add_gate(Gate("N1", "not", ["b"], "nb"))
+        after.add_gate(Gate("N2", "nand", ["na", "nb"], "d"))
+        after.add_dff(DFF("FF0", d="d", q="q", clk="clk"))
+
+        selected = validator._selected_outputs_for_large_transform(
+            before,
+            after,
+            "optimize_cone",
+            {"target": "q", "allowed_gates": ["nand", "not"]},
+        )
+        residual = validator._check_transform_residual(
+            after,
+            "optimize_cone",
+            {"target": "q", "allowed_gates": ["nand", "not"]},
+        )
+
+        self.assertEqual(selected, ["d"])
+        self.assertEqual(residual[0], "PASS")
+        self.assertIn('resolved to "d"', residual[1])
+
+    def test_large_cone_gate_library_residual_rejects_disallowed_gate(self) -> None:
+        design = Design(module_name="top", inputs={"a", "b", "clk"}, outputs={"q"})
+        design.add_gate(Gate("U0", "or", ["a", "b"], "d"))
+        design.add_dff(DFF("FF0", d="d", q="q", clk="clk"))
+
+        result = validator._check_transform_residual(
+            design,
+            "optimize_cone",
+            {"target": "q", "allowed_gates": ["nand", "not"]},
+        )
+
+        self.assertEqual(result[0], "FAIL")
+        self.assertIn("disallowed gate types", result[1])
+
+    def test_identity_gate_removal_compositional_proof(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        before.add_gate(Gate("I0", "and", ["a", "a"], "n0"))
+        before.add_gate(Gate("I1", "or", ["n0", "n0"], "n1"))
+        before.add_gate(Gate("U0", "and", ["n1", "b"], "y"))
+        after = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        after.add_gate(Gate("U0", "and", ["a", "b"], "y"))
+
+        result = validator._check_large_compositional_transform(
+            before,
+            after,
+            "optimize_design_depth",
+            {"allowed_gates": ["and", "not"]},
+        )
+
+        self.assertEqual(result[0], "PASS")
+        self.assertIn("2 degenerate", result[1])
+        self.assertIn("whole design uses only", result[1])
 
     def test_deterministic_transform_residual_proofs(self) -> None:
         and_not = Design(module_name="top", inputs={"a"}, outputs={"y"})

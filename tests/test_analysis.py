@@ -5,6 +5,7 @@ import unittest
 from eda.analysis import (
     all_paths,
     all_paths_pass_through,
+    count_paths,
     cone_depth,
     constant_input_gates,
     dff_relationships,
@@ -81,6 +82,26 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(report["num_paths"], 2)
         self.assertIn(["src", "U1", "n1", "U2", "dst"], report["paths"])
         self.assertIn(["src", "U_bypass", "dst"], report["paths"])
+
+    def test_count_paths_uses_exact_dag_dynamic_programming(self) -> None:
+        design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["src"], output="n0"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["n0"], output="n1"))
+        design.add_gate(Gate(name="U2", type="buf", inputs=["n0"], output="n2"))
+        design.add_gate(Gate(name="U3", type="or", inputs=["n1", "n2"], output="dst"))
+
+        result = count_paths(design, "src", "dst")
+
+        self.assertTrue(result["acyclic"])
+        self.assertEqual(result["num_paths"], 2)
+
+    def test_count_paths_stops_at_destination_node(self) -> None:
+        design = Design(module_name="top", inputs={"direct"}, outputs={"direct"})
+
+        result = count_paths(design, "direct", "direct")
+
+        self.assertTrue(result["acyclic"])
+        self.assertEqual(result["num_paths"], 1)
 
     def test_path_queries_accept_bus_base_destinations(self) -> None:
         design = Design(module_name="top", inputs={"src"}, outputs={"out[0]", "out[1]"})

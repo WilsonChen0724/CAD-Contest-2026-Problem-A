@@ -16,6 +16,7 @@ from eda.analysis import (
     cut_signal_between_pi_po,
     constant_input_gates,
     cone_depth,
+    count_paths,
     dff_relationships,
     dff_input_logic_structures,
     dffs_by_clock,
@@ -85,15 +86,12 @@ from eda.verify import (
 )
 
 ALL_PATHS_STDOUT_LIMIT = 20
+ALL_PATHS_COMPLETE_ENUMERATION_LIMIT = 10000
 BOOLEAN_EQUATION_MAX_TERMS = 5000
 BOOLEAN_EQUATION_STDOUT_LIMIT = 4000
 LARGE_DESIGN_GATE_LIMIT = 10000
 LARGE_CONE_GATE_LIMIT = 1500
 LARGE_CONSTANT_PROPAGATION_MAX_CHANGES = 64
-HIGH_FANOUT_BUDGET_MEDIUM_GATE_LIMIT = 10000
-HIGH_FANOUT_BUDGET_LARGE_GATE_LIMIT = 20000
-HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS = 24
-HIGH_FANOUT_BUDGET_LARGE_CHANGED_NETS = 4
 SAVED_OUTPUT_CONE_SKIP_GATE_LIMIT = 4000
 AND_NOT_REWRITE_SKIP_GATE_LIMIT = 50000
 
@@ -361,11 +359,23 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "report_all_paths":
         _require_design(state)
+        max_paths = _positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT)
+        if args.get("max_paths") is None:
+            exact = count_paths(state.design, src=args["src"], dst=args["dst"])
+            exact_count = exact.get("num_paths")
+            if (
+                exact.get("acyclic")
+                and isinstance(exact_count, int)
+                and exact_count <= ALL_PATHS_COMPLETE_ENUMERATION_LIMIT
+            ):
+                # all_paths marks len(paths) == max_paths as truncated, so use
+                # one extra slot when the exact total is known and affordable.
+                max_paths = max(1, exact_count + 1)
         result = all_paths(
             state.design,
             src=args["src"],
             dst=args["dst"],
-            max_paths=_positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT),
+            max_paths=max_paths,
         )
         return _format_all_paths(result, state=state)
 
@@ -757,7 +767,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
             state,
             insert_buffers_for_all_high_fanout,
             args["max_fanout"],
-            max_changed_nets=_high_fanout_transform_budget(state.design, state.config),
+            max_changed_nets=None,
             verify_equivalence=False,
             max_fanout=args["max_fanout"],
         )
@@ -833,7 +843,7 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         if resolved_target != args["target"]:
             resolved_text = f' resolved to "{resolved_target}" ({result["target_resolution"]["kind"]})'
         lines = [
-            f'Optimized cone target "{args["target"]}"{resolved_text} as part of whole-design optimization.',
+            f'Optimized cone target "{args["target"]}"{resolved_text} using target-local optimization.',
             f'- Whole design gates: {before_total} -> {after_total}; max logic depth: {before_design_depth} -> {after_design_depth}.',
             f'- Target cone gates: {result["initial_gate_count"]} -> {result["final_gate_count"]} gate(s); cone depth: {result["initial_depth"]} -> {result["final_depth"]}.',
         ]
@@ -1773,24 +1783,6 @@ def _positive_int_or_default(value: Any, default: int) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return default
-
-
-def _high_fanout_transform_budget(design, config: dict[str, Any] | None = None) -> int | None:
-    """Keep whole-design fanout optimization inside the contest response limit."""
-    gate_count = len(design.gates)
-    if gate_count > _optimization_limit(config, "high_fanout_budget_large_gate_limit", HIGH_FANOUT_BUDGET_LARGE_GATE_LIMIT):
-        return _optimization_limit(
-            config,
-            "high_fanout_budget_large_changed_nets",
-            HIGH_FANOUT_BUDGET_LARGE_CHANGED_NETS,
-        )
-    if gate_count > _optimization_limit(config, "high_fanout_budget_medium_gate_limit", HIGH_FANOUT_BUDGET_MEDIUM_GATE_LIMIT):
-        return _optimization_limit(
-            config,
-            "high_fanout_budget_medium_changed_nets",
-            HIGH_FANOUT_BUDGET_MEDIUM_CHANGED_NETS,
-        )
-    return None
 
 
 def _optimize_saved_output_cones(

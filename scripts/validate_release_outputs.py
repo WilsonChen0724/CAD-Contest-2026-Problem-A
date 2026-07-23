@@ -18,6 +18,7 @@ from eda.analysis import (
     all_paths_pass_through,
     articulation_points_between,
     constant_input_gates,
+    count_paths,
     cone_depth,
     cut_signal_between_pi_po,
     derive_boolean_equation,
@@ -102,6 +103,7 @@ NOOP_ACCEPTABLE_TRANSFORMS = {
 VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT = 4000
 VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = 20000
 VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT = 8
+VALIDATOR_COMPLETE_PATH_REPORT_LIMIT = 10000
 EXACT_VALIDATED_OPS = {
     "begin_testcase",
     "read_design",
@@ -566,6 +568,23 @@ def _validate_fanout(
 ) -> ValidationResult:
     net = str(args.get("net") or "")
     design = _require_snapshot(record, release_dir, ledger_path)
+    if _is_floating_signal_placeholder(net):
+        result = check_connectivity(design)
+        missing = result.get("missing_drivers") or []
+        duplicates = result.get("duplicate_drivers") or {}
+        expected_lines = [
+            f"Floating/unconnected signal report: {len(missing) + len(duplicates)} issue(s) found.",
+            f"- missing drivers: {len(missing)}",
+            f"- duplicate drivers: {len(duplicates)}",
+        ]
+        status = "PASS" if all(line in body for line in expected_lines) else "FAIL"
+        return ValidationResult(
+            case,
+            response_id,
+            status,
+            "report_fanout",
+            "connectivity oracle: " + "; ".join(expected_lines),
+        )
     result = direct_fanout(design, net)
     expected = f'{result["num_loads"]} load(s), {result["num_unique_sinks"]} unique sink(s)'
     status = "PASS" if expected in body else "FAIL"
@@ -656,26 +675,128 @@ def _validate_all_paths(
     dst = str(args.get("dst") or "")
     max_paths = _positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT)
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
-        reachability_probe = all_paths(design, src=src, dst=dst, max_paths=1)
-        if not reachability_probe.get("truncated") and int(reachability_probe.get("num_paths") or 0) == 0:
-            expected = f'Combinational paths from "{src}" to "{dst}": 0'
-            status = "PASS" if expected in body else "FAIL"
-            return ValidationResult(case, response_id, status, "report_all_paths", "no path exists by reachability")
-        if f'Combinational paths from "{src}" to "{dst}":' in body:
-            return ValidationResult(case, response_id, "INCONCLUSIVE", "report_all_paths", "large-design all-path oracle skipped")
-    result = all_paths(design, src=src, dst=dst, max_paths=max_paths)
-    if int(result.get("num_paths") or 0) >= max_paths:
+    exact = count_paths(design, src=src, dst=dst)
+    if not exact.get("acyclic"):
         return ValidationResult(
             case,
             response_id,
             "INCONCLUSIVE",
             "report_all_paths",
-            f"bounded all-path oracle reached max_paths={max_paths}",
+            f'exact path count unavailable: relevant graph has a cycle across {exact["num_nodes"]} node(s)',
         )
-    expected = f'Combinational paths from "{src}" to "{dst}": {result["num_paths"]}'
+    exact_count = int(exact.get("num_paths") or 0)
+    if exact_count > max_paths:
+        full_report = _validate_complete_all_paths_report(
+            release_dir,
+            design,
+            src,
+            dst,
+            exact_count,
+            body,
+        )
+        if full_report is not None:
+            return ValidationResult(
+                case,
+                response_id,
+                full_report[0],
+                "report_all_paths",
+                full_report[1],
+            )
+        bounded_header = f'Combinational paths from "{src}" to "{dst}": {max_paths}'
+        has_bounded_result = bounded_header in body and f"truncated after {max_paths} path(s)" in body.lower()
+        status = "INCONCLUSIVE" if has_bounded_result else "FAIL"
+        return ValidationResult(
+            case,
+            response_id,
+            status,
+            "report_all_paths",
+            f"bounded enumeration returned {max_paths} of {exact_count} exact path(s)",
+        )
+    expected = f'Combinational paths from "{src}" to "{dst}": {exact_count}'
     status = "PASS" if expected in body else "FAIL"
-    return ValidationResult(case, response_id, status, "report_all_paths", expected)
+    return ValidationResult(
+        case,
+        response_id,
+        status,
+        "report_all_paths",
+        f"exact DAG path count={exact_count} across {exact['num_nodes']} relevant node(s)",
+    )
+
+
+def _validate_complete_all_paths_report(
+    release_dir: Path,
+    design: Any,
+    src: str,
+    dst: str,
+    exact_count: int,
+    body: str,
+) -> tuple[str, str] | None:
+    header = f'Combinational paths from "{src}" to "{dst}": {exact_count}'
+    if (
+        exact_count > VALIDATOR_COMPLETE_PATH_REPORT_LIMIT
+        or header not in body
+        or "Full path listing written to " not in body
+        or "truncated after" in body.lower()
+    ):
+        return None
+
+    report_path = _all_paths_report_path(release_dir, body)
+    if report_path is None or not report_path.is_file():
+        return ("FAIL", "runtime claimed a complete path report, but the report file is missing")
+
+    enumerated = all_paths(design, src=src, dst=dst, max_paths=exact_count + 1)
+    if enumerated.get("truncated") or int(enumerated.get("num_paths") or 0) != exact_count:
+        return ("FAIL", "complete path report could not be reproduced by bounded enumeration")
+    expected_lines = [header]
+    expected_lines.extend(
+        f"{index}. " + " -> ".join(path)
+        for index, path in enumerate(enumerated["paths"], 1)
+    )
+    actual_lines = report_path.read_text(encoding="utf-8").splitlines()
+    if actual_lines != expected_lines:
+        mismatch = next(
+            (
+                index
+                for index, (actual, expected) in enumerate(zip(actual_lines, expected_lines), 1)
+                if actual != expected
+            ),
+            min(len(actual_lines), len(expected_lines)) + 1,
+        )
+        return ("FAIL", f"complete path report differs from the exact oracle at line {mismatch}")
+    return (
+        "PASS",
+        f"complete report matches all {exact_count} exact path(s) in deterministic enumeration order",
+    )
+
+
+def _all_paths_report_path(release_dir: Path, body: str) -> Path | None:
+    match = re.search(r"Full path listing written to\s+(.+?)\.\s*(?:\r?\n|$)", body)
+    if match is None:
+        return None
+    raw_path = match.group(1).strip().strip('"')
+    candidate = Path(raw_path.replace("\\", "/"))
+    resolved = candidate.resolve() if candidate.is_absolute() else (release_dir / candidate).resolve()
+    try:
+        resolved.relative_to(release_dir.resolve())
+    except ValueError:
+        return None
+    return resolved
+
+
+def _is_floating_signal_placeholder(name: str) -> bool:
+    return name.strip().lower() in {
+        "floating",
+        "floating_signal",
+        "floating_signals",
+        "floating_net",
+        "floating_nets",
+        "unconnected_output",
+        "unconnected_outputs",
+        "unconnected_output_port",
+        "unconnected_output_ports",
+        "unconnected_signal",
+        "unconnected_signals",
+    }
 
 
 def _validate_max_depth(
@@ -1466,7 +1587,7 @@ def _validate_transform(
             return ValidationResult(case, response_id, residual[0], op, residual[1])
         if residual is not None and residual[0] == "INCONCLUSIVE":
             return ValidationResult(case, response_id, residual[0], op, residual[1])
-        if residual is not None and residual[0] == "PASS":
+        if residual is not None and residual[0] == "PASS" and op != "optimize_cone":
             connectivity = _connectivity_regression(check_connectivity(before), check_connectivity(after))
             if not connectivity.get("ok", False):
                 return ValidationResult(
@@ -1591,16 +1712,23 @@ def _validate_large_transform_with_guards(
             )
         return ValidationResult(case, response_id, "FAIL", op, f"full-output equivalence failed: {result}")
 
-    selected_outputs = _selected_outputs_for_large_transform(before, after, args)
+    selected_outputs = _selected_outputs_for_large_transform(before, after, op, args)
     if selected_outputs:
         result = check_design_equivalence(before, after, outputs=selected_outputs)
         if result.get("ok"):
+            residual = _check_transform_residual(after, op, args)
+            if residual is not None and residual[0] != "PASS":
+                return ValidationResult(case, response_id, residual[0], op, residual[1])
+            residual_detail = f"; {residual[1]}" if residual is not None else ""
             return ValidationResult(
                 case,
                 response_id,
                 "PASS",
                 op,
-                f"large-design connectivity regression check passed; selected-output equivalence passed for {selected_outputs}",
+                (
+                    "large-design connectivity regression check passed; "
+                    f"selected-output equivalence passed for {selected_outputs}{residual_detail}"
+                ),
             )
         if _equivalence_depends_on_unknown_constant(result):
             return ValidationResult(
@@ -1653,9 +1781,23 @@ def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> d
     }
 
 
-def _selected_outputs_for_large_transform(before: Any, after: Any, args: dict[str, Any]) -> list[str]:
+def _selected_outputs_for_large_transform(
+    before: Any,
+    after: Any,
+    op: str,
+    args: dict[str, Any],
+) -> list[str]:
     common_outputs = set(getattr(before, "outputs", set())) & set(getattr(after, "outputs", set()))
     candidates: list[str] = []
+    if op == "optimize_cone":
+        target = args.get("target")
+        if isinstance(target, str):
+            before_target = _resolve_validation_cone_target(before, target)
+            after_target = _resolve_validation_cone_target(after, target)
+            if before_target is not None and before_target == after_target:
+                common_nets = set(before.all_nets()) & set(after.all_nets())
+                if before_target in common_nets:
+                    return [before_target]
     for key in ("target", "dst", "output"):
         value = args.get(key)
         if isinstance(value, str):
@@ -1665,6 +1807,24 @@ def _selected_outputs_for_large_transform(before: Any, after: Any, args: dict[st
         candidates.extend(str(item) for item in outputs)
     selected = [candidate for candidate in candidates if candidate in common_outputs]
     return sorted(dict.fromkeys(selected))[:VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT]
+
+
+def _resolve_validation_cone_target(design: Any, target: str) -> str | None:
+    if target not in design.all_nets():
+        return None
+    for dff in design.dffs.values():
+        if dff.q == target:
+            return dff.d
+    rebuild_graph(design)
+    driver = design.drivers.get(target)
+    if driver and driver.startswith("GATE:"):
+        gate = design.gates.get(driver.split(":", 1)[1])
+        if gate is not None and gate.type == "buf" and len(gate.inputs) == 1:
+            source = gate.inputs[0]
+            for dff in design.dffs.values():
+                if dff.q == source:
+                    return dff.d
+    return target
 
 
 def _check_transform_residual(design: Any, op: str, args: dict[str, Any]) -> tuple[str, str] | None:
@@ -1709,6 +1869,28 @@ def _check_transform_residual(design: Any, op: str, args: dict[str, Any]) -> tup
         if count == 0:
             return ("PASS", "no collapsible back-to-back inverter pairs remain")
         return ("FAIL", f"{count} collapsible back-to-back inverter pair(s) remain")
+    if op == "optimize_cone" and args.get("allowed_gates"):
+        target = str(args.get("target") or "")
+        allowed = {str(item).lower() for item in args.get("allowed_gates", [])}
+        resolved_target = _resolve_validation_cone_target(design, target)
+        if resolved_target is None:
+            return ("FAIL", f'cone gate-library target "{target}" is unavailable')
+        disallowed = sorted(
+            {
+                design.gates[name].type
+                for name in logic_cone(design, resolved_target)
+                if design.gates[name].type not in allowed
+            }
+        )
+        if disallowed:
+            return (
+                "FAIL",
+                f'cone "{target}" resolved to "{resolved_target}" still uses disallowed gate types: {disallowed}',
+            )
+        return (
+            "PASS",
+            f'cone "{target}" resolved to "{resolved_target}" uses only {sorted(allowed)}',
+        )
     return None
 
 
@@ -1747,6 +1929,22 @@ def _check_large_compositional_transform(
         if not target:
             return ("FAIL", "dedicated-buffer proof is missing target net")
         return _check_dedicated_buffer_identity(before, after, target)
+
+    if op == "insert_buffers_for_fanout":
+        target = str(args.get("net") or "")
+        max_fanout = _optional_int(args.get("max_fanout"))
+        if not target or max_fanout is None or max_fanout < 1:
+            return ("FAIL", "buffer-tree proof is missing target net or max_fanout")
+        return _check_buffer_tree_identity(before, after, target, max_fanout)
+
+    if op == "insert_buffers_for_all_high_fanout":
+        max_fanout = _optional_int(args.get("max_fanout"))
+        if max_fanout is None or max_fanout < 1:
+            return ("FAIL", "buffer-forest proof is missing max_fanout")
+        return _check_buffer_forest_identity(before, after, max_fanout)
+
+    if op == "optimize_design_depth":
+        return _check_identity_gate_removal(before, after, args.get("allowed_gates"))
 
     return None
 
@@ -1886,6 +2084,185 @@ def _check_dedicated_buffer_identity(before: Any, after: Any, target: str) -> tu
     if sorted(actual_buffered_sinks) != expected_buffered_sinks:
         return ("FAIL", "dedicated BUF sinks do not match the original target-net loads")
     return ("PASS", f"{len(added)} dedicated BUF identity insertion(s) reconstructed exactly")
+
+
+def _check_buffer_tree_identity(
+    before: Any,
+    after: Any,
+    target: str,
+    max_fanout: int,
+) -> tuple[str, str]:
+    if set(before.gates) - set(after.gates) or set(before.dffs) != set(after.dffs):
+        return ("FAIL", "buffer-tree transform removed existing gates or changed DFF instances")
+    added_names = set(after.gates) - set(before.gates)
+    if not added_names:
+        return ("FAIL", "buffer-tree transform added no BUF gates")
+    added = [after.gates[name] for name in sorted(added_names)]
+    if any(gate.type != "buf" or len(gate.inputs) != 1 for gate in added):
+        return ("FAIL", "an added buffer-tree gate is not a one-input BUF")
+
+    parent_by_output = {gate.output: gate.inputs[0] for gate in added}
+    if len(parent_by_output) != len(added):
+        return ("FAIL", "buffer-tree outputs are not unique")
+
+    def root(net: str) -> str | None:
+        seen: set[str] = set()
+        while net in parent_by_output:
+            if net in seen:
+                return None
+            seen.add(net)
+            net = parent_by_output[net]
+        return net
+
+    output_map: dict[str, str] = {}
+    for output in parent_by_output:
+        resolved = root(output)
+        if resolved != target:
+            return ("FAIL", f'added BUF output "{output}" does not trace back to "{target}"')
+        output_map[output] = target
+    if not _designs_match_with_net_map_excluding_gates(after, before, output_map, added_names):
+        return ("FAIL", "contracting added BUF identities does not reconstruct the before design")
+
+    rebuild_graph(after)
+    bounded_nets = {target, *parent_by_output}
+    violations = {
+        net: len(after.fanouts.get(net, []))
+        for net in sorted(bounded_nets)
+        if len(after.fanouts.get(net, [])) > max_fanout
+    }
+    if violations:
+        return ("FAIL", f"buffer-tree fanout bound violations remain: {violations}")
+    return (
+        "PASS",
+        f"{len(added)} BUF identity insertion(s) reconstruct exactly and every tree driver has fanout <= {max_fanout}",
+    )
+
+
+def _check_buffer_forest_identity(
+    before: Any,
+    after: Any,
+    max_fanout: int,
+) -> tuple[str, str]:
+    if set(before.gates) - set(after.gates) or set(before.dffs) != set(after.dffs):
+        return ("FAIL", "buffer-forest transform removed existing gates or changed DFF instances")
+    added_names = set(after.gates) - set(before.gates)
+    if not added_names:
+        rebuild_graph(after)
+        violations = {
+            net: len(sinks)
+            for net, sinks in sorted(after.fanouts.items())
+            if len(sinks) > max_fanout
+        }
+        if violations:
+            return ("FAIL", f"buffer-forest fanout bound violations remain: {violations}")
+        return ("PASS", f"design already satisfies fanout <= {max_fanout}; no BUF insertion was required")
+
+    added = [after.gates[name] for name in sorted(added_names)]
+    if any(gate.type != "buf" or len(gate.inputs) != 1 for gate in added):
+        return ("FAIL", "an added buffer-forest gate is not a one-input BUF")
+
+    parent_by_output = {gate.output: gate.inputs[0] for gate in added}
+    if len(parent_by_output) != len(added):
+        return ("FAIL", "buffer-forest outputs are not unique")
+
+    original_nets = set(before.all_nets())
+
+    def root(net: str) -> str | None:
+        seen: set[str] = set()
+        while net in parent_by_output:
+            if net in seen:
+                return None
+            seen.add(net)
+            net = parent_by_output[net]
+        return net
+
+    output_map: dict[str, str] = {}
+    roots: set[str] = set()
+    for output in parent_by_output:
+        resolved = root(output)
+        if resolved is None:
+            return ("FAIL", f'added BUF output "{output}" belongs to a cyclic buffer tree')
+        if resolved not in original_nets:
+            return ("FAIL", f'added BUF output "{output}" traces to unknown root "{resolved}"')
+        output_map[output] = resolved
+        roots.add(resolved)
+
+    if not _designs_match_with_net_map_excluding_gates(after, before, output_map, added_names):
+        return ("FAIL", "contracting added BUF identities does not reconstruct the before design")
+
+    rebuild_graph(after)
+    violations = {
+        net: len(sinks)
+        for net, sinks in sorted(after.fanouts.items())
+        if len(sinks) > max_fanout
+    }
+    if violations:
+        return ("FAIL", f"buffer-forest fanout bound violations remain: {violations}")
+    return (
+        "PASS",
+        (
+            f"{len(added)} BUF identity insertion(s) across {len(roots)} root net(s) reconstruct exactly; "
+            f"full-design fanout <= {max_fanout}"
+        ),
+    )
+
+
+def _check_identity_gate_removal(
+    before: Any,
+    after: Any,
+    allowed_gates: Any,
+) -> tuple[str, str] | None:
+    if set(after.gates) - set(before.gates) or set(before.dffs) != set(after.dffs):
+        return None
+    removed_names = set(before.gates) - set(after.gates)
+    if not removed_names:
+        return None
+
+    replacement_by_output: dict[str, str] = {}
+    for name in removed_names:
+        gate = before.gates[name]
+        if gate.type == "buf" and len(gate.inputs) == 1:
+            replacement_by_output[gate.output] = gate.inputs[0]
+            continue
+        if gate.type in {"and", "or"} and gate.inputs and len(set(gate.inputs)) == 1:
+            replacement_by_output[gate.output] = gate.inputs[0]
+            continue
+        return None
+    if len(replacement_by_output) != len(removed_names):
+        return None
+
+    def root(net: str) -> str | None:
+        seen: set[str] = set()
+        while net in replacement_by_output:
+            if net in seen:
+                return None
+            seen.add(net)
+            net = replacement_by_output[net]
+        return net
+
+    net_map: dict[str, str] = {}
+    for output in replacement_by_output:
+        resolved = root(output)
+        if resolved is None:
+            return ("FAIL", "removed identity gates form a cyclic replacement map")
+        net_map[output] = resolved
+
+    if not _designs_match_with_net_map_excluding_gates(before, after, net_map, removed_names):
+        return None
+
+    allowed = {
+        str(gate_type).lower()
+        for gate_type in allowed_gates
+    } if isinstance(allowed_gates, (list, set, tuple)) else set()
+    if allowed:
+        disallowed = sorted({gate.type for gate in after.gates.values()} - allowed)
+        if disallowed:
+            return ("FAIL", f"whole-design gate-library constraint has residual types: {disallowed}")
+    library_detail = f"; whole design uses only {sorted(allowed)}" if allowed else ""
+    return (
+        "PASS",
+        f"{len(removed_names)} degenerate AND/OR/BUF identity removal(s) reconstruct exactly{library_detail}",
+    )
 
 
 def _designs_match_with_net_map_excluding_gates(

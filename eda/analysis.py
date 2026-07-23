@@ -665,6 +665,70 @@ def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
     }
 
 
+def count_paths(design: Design, src: str, dst: str) -> dict:
+    """Count combinational paths exactly with DAG dynamic programming."""
+    rebuild_graph(design)
+    adjacency = _combinational_adjacency(design)
+    src_candidates = _resolve_signal_candidates(design, src)
+    dst_candidates = set(_resolve_signal_candidates(design, dst))
+    if not src_candidates or not dst_candidates:
+        return {"src": src, "dst": dst, "num_paths": 0, "acyclic": True, "num_nodes": 0}
+
+    reverse = _reverse_adjacency(adjacency)
+    forward: set[str] = set()
+    for candidate in src_candidates:
+        forward.update(_reachable_nodes(adjacency, candidate))
+    backward: set[str] = set()
+    for candidate in dst_candidates:
+        backward.update(_reachable_nodes(reverse, candidate))
+    relevant = forward & backward
+    if not relevant:
+        return {"src": src, "dst": dst, "num_paths": 0, "acyclic": True, "num_nodes": 0}
+
+    # Destination nodes terminate a path, matching all_paths(). Ignoring their
+    # outgoing edges also handles a direct PI/PO node without creating a cycle.
+    relevant_adjacency = {
+        node: set() if node in dst_candidates else (adjacency.get(node, set()) & relevant)
+        for node in relevant
+    }
+    indegree = {node: 0 for node in relevant}
+    for next_nodes in relevant_adjacency.values():
+        for nxt in next_nodes:
+            indegree[nxt] += 1
+
+    ready = deque(sorted(node for node, degree in indegree.items() if degree == 0))
+    path_counts = {node: 0 for node in relevant}
+    for candidate in src_candidates:
+        if candidate in relevant:
+            path_counts[candidate] += 1
+
+    visited = 0
+    while ready:
+        node = ready.popleft()
+        visited += 1
+        for nxt in sorted(relevant_adjacency[node]):
+            path_counts[nxt] += path_counts[node]
+            indegree[nxt] -= 1
+            if indegree[nxt] == 0:
+                ready.append(nxt)
+
+    if visited != len(relevant):
+        return {
+            "src": src,
+            "dst": dst,
+            "num_paths": None,
+            "acyclic": False,
+            "num_nodes": len(relevant),
+        }
+    return {
+        "src": src,
+        "dst": dst,
+        "num_paths": sum(path_counts[node] for node in dst_candidates if node in relevant),
+        "acyclic": True,
+        "num_nodes": len(relevant),
+    }
+
+
 def _resolve_signal_candidates(design: Design, name: str) -> list[str]:
     """Resolve an exact net name or a bus base like n25 to expanded bit nets."""
     all_nets = design.all_nets()

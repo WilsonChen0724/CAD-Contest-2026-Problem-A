@@ -46,6 +46,8 @@ full equivalence threshold, the validator now applies this layered policy:
    - This catches broken net rewrites even when full equivalence is too costly.
 4. If the prompt/plan names an explicit primary output through `target`, `dst`,
    `output`, or `outputs`, run equivalence only for those selected outputs.
+   - For constrained cone optimization on a DFF-Q target, resolve the target
+     to the D-input combinational cone and prove that next-state function.
    - If selected-output equivalence passes, return `PASS`.
    - If selected-output equivalence fails, return `FAIL`.
    - If the mismatch depends on an unknown/X constant, return `INCONCLUSIVE`.
@@ -56,6 +58,43 @@ full equivalence threshold, the validator now applies this layered policy:
 This makes the large-design policy conservative: it can prove targeted
 transformations, reject broken outputs, and avoid false `PASS` on whole-design
 rewrites that are too expensive to prove.
+
+## Exact Compositional Certificates
+
+Some large transforms can be proven without solving the entire Boolean
+network:
+
+- A single-net buffer tree is valid only if every added gate is a one-input
+  BUF, every BUF output traces to the requested source net, contracting those
+  BUF identities reconstructs the before design exactly, and every tree driver
+  meets the requested fanout.
+- A whole-design buffer forest applies the same proof to multiple original
+  root nets, then checks the fanout bound over the complete transformed design.
+- Degenerate `AND(x,x)`, `OR(x,x)`, and BUF removals are validated by
+  recursively contracting removed outputs to their identity roots and
+  requiring exact reconstruction of the transformed design.
+- Net and gate rename operations use alpha-equivalence certificates.
+- Wire-only dangling cleanup requires identical non-wire source text and
+  identical parsed logic after unused declarations are removed.
+
+These are complete proofs for the stated structural rewrite, not heuristic
+connectivity checks.
+
+## Exact Path Counts
+
+For an acyclic combinational source-to-destination region, the validator counts
+paths with dynamic programming over the relevant DAG. This computes an exact
+integer without materializing every path.
+
+- If the exact count is affordable to emit (currently at most 10,000), the
+  runtime writes every path to a report artifact. The validator independently
+  re-enumerates the paths and compares every report line in deterministic
+  order.
+- If the exact count is much larger, the validator checks the bounded prefix
+  and reports the exact total, but leaves the answer `INCONCLUSIVE` because the
+  user requested a complete listing.
+- A cycle in the relevant region remains `INCONCLUSIVE`; DAG path counting
+  cannot define a finite complete path set in that case.
 
 ## Optimization Metrics
 
