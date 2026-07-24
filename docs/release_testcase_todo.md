@@ -44,6 +44,12 @@ Latest P1 implementation update (2026-07-24):
   passes Z3 next-state-cone equivalence plus NAND/NOT residual checking.
 - Existing `test38` ledgers now validate all 20 responses as PASS with the
   buffer-tree compositional certificate.
+- A later `test38` run exposed two DFFs driving `n108`. Dangling cleanup now
+  preserves every driver and its input cone. Direct replay of the real
+  response-9 transform passes full-output Z3 equivalence over all 106 outputs;
+  replay through the response-13 rename also matches the original snapshot.
+  A fresh rule-mode workflow regression also validates `PASS=20`, `FAIL=0`,
+  `INCONCLUSIVE=0`. Rerun the LLM/OpenAI case to refresh its old ledger.
 - Existing `test28` ledgers now validate all 8 responses as PASS. Its 23
   `AND(x,x) -> x` removals pass exact structural contraction and the
   whole-design AND/NOT residual check.

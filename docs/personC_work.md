@@ -106,6 +106,23 @@ Latest targeted rerun result:
 - `test37 response 15` now validates the `floating_signals` placeholder by
   recomputing missing and duplicate drivers with the connectivity oracle.
 
+`test38` multi-driver dangling cleanup follow-up:
+
+- The release netlist has `g520` and `g521` both driving `n108`.
+  `remove_dangling` previously followed only the first graph driver and
+  incorrectly removed `g521` plus its D-input cone.
+- Liveness now follows every gate/DFF driver of a live net. Replaying the
+  transform on the real response-9 input preserves both DFFs and their cones,
+  removes only 10 unused wires, and passes full-output Z3 equivalence over all
+  106 outputs.
+- Replaying the following `rename_net` also passes Z3 equivalence against the
+  original response-2 snapshot, covering the old response-14 failure.
+- A fresh rule-mode run also validates all 20 responses as PASS, although its
+  response 9 selects a different cleanup operation and is only a regression
+  check for the surrounding workflow.
+- The LLM/OpenAI testcase must be rerun to replace the old response-9 and
+  response-14 ledger entries.
+
 Full existing-ledger audit after the P1 commit:
 
 - 459 responses: `PASS=453`, `FAIL=4`, `INCONCLUSIVE=2`.

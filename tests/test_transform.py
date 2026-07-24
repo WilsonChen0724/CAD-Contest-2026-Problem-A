@@ -63,6 +63,21 @@ class TransformTest(unittest.TestCase):
         self.assertNotIn("dead", design.wires)
         self.assertIn("PO:y", design.fanouts["y"])
 
+    def test_remove_dangling_keeps_all_drivers_of_live_net(self) -> None:
+        design = Design(inputs={"a", "b", "clk"}, outputs={"y"})
+        design.add_gate(Gate(name="U_D0", type="buf", inputs=["a"], output="d0"))
+        design.add_gate(Gate(name="U_D1", type="not", inputs=["b"], output="d1"))
+        design.add_dff(DFF(name="FF0", d="d0", q="q", clk="clk"))
+        design.add_dff(DFF(name="FF1", d="d1", q="q", clk="clk"))
+        design.add_gate(Gate(name="U_OUT", type="buf", inputs=["q"], output="y"))
+
+        result = remove_dangling(design)
+
+        self.assertEqual(result["num_removed_gates"], 0)
+        self.assertEqual(result["num_removed_dffs"], 0)
+        self.assertEqual(set(design.dffs), {"FF0", "FF1"})
+        self.assertEqual(set(design.gates), {"U_D0", "U_D1", "U_OUT"})
+
     def test_replace_inv_buf_with_inv_collapses_safe_chain(self) -> None:
         design = Design(inputs={"a"}, outputs={"y"})
         design.add_gate(Gate(name="U_inv", type="not", inputs=["a"], output="n_mid"))

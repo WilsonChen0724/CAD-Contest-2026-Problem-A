@@ -76,6 +76,12 @@ def replace_buffers_with_and(design: Design, targets: list[str], extra_input: st
 def remove_dangling(design: Design) -> dict:
     """Remove gates and nets that do not affect any primary output."""
     rebuild_graph(design)
+    drivers_by_net: dict[str, list[tuple[str, str]]] = {}
+    for gate in design.gates.values():
+        drivers_by_net.setdefault(gate.output, []).append(("GATE", gate.name))
+    for dff in design.dffs.values():
+        drivers_by_net.setdefault(dff.q, []).append(("DFF", dff.name))
+
     live_gates: set[str] = set()
     live_dffs: set[str] = set()
     live_nets: set[str] = set(design.outputs)
@@ -83,31 +89,27 @@ def remove_dangling(design: Design) -> dict:
 
     while stack:
         net = stack.pop()
-        driver = design.drivers.get(net)
-        if not driver:
-            continue
-
-        kind, name = driver.split(":", 1)
-        if kind == "GATE":
-            if name in live_gates:
-                continue
-            gate = design.gates[name]
-            live_gates.add(name)
-            live_nets.add(gate.output)
-            for input_net in gate.inputs:
-                live_nets.add(input_net)
-                if not is_constant(input_net):
-                    stack.append(input_net)
-        elif kind == "DFF":
-            if name in live_dffs:
-                continue
-            dff = design.dffs[name]
-            live_dffs.add(name)
-            live_nets.add(dff.q)
-            for input_net in (dff.d, dff.clk, dff.rst):
-                if input_net and not is_constant(input_net):
+        for kind, name in drivers_by_net.get(net, ()):
+            if kind == "GATE":
+                if name in live_gates:
+                    continue
+                gate = design.gates[name]
+                live_gates.add(name)
+                live_nets.add(gate.output)
+                for input_net in gate.inputs:
                     live_nets.add(input_net)
-                    stack.append(input_net)
+                    if not is_constant(input_net):
+                        stack.append(input_net)
+            elif kind == "DFF":
+                if name in live_dffs:
+                    continue
+                dff = design.dffs[name]
+                live_dffs.add(name)
+                live_nets.add(dff.q)
+                for input_net in (dff.d, dff.clk, dff.rst):
+                    if input_net and not is_constant(input_net):
+                        live_nets.add(input_net)
+                        stack.append(input_net)
 
     removed_gates = sorted(set(design.gates) - live_gates)
     removed_dffs = sorted(set(design.dffs) - live_dffs)
