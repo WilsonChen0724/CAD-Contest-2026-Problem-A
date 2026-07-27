@@ -23,9 +23,9 @@ focused tests, and release-ledger evidence all exist.
 | P1-07 | Scalable external formal validation | Complete | Z3 full/selected-output checks, ABC cross-check, structural certificates |
 | P1-08 | Large report and QoR validation | Complete | streamed exact path artifacts, line-by-line oracle, JSONL/CSV QoR metrics |
 | P1-09 | Duplicate-driver-safe destructive transforms | Complete | full `driver_lists`, unique-driver guards, duplicate-driver transform regressions |
-| P1-10 | Reproducible validator provenance | Pending | Add ledger and snapshot SHA-256 values to JSONL results |
+| P1-10 | Reproducible validator provenance | Complete | Every JSONL verdict records ledger, before/after snapshot, and validator-source SHA-256 values |
 
-Current completion: **9 of 10 capabilities (90%)**.
+Current completion: **10 of 10 capabilities (100%)**.
 
 ## P0 Baseline
 
@@ -42,13 +42,19 @@ Metrics: 68 transform/optimization response(s),
 The generated JSONL/CSV files remain under `outputs/` and are excluded from
 source commits.
 
-## Remaining P1 Exit Work
+## P1 Exit Evidence
 
-1. Add per-result ledger and after-snapshot hashes to validator JSONL.
-2. Re-run focused duplicate-driver cases: `test27`, `test29`, `test31`,
-   `test38`, `test39`, and `test40`.
-3. Run all unit tests and one final full ledger validation after the provenance
-   change.
+- Unit tests: `286 tests`, all PASS.
+- Final full LLM/OpenAI ledger validation:
+  `PASS=459`, `FAIL=0`, `SKIP=0`, `INCONCLUSIVE=0`.
+- Provenance audit:
+  - 459/459 verdicts contain a valid ledger SHA-256.
+  - 459/459 verdicts contain one common validator-source SHA-256.
+  - The results identify 40 distinct testcase ledgers.
+  - 419 after-snapshot and 379 before-snapshot hashes are present; the missing
+    values correspond to lifecycle records that have no such snapshot.
+- A direct recomputation for `test38 response 14` matched all four recorded
+  ledger, before-snapshot, after-snapshot, and validator hashes.
 
 Focused duplicate-driver rule-mode result:
 

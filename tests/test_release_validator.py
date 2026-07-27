@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -164,6 +165,7 @@ class ReleaseValidatorTest(unittest.TestCase):
                         "Total gates: 2",
                     ]
                 ),
+                "before_snapshot": "snapshots/response_003_after.v",
                 "after_snapshot": "snapshots/response_003_after.v",
             }
             ledger_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
@@ -173,6 +175,22 @@ class ReleaseValidatorTest(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].status, "PASS")
             self.assertEqual(results[0].check, "report_gate_counts")
+            self.assertEqual(
+                results[0].ledger_sha256,
+                hashlib.sha256(ledger_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                results[0].before_snapshot_sha256,
+                hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                results[0].after_snapshot_sha256,
+                hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                results[0].validator_sha256,
+                hashlib.sha256(Path(validator.__file__).read_bytes()).hexdigest(),
+            )
 
     def test_snapshot_parse_error_marks_record_inconclusive_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

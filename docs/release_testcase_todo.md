@@ -7,6 +7,10 @@ validator before submission.
 
 ## Immediate Beta Checks
 
+- Current authoritative validation baseline (2026-07-27):
+  `PASS=459`, `FAIL=0`, `SKIP=0`, `INCONCLUSIVE=0`.
+- The provenance-enabled JSONL contains valid ledger and validator hashes for
+  all 459 responses and before/after snapshot hashes whenever available.
 - Re-run the higher-risk late cases with strict logging:
   `test31`, `test32`, `test34`, `test35`, `test38`, and `test40`.
 - Run at least one official timeout profile before submission:
@@ -66,6 +70,9 @@ P1 robustness update (2026-07-27):
 - Large-design double-inverter cleanup now has an exact structural contraction
   certificate. `test29 response 8` validates in seconds instead of timing out
   on a deep selected-output Z3 expression.
+- Validator JSONL now records SHA-256 provenance for the ledger, before/after
+  snapshots, and validator source. The final 40-case export remains 459/459
+  PASS with zero inconclusive results.
 
 P1 targeted rerun:
 

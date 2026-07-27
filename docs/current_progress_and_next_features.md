@@ -193,13 +193,19 @@ Still worth improving:
 ### P1: Common Testcase Requests
 
 - Completion is tracked in `docs/p1_completion_matrix.md`; the frozen beta P1
-  scope is currently 9 of 10 capabilities complete.
+  scope is complete at 10 of 10 capabilities.
 - `constant_propagation`
-  - Improve cleanup and summary reporting after propagation.
+  - The bounded fixed-point implementation and validator coverage are
+    complete; further work is QoR tuning.
 - LLM semantic guard tuning
-  - Expand local classifier tests as new prompt phrasings appear.
+  - The beta scope is covered; continue adding classifier regressions only
+    when new prompt phrasings appear.
 - Report polish
-  - Add more domain-specific wording for previous-transform deltas.
+  - Domain-specific deltas are implemented; further wording changes are
+    presentation polish rather than missing backend behavior.
+- Reproducible validation
+  - JSONL verdicts bind each result to ledger, before/after snapshot, and
+    validator-source SHA-256 values.
 
 ### P2: Advanced Transformations And Reports
 

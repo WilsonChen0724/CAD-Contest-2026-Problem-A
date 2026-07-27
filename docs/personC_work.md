@@ -61,6 +61,12 @@ Date: 2026-07-24.
 
 - Full LLM/OpenAI ledger: `PASS=459`, `FAIL=0`, `SKIP=0`,
   `INCONCLUSIVE=0`.
+- Final provenance-enabled rerun preserves the same 459/459 PASS result.
+- Every JSONL verdict now records ledger and validator-source SHA-256 values,
+  plus before/after snapshot hashes whenever those snapshots exist.
+- Provenance coverage is 459 ledger hashes, 459 validator hashes, 419
+  after-snapshot hashes, and 379 before-snapshot hashes across 40 ledgers.
+- All 286 unit tests pass after the provenance change.
 - Focused duplicate-driver rule run: 96 responses, all PASS.
 - Added exact double-inverter contraction validation for large depth
   optimization; the `test29` proof completes within the request budget.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import sys
@@ -168,6 +169,10 @@ class ValidationResult:
     status: str
     check: str
     detail: str
+    ledger_sha256: str | None = None
+    before_snapshot_sha256: str | None = None
+    after_snapshot_sha256: str | None = None
+    validator_sha256: str | None = None
 
 
 @dataclass
@@ -260,6 +265,8 @@ def main() -> int:
 def _validate_ledger(release_dir: Path, ledger_path: Path, case: str) -> list[ValidationResult]:
     _SNAPSHOT_PARSE_CACHE.clear()
     records = _read_records(ledger_path)
+    ledger_sha256 = _sha256_file(ledger_path)
+    validator_sha256 = _sha256_file(Path(__file__).resolve())
     original_design = None
     results: list[ValidationResult] = []
     for record in records:
@@ -269,7 +276,16 @@ def _validate_ledger(release_dir: Path, ledger_path: Path, case: str) -> list[Va
                 original_design = _parse_snapshot(record, "after_snapshot", release_dir, ledger_path)
             except Exception:
                 original_design = None
-        results.append(_validate_record(release_dir, ledger_path, case, record, original_design))
+        result = _validate_record(release_dir, ledger_path, case, record, original_design)
+        result.ledger_sha256 = ledger_sha256
+        result.before_snapshot_sha256 = _snapshot_sha256(
+            record, "before_snapshot", release_dir, ledger_path
+        )
+        result.after_snapshot_sha256 = _snapshot_sha256(
+            record, "after_snapshot", release_dir, ledger_path
+        )
+        result.validator_sha256 = validator_sha256
+        results.append(result)
     return results
 
 
@@ -2578,6 +2594,24 @@ def _read_records(path: Path) -> list[dict[str, Any]]:
         if line.strip():
             records.append(json.loads(line))
     return records
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_sha256(
+    record: dict[str, Any],
+    field: str,
+    release_dir: Path,
+    ledger_path: Path,
+) -> str | None:
+    path = _resolve_snapshot_path(record.get(field), release_dir, ledger_path)
+    return _sha256_file(path) if path is not None and path.is_file() else None
 
 
 def _collect_metrics_for_cases(
