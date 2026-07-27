@@ -62,6 +62,7 @@ class Design:
 
     # Rebuilt by eda.graph.rebuild_graph()
     drivers: dict[str, str] = field(default_factory=dict)
+    driver_lists: dict[str, list[str]] = field(default_factory=dict)
     fanouts: dict[str, list[str]] = field(default_factory=dict)
 
     def add_gate(self, gate: Gate) -> None:

@@ -11,7 +11,7 @@ from typing import Any, TypeVar
 
 from eda.analysis import find_path, logic_cone, max_depth, primary_output_cone_sizes
 from eda.design import DFF, Design, Gate, is_constant
-from eda.graph import rebuild_graph
+from eda.graph import rebuild_graph, unique_driver
 from eda.verify import check_connectivity
 from parser.verilog_parser import _dff_wrapper_name, parse_verilog
 from parser.verilog_writer import write_verilog
@@ -151,7 +151,7 @@ def replace_inv_buf_with_inv(design: Design) -> dict:
             continue
 
         mid_net = buf_gate.inputs[0]
-        driver = design.drivers.get(mid_net)
+        driver = unique_driver(design, mid_net)
         if not driver or not driver.startswith("GATE:"):
             continue
 
@@ -826,7 +826,7 @@ def _build_cone_design(
         for net in gate.inputs:
             if is_constant(net):
                 continue
-            driver = design.drivers.get(net)
+            driver = unique_driver(design, net)
             if driver and driver.startswith("GATE:") and driver.split(":", 1)[1] in cone_gate_names:
                 continue
             if net not in boundary_seen:
@@ -924,7 +924,7 @@ def _resolve_optimization_cone_target(design: Design, target: str) -> dict[str, 
             "reason": "resolved DFF Q target to its D input cone",
         }
 
-    driver = design.drivers.get(target)
+    driver = unique_driver(design, target)
     if driver and driver.startswith("GATE:"):
         gate_name = driver.split(":", 1)[1]
         gate = design.gates.get(gate_name)
@@ -949,10 +949,8 @@ def _resolve_optimization_cone_target(design: Design, target: str) -> dict[str, 
 
 
 def _dff_driving_q(design: Design, net: str) -> DFF | None:
-    for dff in design.dffs.values():
-        if dff.q == net:
-            return dff
-    return None
+    matches = [dff for dff in design.dffs.values() if dff.q == net]
+    return matches[0] if len(matches) == 1 else None
 
 
 @_rebuild_graph_after_transform
@@ -1290,6 +1288,8 @@ def merge_equivalent_gates(design: Design) -> dict:
 
         for name in sorted(design.gates):
             gate = design.gates[name]
+            if unique_driver(design, gate.output) != f"GATE:{name}":
+                continue
             inputs = tuple(sorted(gate.inputs)) if gate.type in commutative else tuple(gate.inputs)
             key = (gate.type, inputs)
             canonical_name = canonical_by_key.get(key)
@@ -1344,7 +1344,7 @@ def _collapse_inverter_chains_once(design: Design) -> tuple[list[dict[str, Any]]
     previous_gate: dict[str, str] = {}
 
     for first_name, first in not_gates.items():
-        if design.drivers.get(first.output) != f"GATE:{first_name}":
+        if unique_driver(design, first.output) != f"GATE:{first_name}":
             continue
         sinks = design.fanouts.get(first.output, [])
         if len(sinks) != 1 or not sinks[0].startswith("GATE:"):
@@ -1521,6 +1521,8 @@ class _CachedNameAllocator:
 
 def _simplify_constant_gate(design: Design, gate_name: str) -> dict[str, Any] | None:
     gate = design.gates[gate_name]
+    if unique_driver(design, gate.output) != f"GATE:{gate_name}":
+        return None
     original_type = gate.type
     original_inputs = list(gate.inputs)
     replacement = _constant_gate_replacement(gate)
@@ -1733,9 +1735,9 @@ def _require_independent_destinations(design: Design, dsts: list[str]) -> None:
 
 def _insert_buffer_chain_before_net(design: Design, dst: str, count: int) -> dict[str, Any]:
     rebuild_graph(design)
-    driver = design.drivers.get(dst)
+    driver = unique_driver(design, dst)
     if driver is None:
-        raise ValueError(f'Destination net "{dst}" has no driver.')
+        raise ValueError(f'Destination net "{dst}" is not uniquely driven.')
     if not driver.startswith("GATE:"):
         raise ValueError(
             f'Destination net "{dst}" is driven by {driver}; only gate-driven destinations are supported.'
@@ -1775,7 +1777,7 @@ def _simplify_double_inverter_in_cone(design: Design, cone_gates: set[str]) -> d
             continue
 
         mid_net = second.inputs[0]
-        first_driver = design.drivers.get(mid_net)
+        first_driver = unique_driver(design, mid_net)
         if not first_driver or not first_driver.startswith("GATE:"):
             continue
         first_name = first_driver.split(":", 1)[1]
@@ -1783,6 +1785,8 @@ def _simplify_double_inverter_in_cone(design: Design, cone_gates: set[str]) -> d
             continue
         first = design.gates.get(first_name)
         if first is None or first.type != "not" or len(first.inputs) != 1:
+            continue
+        if unique_driver(design, second.output) != f"GATE:{second_name}":
             continue
         if design.fanouts.get(mid_net, []) != [f"GATE:{second_name}"]:
             continue
@@ -1825,6 +1829,8 @@ def _remove_internal_buffer_in_cone(design: Design, cone_gates: set[str]) -> dic
     for gate_name in sorted(cone_gates):
         gate = design.gates.get(gate_name)
         if gate is None or gate.type != "buf" or len(gate.inputs) != 1:
+            continue
+        if unique_driver(design, gate.output) != f"GATE:{gate_name}":
             continue
         output_net = gate.output
         if output_net in design.outputs:
@@ -3304,7 +3310,7 @@ def _build_multi_output_region_design(
         for net in gate.inputs:
             if is_constant(net):
                 continue
-            driver = design.drivers.get(net)
+            driver = unique_driver(design, net)
             if driver and driver.startswith("GATE:") and driver.split(":", 1)[1] in region_gate_names:
                 continue
             if net not in boundary_seen:
@@ -3575,7 +3581,7 @@ def _collect_virtual_and_tree(design: Design, output_net: str) -> tuple[list[str
 
 
 def _gate_driving_net(design: Design, net: str) -> Gate | None:
-    driver = design.drivers.get(net)
+    driver = unique_driver(design, net)
     if not driver or not driver.startswith("GATE:"):
         return None
     return design.gates.get(driver.split(":", 1)[1])

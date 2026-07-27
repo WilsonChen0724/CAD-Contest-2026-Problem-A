@@ -25,6 +25,7 @@ class VerifyTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["duplicate_drivers"]["y"], ["GATE:U1", "GATE:U2"])
+        self.assertEqual(design.driver_lists["y"], ["GATE:U1", "GATE:U2"])
 
     def test_connectivity_reports_pi_and_gate_duplicate_driver(self) -> None:
         design = Design(module_name="top", inputs={"a"}, outputs={"a"})

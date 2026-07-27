@@ -19,13 +19,18 @@ def rebuild_graph(design: Design) -> None:
         DFF:<inst>
     """
     drivers: dict[str, str] = {}
+    driver_lists: dict[str, list[str]] = {}
     fanouts: dict[str, list[str]] = {}
+
+    def add_driver(net: str, driver: str) -> None:
+        driver_lists.setdefault(net, []).append(driver)
+        drivers.setdefault(net, driver)
 
     def add_fanout(net: str, sink: str) -> None:
         fanouts.setdefault(net, []).append(sink)
 
     for net in design.inputs:
-        drivers[net] = f"PI:{net}"
+        add_driver(net, f"PI:{net}")
 
     for value in ["1'b0", "1'b1", "0", "1"]:
         drivers[value] = f"CONST:{value}"
@@ -34,16 +39,12 @@ def rebuild_graph(design: Design) -> None:
         add_fanout(out, f"PO:{out}")
 
     for gate in design.gates.values():
-        if gate.output not in drivers:
-            drivers[gate.output] = f"GATE:{gate.name}"
+        add_driver(gate.output, f"GATE:{gate.name}")
         for net in gate.inputs:
             add_fanout(net, f"GATE:{gate.name}")
 
     for dff in design.dffs.values():
-        # Keep the first driver in the graph map. Duplicate drivers are reported
-        # by eda.verify.check_connectivity(), where the full driver list is built.
-        if dff.q not in drivers:
-            drivers[dff.q] = f"DFF:{dff.name}"
+        add_driver(dff.q, f"DFF:{dff.name}")
         add_fanout(dff.d, f"DFF:{dff.name}")
         if dff.clk:
             add_fanout(dff.clk, f"DFF:{dff.name}")
@@ -51,4 +52,11 @@ def rebuild_graph(design: Design) -> None:
             add_fanout(dff.rst, f"DFF:{dff.name}")
 
     design.drivers = drivers
+    design.driver_lists = driver_lists
     design.fanouts = fanouts
+
+
+def unique_driver(design: Design, net: str) -> str | None:
+    """Return the sole structural driver of net, or None when absent/ambiguous."""
+    drivers = design.driver_lists.get(net, [])
+    return drivers[0] if len(drivers) == 1 else None

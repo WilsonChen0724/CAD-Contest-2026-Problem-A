@@ -162,6 +162,19 @@ class TransformTest(unittest.TestCase):
         self.assertNotIn("n1", design.wires)
         self.assertNotIn("n2", design.wires)
 
+    def test_merge_equivalent_gates_preserves_multiply_driven_output(self) -> None:
+        design = Design(inputs={"a", "b", "c"}, outputs={"y"})
+        design.add_gate(Gate("U0", "and", ["a", "b"], "n0"))
+        design.add_gate(Gate("U1", "and", ["a", "b"], "n1"))
+        design.add_gate(Gate("U_multi", "buf", ["c"], "n1"))
+        design.add_gate(Gate("U_out", "buf", ["n1"], "y"))
+
+        result = merge_equivalent_gates(design)
+
+        self.assertEqual(result["num_merged"], 0)
+        self.assertIn("U1", design.gates)
+        self.assertIn("U_multi", design.gates)
+
     def test_xnor_to_nor_avoids_gate_net_name_collisions(self) -> None:
         design = Design(inputs={"a", "b"}, outputs={"y"})
         design.add_gate(Gate(name="U_xnor", type="xnor", inputs=["a", "b"], output="y"))
@@ -221,6 +234,17 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["num_changed"], 0)
         self.assertEqual(set(design.gates), {"U0", "U1"})
         self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_collapse_preserves_multiply_driven_intermediate_net(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U0", type="not", inputs=["a"], output="mid"))
+        design.add_gate(Gate(name="U_multi", type="buf", inputs=["b"], output="mid"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["mid"], output="y"))
+
+        result = collapse_back_to_back_inverters(design)
+
+        self.assertEqual(result["num_changed"], 0)
+        self.assertEqual(set(design.gates), {"U0", "U1", "U_multi"})
 
     def test_replace_or_with_nand_not_rewrites_only_target_cone(self) -> None:
         design = Design(inputs={"a", "b", "c"}, outputs={"flag", "other"})
@@ -286,6 +310,16 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["num_inserted_buffers"], 3)
         self.assertEqual({max_depth(design, "src", dst)[0] for dst in ["y0", "y1", "y2"]}, {3})
         self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_balance_depth_rejects_multiply_driven_destination(self) -> None:
+        design = Design(inputs={"src", "other"}, outputs={"y0", "y1"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["src"], output="y0"))
+        design.add_gate(Gate(name="U_multi", type="buf", inputs=["other"], output="y0"))
+        design.add_gate(Gate(name="U1", type="buf", inputs=["src"], output="n1"))
+        design.add_gate(Gate(name="U2", type="buf", inputs=["n1"], output="y1"))
+
+        with self.assertRaisesRegex(ValueError, "not uniquely driven"):
+            balance_depth_with_buffers(design, "src", ["y0", "y1"])
 
     def test_optimize_cone_removes_buffer_and_double_inverter(self) -> None:
         design = Design(inputs={"a", "b"}, outputs={"y"})
@@ -764,6 +798,18 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(result["num_changed"], 1)
         self.assertEqual(design.gates["U_and"].type, "buf")
         self.assertEqual(design.gates["U_and"].inputs, ["1'b0"])
+
+    def test_constant_propagation_preserves_multiply_driven_output(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y"})
+        design.add_gate(Gate(name="U_const", type="and", inputs=["a", "1'b0"], output="shared"))
+        design.add_gate(Gate(name="U_multi", type="buf", inputs=["b"], output="shared"))
+        design.add_gate(Gate(name="U_out", type="buf", inputs=["shared"], output="y"))
+
+        result = constant_propagation(design)
+
+        self.assertEqual(result["num_changed"], 0)
+        self.assertEqual(design.gates["U_const"].type, "and")
+        self.assertIn("U_multi", design.gates)
 
     def test_replace_nand_const1_with_not_rewrites_specific_identity(self) -> None:
         design = Design(inputs={"a", "b"}, outputs={"y", "z"})

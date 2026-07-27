@@ -34,10 +34,9 @@ ABC_FULL_DESIGN_GATE_LIMIT = 50000
 def check_connectivity(design: Design) -> dict:
     """Check missing drivers and duplicate drivers."""
     rebuild_graph(design)
-    net_drivers = _collect_net_drivers(design)
     duplicate_drivers = {
         net: drivers
-        for net, drivers in sorted(net_drivers.items())
+        for net, drivers in sorted(design.driver_lists.items())
         if len(drivers) > 1
     }
 
@@ -419,23 +418,6 @@ def _abc_output_name(used: set[str]) -> str:
         index += 1
         output = f"__abc_equiv_out_{index}"
     return output
-
-
-def _collect_net_drivers(design: Design) -> dict[str, list[str]]:
-    """Build a full driver list per net so duplicates are not hidden by graph maps."""
-    drivers: dict[str, list[str]] = {}
-
-    def add_driver(net: str, driver: str) -> None:
-        drivers.setdefault(net, []).append(driver)
-
-    for net in design.inputs:
-        add_driver(net, f"PI:{net}")
-    for gate in design.gates.values():
-        add_driver(gate.output, f"GATE:{gate.name}")
-    for dff in design.dffs.values():
-        add_driver(dff.q, f"DFF:{dff.name}")
-
-    return drivers
 
 
 class _Expr(Protocol):

@@ -71,6 +71,9 @@ Official response-time policy for local beta testing:
 
 ### P1: Beta Hardening
 
+See `docs/p1_completion_matrix.md` for the frozen capability-level completion
+criteria and current evidence.
+
 | Person | Owner Area | P1 Responsibility |
 | --- | --- | --- |
 | Person A | Analysis coverage | Improve register-path filtering, floating/unconnected-net reports, and cut/articulation reports when test prompts require them. |

@@ -192,6 +192,8 @@ Still worth improving:
 
 ### P1: Common Testcase Requests
 
+- Completion is tracked in `docs/p1_completion_matrix.md`; the frozen beta P1
+  scope is currently 9 of 10 capabilities complete.
 - `constant_propagation`
   - Improve cleanup and summary reporting after propagation.
 - LLM semantic guard tuning

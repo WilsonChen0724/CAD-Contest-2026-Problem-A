@@ -125,6 +125,8 @@ Person C completion criteria for beta P0:
 
 ## P1 Remaining Analysis / Report Tools
 
+- Capability completion and evidence are tracked in
+  `docs/p1_completion_matrix.md`.
 - Better register-path filtering, for example PI-to-DFF-D or DFF-Q-to-PO if release prompts require those exact scopes.
 - Floating/unconnected-net reports and cut/articulation reports remain useful beta candidates.
 - Monitor disk usage for complete path reports. The current `test14` pair uses
