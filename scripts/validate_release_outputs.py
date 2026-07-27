@@ -1945,6 +1945,9 @@ def _check_large_compositional_transform(
         return _check_buffer_forest_identity(before, after, max_fanout)
 
     if op == "optimize_design_depth":
+        double_inverter = _check_double_inverter_removal(before, after, args.get("allowed_gates"))
+        if double_inverter is not None:
+            return double_inverter
         return _check_identity_gate_removal(before, after, args.get("allowed_gates"))
 
     return None
@@ -2263,6 +2266,82 @@ def _check_identity_gate_removal(
     return (
         "PASS",
         f"{len(removed_names)} degenerate AND/OR/BUF identity removal(s) reconstruct exactly{library_detail}",
+    )
+
+
+def _check_double_inverter_removal(
+    before: Any,
+    after: Any,
+    allowed_gates: Any,
+) -> tuple[str, str] | None:
+    if set(after.gates) - set(before.gates) or set(before.dffs) != set(after.dffs):
+        return None
+    removed_names = set(before.gates) - set(after.gates)
+    if not removed_names:
+        return None
+    if any(before.gates[name].type != "not" or len(before.gates[name].inputs) != 1 for name in removed_names):
+        return None
+
+    rebuild_graph(before)
+    removed_by_output = {before.gates[name].output: name for name in removed_names}
+    if len(removed_by_output) != len(removed_names):
+        return ("FAIL", "removed NOT gates contain duplicate output drivers")
+    starts = sorted(
+        name
+        for name in removed_names
+        if before.gates[name].inputs[0] not in removed_by_output
+    )
+    if not starts:
+        return ("FAIL", "removed NOT gates do not form acyclic inverter chains")
+
+    visited: set[str] = set()
+    net_map: dict[str, str] = {}
+    pair_count = 0
+    for start in starts:
+        source = before.gates[start].inputs[0]
+        chain: list[str] = []
+        current = start
+        while current not in visited:
+            visited.add(current)
+            chain.append(current)
+            output = before.gates[current].output
+            followers = sorted(
+                name
+                for name in removed_names - visited
+                if before.gates[name].inputs == [output]
+            )
+            if not followers:
+                break
+            if len(followers) != 1:
+                return ("FAIL", f'removed inverter output "{output}" branches inside the removed subgraph')
+            follower = followers[0]
+            if before.fanouts.get(output, []) != [f"GATE:{follower}"]:
+                return ("FAIL", f'removed inverter output "{output}" has a non-chain load')
+            current = follower
+
+        if len(chain) % 2:
+            return ("FAIL", f"removed inverter chain has odd length {len(chain)}")
+        pair_count += len(chain) // 2
+        for name in chain:
+            net_map[before.gates[name].output] = source
+
+    if visited != removed_names:
+        return ("FAIL", "removed NOT gates contain a cycle or disconnected chain fragment")
+    if not _designs_match_with_net_map_excluding_gates(before, after, net_map, removed_names):
+        return ("FAIL", "contracting removed double-inverter identities does not reconstruct the after design")
+
+    allowed = {
+        str(gate_type).lower()
+        for gate_type in allowed_gates
+    } if isinstance(allowed_gates, (list, set, tuple)) else set()
+    if allowed:
+        disallowed = sorted({gate.type for gate in after.gates.values()} - allowed)
+        if disallowed:
+            return ("FAIL", f"whole-design gate-library constraint has residual types: {disallowed}")
+    library_detail = f"; whole design uses only {sorted(allowed)}" if allowed else ""
+    return (
+        "PASS",
+        f"{pair_count} double-inverter identity contraction(s) reconstruct exactly{library_detail}",
     )
 
 

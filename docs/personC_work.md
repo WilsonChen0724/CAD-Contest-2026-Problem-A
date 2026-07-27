@@ -57,6 +57,14 @@ Completion criteria:
 
 Date: 2026-07-24.
 
+2026-07-27 validation update:
+
+- Full LLM/OpenAI ledger: `PASS=459`, `FAIL=0`, `SKIP=0`,
+  `INCONCLUSIVE=0`.
+- Focused duplicate-driver rule run: 96 responses, all PASS.
+- Added exact double-inverter contraction validation for large depth
+  optimization; the `test29` proof completes within the request budget.
+
 Completed in `fix/validator-followup`:
 
 - Added exact DAG path counting without enumerating every path. The validator

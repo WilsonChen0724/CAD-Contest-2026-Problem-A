@@ -50,3 +50,16 @@ source commits.
 3. Run all unit tests and one final full ledger validation after the provenance
    change.
 
+Focused duplicate-driver rule-mode result:
+
+```text
+Validated 96 response(s): PASS=96, FAIL=0, SKIP=0, INCONCLUSIVE=0
+Metrics: 28 transform/optimization response(s),
+         gate improvements=7,
+         depth improvements=1,
+         validated improvements=7
+```
+
+`test29 response 8` uses an exact compositional certificate for 15
+double-inverter contractions. This replaces a selected-output Z3 attempt that
+exceeded 300 seconds.

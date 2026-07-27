@@ -56,6 +56,17 @@ Latest P1 implementation update (2026-07-24):
 - Targeted `test18/test36/test37` rerun: all 52 responses validate as PASS,
   with zero FAIL and zero INCONCLUSIVE.
 
+P1 robustness update (2026-07-27):
+
+- Graph IR now retains every driver in `driver_lists`; destructive local
+  rewrites require a unique structural driver.
+- The six release designs with duplicate DFF-Q drivers (`test27`, `test29`,
+  `test31`, `test38`, `test39`, `test40`) complete 96 rule-mode responses with
+  zero FAIL or INCONCLUSIVE.
+- Large-design double-inverter cleanup now has an exact structural contraction
+  certificate. `test29 response 8` validates in seconds instead of timing out
+  on a deep selected-output Z3 expression.
+
 P1 targeted rerun:
 
 ```powershell

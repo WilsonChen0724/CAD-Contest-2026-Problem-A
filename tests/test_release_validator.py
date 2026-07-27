@@ -1098,6 +1098,45 @@ class ReleaseValidatorTest(unittest.TestCase):
         self.assertIn("2 degenerate", result[1])
         self.assertIn("whole design uses only", result[1])
 
+    def test_double_inverter_removal_compositional_proof(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        before.add_gate(Gate("N0", "not", ["a"], "n0"))
+        before.add_gate(Gate("N1", "not", ["n0"], "n1"))
+        before.add_gate(Gate("U0", "and", ["n1", "b"], "y"))
+        after = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        after.add_gate(Gate("U0", "and", ["a", "b"], "y"))
+
+        result = validator._check_large_compositional_transform(
+            before,
+            after,
+            "optimize_design_depth",
+            {"allowed_gates": ["and", "not"]},
+        )
+
+        self.assertEqual(result[0], "PASS")
+        self.assertIn("1 double-inverter", result[1])
+        self.assertIn("whole design uses only", result[1])
+
+    def test_double_inverter_removal_rejects_shared_intermediate(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b"}, outputs={"y", "tap"})
+        before.add_gate(Gate("N0", "not", ["a"], "n0"))
+        before.add_gate(Gate("N1", "not", ["n0"], "n1"))
+        before.add_gate(Gate("U0", "and", ["n1", "b"], "y"))
+        before.add_gate(Gate("U_tap", "buf", ["n0"], "tap"))
+        after = Design(module_name="top", inputs={"a", "b"}, outputs={"y", "tap"})
+        after.add_gate(Gate("U0", "and", ["a", "b"], "y"))
+        after.add_gate(Gate("U_tap", "buf", ["a"], "tap"))
+
+        result = validator._check_large_compositional_transform(
+            before,
+            after,
+            "optimize_design_depth",
+            {"allowed_gates": ["and", "not", "buf"]},
+        )
+
+        self.assertEqual(result[0], "FAIL")
+        self.assertIn("non-chain load", result[1])
+
     def test_deterministic_transform_residual_proofs(self) -> None:
         and_not = Design(module_name="top", inputs={"a"}, outputs={"y"})
         and_not.add_gate(Gate("U0", "and", ["a", "a"], "y"))
