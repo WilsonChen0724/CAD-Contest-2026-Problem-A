@@ -1,6 +1,6 @@
 # Release Testcase TODO Cheat Sheet
 
-This note tracks capabilities observed while running the A_release testcase_0510 suite.
+This note tracks capabilities observed while running the release testcase suite.
 The beta-test goal is to maximize supported, non-error responses across the 40 release
 testcases, then validate the completed run with the ledger-based external
 validator before submission.

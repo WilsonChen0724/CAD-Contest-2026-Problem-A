@@ -167,8 +167,8 @@ Current merge-ready Person C changes:
 
 Do not merge generated testcase artifacts:
 
-- `A_release testcase_0510/runner_output/`
-- `A_release testcase_0510/test*_out.v`
+- `release_0706/runner_output/`
+- `release_0706/test*_out.v`
 
 Current known blocker outside Person C:
 

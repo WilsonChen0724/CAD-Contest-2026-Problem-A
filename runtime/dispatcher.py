@@ -373,7 +373,12 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "all_paths":
         _require_design(state)
-        result = enumerate_paths(state.design, args["src"], args["dst"], max_paths=args.get("max_paths", 100))
+        result = enumerate_paths(
+            state.design,
+            args["src"],
+            args["dst"],
+            max_paths=_positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT),
+        )
         return _format_all_paths(result, state=state)
 
     if op == "check_cut_signal":
@@ -996,11 +1001,16 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "replace_and_not_with_nand":
         _require_design(state)
-        if len(state.design.gates) > _optimization_limit(state.config, "and_not_to_nand_skip_gate_limit", AND_NOT_TO_NAND_SKIP_GATE_LIMIT):
-            return "Skipped full-design AND/NOT-to-NAND remap for this large design to stay within the bounded large-design time budget. No structural changes were applied."
-        result = _run_transactional_transform(state, replace_and_not_with_nand)
+        result = _run_transactional_transform(
+            state,
+            replace_and_not_with_nand,
+            verify_equivalence=not _is_large_design(state.design, state.config),
+            required_allowed_gate_types={"nand", "not"},
+        )
         return (
-            f'Remapped {result["num_changed"]} AND/NOT gate(s) into NAND logic. '
+            f'Remapped {result["num_changed"]} gate(s) into NAND/NOT logic. '
+            f'Added {result["added_gate_counts"].get("nand", 0)} NAND gate(s) and '
+            f'{result["added_gate_counts"].get("not", 0)} NOT gate(s). '
             f'{_format_change_sample(result["changed"])}'
         )
 
@@ -1214,6 +1224,7 @@ def _run_transactional_transform(
     depth_balance: tuple[str, list[str]] | None = None,
     cone_depth: tuple[str, int | None] | None = None,
     required_absent_gate_type: str | None = None,
+    required_allowed_gate_types: set[str] | None = None,
     **kwargs: Any,
 ) -> dict:
     """
@@ -1237,6 +1248,15 @@ def _run_transactional_transform(
             raise RuntimeError(
                 "Transformation rejected: required remap is incomplete; "
                 f"{residual} {required_absent_gate_type.upper()} gate(s) remain."
+            )
+    if required_allowed_gate_types is not None:
+        allowed = {gate_type.lower() for gate_type in required_allowed_gate_types}
+        residual_types = sorted({gate.type for gate in candidate.gates.values() if gate.type not in allowed})
+        if residual_types:
+            detail = ", ".join(residual_types)
+            raise RuntimeError(
+                "Transformation rejected: required gate-library remap is incomplete; "
+                f"remaining gate type(s): {detail}."
             )
     candidate_connectivity = check_connectivity(candidate)
     connectivity = _connectivity_regression(original_connectivity, candidate_connectivity)

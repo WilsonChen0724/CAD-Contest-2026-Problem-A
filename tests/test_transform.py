@@ -26,6 +26,7 @@ from eda.transform import (
     rename_net,
     replace_buffers_with_and,
     replace_inv_buf_with_inv,
+    replace_and_not_with_nand,
     replace_or_with_nand_not,
     replace_with_and_not,
     replace_xnor_with_nor,
@@ -101,6 +102,22 @@ class TransformTest(unittest.TestCase):
         self.assertTrue(all(gate.type in {"and", "not"} for gate in design.gates.values()))
         self.assertTrue(check_design_equivalence(original, design)["ok"])
 
+    def test_replace_and_not_with_nand_remaps_all_supported_primitives(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y0", "y1", "y2", "y3", "y4", "y5"})
+        design.add_gate(Gate(name="U_buf", type="buf", inputs=["a"], output="y0"))
+        design.add_gate(Gate(name="U_and", type="and", inputs=["a", "b"], output="y1"))
+        design.add_gate(Gate(name="U_or", type="or", inputs=["a", "b"], output="y2"))
+        design.add_gate(Gate(name="U_nor", type="nor", inputs=["a", "b"], output="y3"))
+        design.add_gate(Gate(name="U_xor", type="xor", inputs=["a", "b"], output="y4"))
+        design.add_gate(Gate(name="U_xnor", type="xnor", inputs=["a", "b"], output="y5"))
+        original = deepcopy(design)
+
+        result = replace_and_not_with_nand(design)
+
+        self.assertEqual(result["num_changed"], 6)
+        self.assertTrue(all(gate.type in {"nand", "not"} for gate in design.gates.values()))
+        self.assertTrue(check_design_equivalence(original, design)["ok"])
+
     def test_xnor_to_nor_avoids_gate_net_name_collisions(self) -> None:
         design = Design(inputs={"a", "b"}, outputs={"y"})
         design.add_gate(Gate(name="U_xnor", type="xnor", inputs=["a", "b"], output="y"))
@@ -147,6 +164,24 @@ class TransformTest(unittest.TestCase):
         self.assertEqual(set(design.gates), {"U3"})
         self.assertEqual(design.gates["U3"].type, "buf")
         self.assertEqual(design.gates["U3"].inputs, ["a"])
+        self.assertTrue(check_design_equivalence(before, design)["ok"])
+
+    def test_collapse_rebuilds_after_shared_branch_chain(self) -> None:
+        design = Design(inputs={"a", "b"}, outputs={"y0", "y1"})
+        design.add_gate(Gate(name="z0", type="not", inputs=["a"], output="n0"))
+        design.add_gate(Gate(name="z1", type="not", inputs=["n0"], output="n1"))
+        design.add_gate(Gate(name="a0", type="not", inputs=["n1"], output="n2"))
+        design.add_gate(Gate(name="a1", type="not", inputs=["n2"], output="n3"))
+        design.add_gate(Gate(name="load0", type="nand", inputs=["n1", "b"], output="y0"))
+        design.add_gate(Gate(name="load1", type="nand", inputs=["n3", "b"], output="y1"))
+        before = deepcopy(design)
+
+        result = collapse_back_to_back_inverters(design)
+
+        self.assertEqual(result["num_changed"], 2)
+        self.assertEqual(set(design.gates), {"load0", "load1"})
+        self.assertEqual(design.gates["load0"].inputs, ["a", "b"])
+        self.assertEqual(design.gates["load1"].inputs, ["a", "b"])
         self.assertTrue(check_design_equivalence(before, design)["ok"])
 
     def test_collapse_preserves_inverter_with_shared_output(self) -> None:

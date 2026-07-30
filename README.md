@@ -154,7 +154,8 @@ The parser/writer path uses a Yosys-backed flow:
 - Supported primitive gates: `and`, `or`, `nand`, `nor`, `not`, `buf`, `xor`,
   `xnor`.
 - Supported sequential cells: positional `dff` style cells with
-  `(q, d, clk)` or `(q, d, clk, rst)`.
+  `(q, d, clk)` or `(q, d, clk, rst)`, plus release-style named-pin DFF
+  instances using `Q`, `D`, `CK`, and optional reset/set pins.
 - Bus ports and wires are expanded into bit-select nets in the internal
   `Design` IR, then re-emitted as bus declarations when possible.
 - `parser/verilog_writer.py` emits deterministic primitive Verilog and checks
@@ -327,11 +328,11 @@ Expected behavior:
 ## Release Testcase Runner
 
 The bundled unit and smoke tests still use the small `tests/` fixtures by
-default. To run the larger `A_release testcase_0510` prompt folders through the
+default. To run the larger `release_0706` prompt folders through the
 same stdin/stdout contest loop, use:
 
 ```bash
-python scripts/run_release_testcases.py --ensure-yosys
+python scripts/run_release_testcases.py --all --ensure-yosys
 ```
 
 Run one case:
@@ -351,7 +352,7 @@ python scripts/run_release_testcases.py --planner llm_both --ensure-yosys
 The runner executes each `testcase/testNN/prompt.txt` with `main.py` using the
 release directory as the working directory, so prompt paths such as
 `testcase/test01/test01.v` resolve naturally. Per-case stdout/stderr logs are
-written under `A_release testcase_0510/runner_output/<planner>/`, so `llm_openai`, `llm_claude`, and `rule` runs do not overwrite each other. In the release runner, `--planner llm_both` runs `llm_openai` and `llm_claude` separately and records both provider outputs. Generated `testNN_out.v` files are also copied into the matching planner output folder when present.
+written under `release_0706/runner_output/<planner>/`, so `llm_openai`, `llm_claude`, and `rule` runs do not overwrite each other. In the release runner, `--planner llm_both` runs `llm_openai` and `llm_claude` separately and records both provider outputs. Generated `testNN_out.v` files are also copied into the matching planner output folder when present.
 
 The release runner mirrors the contest timeout policy: begin/read/write basic responses use 60 seconds; all other responses use 300 seconds. Use `--basic-timeout` or `--timeout` to override those local test limits.
 
@@ -360,7 +361,7 @@ After the remaining backend tools are implemented, enable stricter regression
 behavior with:
 
 ```bash
-python scripts/run_release_testcases.py --ensure-yosys --fail-on-unsupported --fail-on-error
+python scripts/run_release_testcases.py --all --ensure-yosys --fail-on-unsupported --fail-on-error
 ```
 
 For a fuller setup and testing walkthrough for teammates, see `docs/testing_guide.md`.
@@ -440,8 +441,8 @@ and Tool API safety boundary.
   Liberty delay, placement, routing, slew, or clock skew.
 - The writer emits a normalized flattened primitive style instead of preserving
   original formatting or comments.
-- Named-pin, library-specific sequential cells are future work beyond the
-  normalized DFF support.
+- Library-specific sequential cells beyond release-style `dff` instances remain
+  future work.
 - LLM retry is currently plan-stage only. Runtime transform rejection is not
   retried automatically, because retrying after mutation attempts would add
   response-time and state-management risk.
@@ -695,10 +696,11 @@ Day2 LLM planner integration.
    ```verilog
    dff FF0(q, d, clk);
    dff FF1(q, d, clk, rst);
+   dff FF2(.RN(rst_n), .SN(1'b1), .CK(clk), .D(d), .Q(q));
    ```
 
    The writer can emit these bus declarations and DFF instances back to
-   Verilog. Full library-specific named-pin cell parsing is still future work.
+   Verilog. Release-style named-pin DFF parsing is also supported.
 
 5. Stronger connectivity verification
 
