@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,8 +12,10 @@ from scripts import validate_release_outputs as validator
 from scripts.validate_release_outputs import (
     ValidationResult,
     _collect_metrics_for_cases,
+    _select_existing_ledger_cases,
     _validate_large_transform_with_guards,
     _validate_ledger,
+    _write_results_csv,
 )
 
 
@@ -92,6 +95,34 @@ class ReleaseValidatorTest(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].status, "INCONCLUSIVE")
             self.assertEqual(results[0].check, "report_gate_counts")
+
+    def test_select_existing_ledger_cases_ignores_unrun_testcase_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            (release_dir / "testcase" / "test01").mkdir(parents=True)
+            (release_dir / "testcase" / "test02").mkdir(parents=True)
+            ledger_dir = release_dir / "runner_output" / "rule" / "validation" / "test02"
+            ledger_dir.mkdir(parents=True)
+            (ledger_dir / "ledger.jsonl").write_text("", encoding="utf-8")
+
+            cases = _select_existing_ledger_cases(release_dir, "rule")
+
+            self.assertEqual(cases, ["test02"])
+
+    def test_write_results_csv_includes_every_validation_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "results.csv"
+            results = [
+                ValidationResult("test01", 1, "PASS", "begin_testcase", "ok"),
+                ValidationResult("test01", 2, "INCONCLUSIVE", "validator", "bounded"),
+            ]
+
+            _write_results_csv(output, results)
+
+            text = output.read_text(encoding="utf-8")
+            self.assertIn("case,response_id,status,check,detail", text)
+            self.assertIn("test01,1,PASS,begin_testcase,ok", text)
+            self.assertIn("test01,2,INCONCLUSIVE,validator,bounded", text)
 
     def test_validates_path_depth_and_cone_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -750,6 +781,93 @@ class ReleaseValidatorTest(unittest.TestCase):
             self.assertEqual(results[0].status, "FAIL")
             self.assertIn("inverter pair(s) remain", results[0].detail)
 
+    def test_large_nand_not_remap_passes_target_library_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "rule" / "validation" / "nand_remap"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            (snapshot_dir / "before.v").write_text(
+                "module top(a, b, y); input a, b; output y; wire n; and U0(n, a, b); not U1(y, n); endmodule",
+                encoding="utf-8",
+            )
+            (snapshot_dir / "after.v").write_text(
+                (
+                    "module top(a, b, y); input a, b; output y; wire n, n_mid; "
+                    "nand U0(n_mid, a, b); not U0_restore(n, n_mid); not U1(y, n); endmodule"
+                ),
+                encoding="utf-8",
+            )
+            record = {
+                "case": "nand_remap",
+                "response_id": 1,
+                "plan": {"op": "replace_and_not_with_nand", "args": {}},
+                "body": "Remapped 1 gate(s) into NAND/NOT logic.",
+                "before_snapshot": "snapshots/before.v",
+                "after_snapshot": "snapshots/after.v",
+                "last_transform": {
+                    "transform": "replace_and_not_with_nand",
+                    "result": {
+                        "changed": [
+                            {
+                                "rewritten_gate": "U0",
+                                "old_type": "and",
+                                "added_gates": ["U0_restore"],
+                                "added_nets": ["n_mid"],
+                                "output": "n",
+                            }
+                        ],
+                        "num_changed": 1,
+                    },
+                },
+            }
+            ledger_path = case_dir / "ledger.jsonl"
+            ledger_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with patch.object(validator, "VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT", 0):
+                results = _validate_ledger(release_dir, ledger_path, "nand_remap")
+
+            self.assertEqual(results[0].status, "PASS")
+            self.assertIn("local truth-table", results[0].detail)
+
+    def test_large_replace_or_noop_passes_when_target_cone_has_no_or(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        before.add_gate(Gate("U0", "buf", ["a"], "n"))
+        before.add_gate(Gate("U1", "not", ["n"], "y"))
+        after = deepcopy(before)
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            5,
+            "replace_or_with_nand_not",
+            {"cone_target": "y"},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("no OR gates required rewriting", result.detail)
+
+    def test_large_replace_or_template_certificate_passes(self) -> None:
+        before = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        before.add_gate(Gate("U0", "or", ["a", "b"], "y"))
+        after = Design(module_name="top", inputs={"a", "b"}, outputs={"y"})
+        after.add_gate(Gate("U0", "nand", ["U0_na", "U0_nb"], "y"))
+        after.add_gate(Gate("U0_not_a", "not", ["a"], "U0_na"))
+        after.add_gate(Gate("U0_not_b", "not", ["b"], "U0_nb"))
+
+        result = _validate_large_transform_with_guards(
+            "test_large",
+            6,
+            "replace_or_with_nand_not",
+            {"cone_target": "y"},
+            before,
+            after,
+        )
+
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("De Morgan", result.detail)
+
     def test_large_linear_analysis_oracles_do_not_skip_by_gate_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             release_dir = Path(tmp) / "release"
@@ -796,6 +914,78 @@ class ReleaseValidatorTest(unittest.TestCase):
 
             self.assertEqual([direct.status, paths.status, cut.status], ["PASS", "PASS", "PASS"])
 
+    def test_large_all_paths_uses_small_relevant_subgraph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "rule" / "validation" / "large_relevant_paths"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            lines = [
+                "module top(src, junk, dst);",
+                "input src, junk;",
+                "output dst;",
+                "wire n;",
+                "buf U_path(n, src);",
+                "buf U_dst(dst, n);",
+            ]
+            for index in range(20):
+                lines.append(f"wire j{index};")
+                lines.append(f"buf J{index}(j{index}, junk);")
+            lines.append("endmodule")
+            (snapshot_dir / "design.v").write_text("\n".join(lines), encoding="utf-8")
+            ledger_path = case_dir / "ledger.jsonl"
+            record = {"after_snapshot": "snapshots/design.v"}
+
+            with patch.object(validator, "VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT", 3):
+                result = validator._validate_all_paths(
+                    release_dir,
+                    ledger_path,
+                    "large_relevant_paths",
+                    1,
+                    {"src": "src", "dst": "dst"},
+                    'Combinational paths from "src" to "dst": 1',
+                    record,
+                )
+
+            self.assertEqual(result.status, "PASS")
+
+    def test_truncated_all_paths_remains_inconclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "rule" / "validation" / "truncated_paths"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            (snapshot_dir / "design.v").write_text(
+                "\n".join(
+                    [
+                        "module top(src, dst);",
+                        "input src;",
+                        "output dst;",
+                        "wire n0, n1;",
+                        "buf U0(n0, src);",
+                        "buf V0(dst, n0);",
+                        "buf U1(n1, src);",
+                        "buf V1(dst, n1);",
+                        "endmodule",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            ledger_path = case_dir / "ledger.jsonl"
+            record = {"after_snapshot": "snapshots/design.v"}
+
+            result = validator._validate_all_paths(
+                release_dir,
+                ledger_path,
+                "truncated_paths",
+                1,
+                {"src": "src", "dst": "dst", "max_paths": 1},
+                'Combinational paths from "src" to "dst": 1\nEnumeration was truncated after 1 path(s).',
+                record,
+            )
+
+        self.assertEqual(result.status, "INCONCLUSIVE")
+
     def test_large_compositional_transform_proofs(self) -> None:
         rename_before = Design(module_name="top", inputs={"a"}, outputs={"y"})
         rename_before.add_gate(Gate("U0", "buf", ["a"], "old_net"))
@@ -803,6 +993,13 @@ class ReleaseValidatorTest(unittest.TestCase):
         rename_after = Design(module_name="top", inputs={"a"}, outputs={"y"})
         rename_after.add_gate(Gate("U0", "buf", ["a"], "new_net"))
         rename_after.add_gate(Gate("U1", "not", ["new_net"], "y"))
+
+        gate_rename_before = Design(module_name="top", inputs={"a"}, outputs={"y"}, wires={"n"})
+        gate_rename_before.add_gate(Gate("U0", "buf", ["a"], "n"))
+        gate_rename_before.add_gate(Gate("U1", "not", ["n"], "y"))
+        gate_rename_after = Design(module_name="top", inputs={"a"}, outputs={"y"}, wires={"n"})
+        gate_rename_after.add_gate(Gate("renamed_gate", "buf", ["a"], "n"))
+        gate_rename_after.add_gate(Gate("U1", "not", ["n"], "y"))
 
         dangling_before = Design(module_name="top", inputs={"a"}, outputs={"y"}, wires={"unused"})
         dangling_before.add_gate(Gate("U0", "buf", ["a"], "y", attrs={"src": "before.v:1"}))
@@ -824,6 +1021,12 @@ class ReleaseValidatorTest(unittest.TestCase):
             "rename_net",
             {"old_net": "old_net", "new_net": "new_net"},
         )
+        gate_rename = validator._check_large_compositional_transform(
+            gate_rename_before,
+            gate_rename_after,
+            "rename_gate",
+            {"old_name": "U0", "new_name": "renamed_gate"},
+        )
         dangling = validator._check_large_compositional_transform(
             dangling_before,
             dangling_after,
@@ -838,6 +1041,7 @@ class ReleaseValidatorTest(unittest.TestCase):
         )
 
         self.assertEqual(rename[0], "PASS")
+        self.assertEqual(gate_rename[0], "PASS")
         self.assertEqual(dangling[0], "PASS")
         self.assertEqual(buffers[0], "PASS")
 
@@ -881,6 +1085,47 @@ class ReleaseValidatorTest(unittest.TestCase):
 
             self.assertEqual(result.status, "PASS")
             self.assertIn("alpha-equivalence", result.detail)
+
+    def test_large_last_transform_equivalence_uses_instance_rename_certificate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "release"
+            case_dir = release_dir / "runner_output" / "rule" / "validation" / "rename_gate_equivalence"
+            snapshot_dir = case_dir / "snapshots"
+            snapshot_dir.mkdir(parents=True)
+            (snapshot_dir / "before.v").write_text(
+                "module top(a, y); input a; output y; buf g0(y, a); endmodule",
+                encoding="utf-8",
+            )
+            (snapshot_dir / "after.v").write_text(
+                "module top(a, y); input a; output y; buf renamed_gate(y, a); endmodule",
+                encoding="utf-8",
+            )
+            record = {
+                "body": (
+                    "Equivalent to the pre-transformation netlist. "
+                    "Checked with structural_alpha_rename engine over combinational boundaries."
+                ),
+                "last_transform_input_snapshot": "snapshots/before.v",
+                "after_snapshot": "snapshots/after.v",
+                "last_transform": {
+                    "transform": "rename_gate",
+                    "result": {"old_name": "g0", "new_name": "renamed_gate"},
+                },
+            }
+            ledger_path = case_dir / "ledger.jsonl"
+
+            with patch.object(validator, "check_design_equivalence", side_effect=AssertionError("too expensive")):
+                result = validator._validate_last_transform_input_equivalence(
+                    release_dir,
+                    ledger_path,
+                    "rename_gate_equivalence",
+                    1,
+                    record["body"],
+                    record,
+                )
+
+            self.assertEqual(result.status, "PASS")
+            self.assertIn("instance", result.detail)
 
     def test_boolean_equation_validator_checks_complete_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1001,7 +1246,7 @@ class ReleaseValidatorTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "PASS")
-        self.assertIn("full-output equivalence passed", result.detail)
+        self.assertIn("logic and ports are identical", result.detail)
 
     def test_large_transform_fails_new_connectivity_regression(self) -> None:
         before = Design(module_name="top", inputs={"a"}, outputs={"y", "z"})
@@ -1022,6 +1267,39 @@ class ReleaseValidatorTest(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertIn("connectivity regression failed", result.detail)
         self.assertIn("new_duplicate_drivers", result.detail)
+
+    def test_deep_large_checks_attempt_full_equivalence_when_large_guard_is_partial(self) -> None:
+        before = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        before.add_gate(Gate("U1", "buf", ["a"], "y"))
+        after = Design(module_name="top", inputs={"a"}, outputs={"y"})
+        after.add_gate(Gate("U2", "buf", ["a"], "y"))
+
+        shallow = _validate_large_transform_with_guards(
+            "test_large",
+            5,
+            "constant_propagation",
+            {},
+            before,
+            after,
+        )
+
+        original = validator.VALIDATOR_DEEP_LARGE_CHECKS
+        validator.VALIDATOR_DEEP_LARGE_CHECKS = True
+        try:
+            deep = _validate_large_transform_with_guards(
+                "test_large",
+                6,
+                "constant_propagation",
+                {},
+                before,
+                after,
+            )
+        finally:
+            validator.VALIDATOR_DEEP_LARGE_CHECKS = original
+
+        self.assertEqual(shallow.status, "INCONCLUSIVE")
+        self.assertEqual(deep.status, "PASS")
+        self.assertIn("deep full-output equivalence passed", deep.detail)
 
 
 if __name__ == "__main__":

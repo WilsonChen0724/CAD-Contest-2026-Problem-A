@@ -28,12 +28,12 @@ class CaseResult:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run A_release testcase_0510 prompts through main.py."
+        description="Run release testcase prompts through main.py."
     )
     parser.add_argument(
         "--release-dir",
         type=Path,
-        default=Path("A_release testcase_0510"),
+        default=Path("release_0706"),
         help="Directory containing README.md and testcase/testNN folders.",
     )
     parser.add_argument(

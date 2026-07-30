@@ -1149,26 +1149,115 @@ def replace_xor_with_nand(design: Design) -> dict:
 
 @_rebuild_graph_after_transform
 def replace_and_not_with_nand(design: Design) -> dict:
-    """Rewrite AND/NOT gates into NAND-only structures."""
+    """Rewrite supported primitive gates into equivalent NAND/NOT structures."""
     changed: list[dict[str, Any]] = []
+    added_gate_counts = {"nand": 0, "not": 0}
+    rewritten_gate_counts: dict[str, int] = {}
     names = _CachedNameAllocator(design)
+
+    def note(old_type: str) -> None:
+        rewritten_gate_counts[old_type] = rewritten_gate_counts.get(old_type, 0) + 1
+
+    def add_gate(gate_type: str, base: str, inputs: list[str], output: str | None = None) -> tuple[str, str]:
+        gate_output = output or names.wire(base)
+        gate_name = names.gate_name(base)
+        design.add_gate(Gate(name=gate_name, type=gate_type, inputs=inputs, output=gate_output))
+        added_gate_counts[gate_type] += 1
+        return gate_name, gate_output
+
+    def add_not(base: str, source: str, output: str | None = None) -> tuple[str, str]:
+        return add_gate("not", f"{base}_not", [source], output)
+
+    def add_nand(base: str, input_a: str, input_b: str, output: str | None = None) -> tuple[str, str]:
+        return add_gate("nand", f"{base}_nand", [input_a, input_b], output)
+
     for name in sorted(list(design.gates)):
         gate = design.gates.get(name)
         if gate is None:
             continue
-        if gate.type == "not" and len(gate.inputs) == 1:
-            gate.type = "nand"
-            gate.inputs = [gate.inputs[0], gate.inputs[0]]
-            changed.append({"rewritten_gate": name, "old_type": "not", "added_gates": []})
-        elif gate.type == "and" and len(gate.inputs) == 2:
-            out_net = gate.output
+        old_type = gate.type
+        inputs = list(gate.inputs)
+        out_net = gate.output
+        added_gates: list[str] = []
+        added_nets: list[str] = []
+
+        if old_type in {"nand", "not"}:
+            continue
+        if old_type == "and" and len(inputs) == 2:
             mid_net = names.wire(f"{name}_nand_pre")
             gate.type = "nand"
             gate.output = mid_net
-            inv_name = names.gate_name(f"{name}_nand_restore")
-            design.add_gate(Gate(name=inv_name, type="nand", inputs=[mid_net, mid_net], output=out_net))
-            changed.append({"rewritten_gate": name, "old_type": "and", "added_gates": [inv_name], "added_nets": [mid_net]})
-    return {"changed": changed, "num_changed": len(changed)}
+            not_name, _ = add_not(f"{name}_restore", mid_net, out_net)
+            added_gates.append(not_name)
+            added_nets.append(mid_net)
+        elif old_type == "or" and len(inputs) == 2:
+            not_a_name, not_a = add_not(f"{name}_a", inputs[0])
+            not_b_name, not_b = add_not(f"{name}_b", inputs[1])
+            gate.type = "nand"
+            gate.inputs = [not_a, not_b]
+            added_gates.extend([not_a_name, not_b_name])
+            added_nets.extend([not_a, not_b])
+        elif old_type == "nor" and len(inputs) == 2:
+            not_a_name, not_a = add_not(f"{name}_a", inputs[0])
+            not_b_name, not_b = add_not(f"{name}_b", inputs[1])
+            mid_net = names.wire(f"{name}_nand_or")
+            gate.type = "nand"
+            gate.inputs = [not_a, not_b]
+            gate.output = mid_net
+            restore_name, _ = add_not(f"{name}_restore", mid_net, out_net)
+            added_gates.extend([not_a_name, not_b_name, restore_name])
+            added_nets.extend([not_a, not_b, mid_net])
+        elif old_type == "xor" and len(inputs) == 2:
+            input_a, input_b = inputs
+            nand_ab = names.wire(f"{name}_nand_ab")
+            gate.type = "nand"
+            gate.inputs = [input_a, input_b]
+            gate.output = nand_ab
+            nand_a_name, nand_a = add_nand(f"{name}_a", input_a, nand_ab)
+            nand_b_name, nand_b = add_nand(f"{name}_b", input_b, nand_ab)
+            nand_out_name, _ = add_nand(f"{name}_out", nand_a, nand_b, out_net)
+            added_gates.extend([nand_a_name, nand_b_name, nand_out_name])
+            added_nets.extend([nand_ab, nand_a, nand_b])
+        elif old_type == "xnor" and len(inputs) == 2:
+            input_a, input_b = inputs
+            nand_ab = names.wire(f"{name}_nand_ab")
+            gate.type = "nand"
+            gate.inputs = [input_a, input_b]
+            gate.output = nand_ab
+            nand_a_name, nand_a = add_nand(f"{name}_a", input_a, nand_ab)
+            nand_b_name, nand_b = add_nand(f"{name}_b", input_b, nand_ab)
+            xor_net = names.wire(f"{name}_xor")
+            nand_out_name, _ = add_nand(f"{name}_out", nand_a, nand_b, xor_net)
+            not_name, _ = add_not(f"{name}_restore", xor_net, out_net)
+            added_gates.extend([nand_a_name, nand_b_name, nand_out_name, not_name])
+            added_nets.extend([nand_ab, nand_a, nand_b, xor_net])
+        elif old_type == "buf" and len(inputs) == 1:
+            mid_net = names.wire(f"{name}_not")
+            gate.type = "not"
+            gate.output = mid_net
+            restore_name, _ = add_not(f"{name}_restore", mid_net, out_net)
+            added_gates.append(restore_name)
+            added_nets.append(mid_net)
+        else:
+            continue
+
+        note(old_type)
+        changed.append(
+            {
+                "rewritten_gate": name,
+                "old_type": old_type,
+                "new_type": gate.type,
+                "added_gates": added_gates,
+                "added_nets": added_nets,
+                "output": out_net,
+            }
+        )
+    return {
+        "changed": changed,
+        "num_changed": len(changed),
+        "added_gate_counts": added_gate_counts,
+        "rewritten_gate_counts": rewritten_gate_counts,
+    }
 
 
 @_rebuild_graph_after_transform
@@ -1346,12 +1435,37 @@ def _collapse_inverter_chains_once(design: Design) -> tuple[list[dict[str, Any]]
             current = following
         if len(chain) < 2:
             continue
+        if not _is_current_inverter_chain(design, chain):
+            continue
 
         change = _collapse_inverter_chain(design, chain)
         changes.append(change)
         num_collapsed_pairs += int(change["num_collapsed_pairs"])
+        rebuild_graph(design)
 
     return changes, num_collapsed_pairs
+
+
+def _is_current_inverter_chain(design: Design, chain: list[str]) -> bool:
+    """Return True when a precomputed inverter chain still matches the graph."""
+    if len(chain) < 2:
+        return False
+    gates = []
+    for name in chain:
+        gate = design.gates.get(name)
+        if gate is None or gate.type != "not" or len(gate.inputs) != 1:
+            return False
+        gates.append(gate)
+
+    for first, second in zip(gates, gates[1:]):
+        if design.drivers.get(first.output) != f"GATE:{first.name}":
+            return False
+        if second.inputs != [first.output]:
+            return False
+        if f"GATE:{second.name}" not in design.fanouts.get(first.output, []):
+            return False
+
+    return True
 
 
 def _collapse_inverter_chain(design: Design, chain: list[str]) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 # Testing Guide
 
-This guide explains how to run the local tests and the `A_release testcase_0510` release-style testcases.
+This guide explains how to run the local tests and the `release_0706` release-style testcases.
 
 Assumptions:
 
@@ -68,10 +68,10 @@ Expected behavior:
 - It loads `tests/design/netlist/test8.v`.
 - It writes `output/test8_out.v`.
 
-## 4. Run A_release Testcases with the Rule Planner
+## 4. Run Release Testcases with the Rule Planner
 
 The release runner executes each `prompt.txt` line-by-line through `main.py`.
-It uses `A_release testcase_0510` as the working directory, so prompt paths such as `testcase/test01/test01.v` resolve correctly.
+It uses `release_0706` as the working directory by default, so prompt paths such as `testcase/test01/test01.v` resolve correctly.
 
 Run one testcase:
 
@@ -112,19 +112,19 @@ python scripts/run_release_testcases.py --all --planner rule
 Outputs are written to:
 
 ```text
-A_release testcase_0510/runner_output/<planner>/testNN.stdout.txt
-A_release testcase_0510/runner_output/<planner>/testNN.stderr.txt
-A_release testcase_0510/testNN.log
+release_0706/runner_output/<planner>/testNN.stdout.txt
+release_0706/runner_output/<planner>/testNN.stderr.txt
+release_0706/testNN.log
 ```
 
 The testcase log is written directly in the release working directory to match
 the contest collector's `<case_name>.log` lookup. Generated netlists are written
-relative to `A_release testcase_0510`, following each prompt's requested output
+relative to `release_0706`, following each prompt's requested output
 path. The release runner also copies `testNN_out.v` into
 `runner_output/<planner>/` when that file is generated, which keeps OpenAI and
 Claude outputs comparable.
 
-## 5. Run A_release Testcases with LLM Planners
+## 5. Run Release Testcases with LLM Planners
 
 Set the API key for the provider you want to test. Do not commit real keys.
 
@@ -188,7 +188,7 @@ When `--planner llm_openai`, `--planner llm_claude`, or `--planner llm_both` cal
 View the trace:
 
 ```bash
-cat "A_release testcase_0510/runner_output/llm_openai/test01.stderr.txt"
+cat "release_0706/runner_output/llm_openai/test01.stderr.txt"
 ```
 
 Each trace block looks like:

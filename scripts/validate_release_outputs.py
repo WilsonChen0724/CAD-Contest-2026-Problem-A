@@ -65,6 +65,11 @@ from eda.graph import rebuild_graph
 from parser.verilog_parser import parse_verilog
 from runtime.limits import DEFAULT_COMPLETE_PATH_LIMIT
 
+try:
+    from tqdm import tqdm as _tqdm
+except Exception:  # pragma: no cover - tqdm is optional at runtime.
+    _tqdm = None
+
 
 TRANSFORM_OPS = {
     "remove_dangling",
@@ -98,10 +103,12 @@ NOOP_ACCEPTABLE_TRANSFORMS = {
     "optimize_cone",
     "optimize_design_depth",
     "merge_equivalent_gates",
+    "replace_nand_const1_with_not",
 }
-VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT = 4000
+VALIDATOR_FULL_TRANSFORM_EQ_GATE_LIMIT = 6000
 VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT = 20000
 VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT = 8
+VALIDATOR_DEEP_LARGE_CHECKS = False
 EXACT_VALIDATED_OPS = {
     "begin_testcase",
     "read_design",
@@ -189,15 +196,36 @@ class MetricRecord:
     metric_source: str
 
 
+def _progress(
+    iterable: Any,
+    *,
+    enabled: bool,
+    desc: str,
+    unit: str,
+    leave: bool = True,
+) -> Any:
+    if enabled and _tqdm is not None:
+        return _tqdm(iterable, desc=desc, unit=unit, leave=leave)
+    return iterable
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate release runner outputs using ledger snapshots and external EDA checks."
     )
-    parser.add_argument("--release-dir", type=Path, default=Path("A_release testcase_0510"))
+    parser.add_argument("--release-dir", type=Path, default=Path("release_0706"))
     parser.add_argument("--planner", default="rule")
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--case-range", action="append", default=[])
     parser.add_argument("--all", action="store_true")
+    parser.add_argument(
+        "--existing-ledgers",
+        action="store_true",
+        help=(
+            "Validate only cases that already have validation ledgers. "
+            "Useful for partial release runs; plain --all remains strict."
+        ),
+    )
     parser.add_argument(
         "--show-coverage",
         action="store_true",
@@ -208,7 +236,25 @@ def main() -> int:
         action="store_true",
         help="Return nonzero when an external oracle check cannot reach a verdict.",
     )
+    parser.add_argument(
+        "--deep-large-checks",
+        action="store_true",
+        help=(
+            "Spend extra time on large transforms by attempting broader/full-output equivalence "
+            "after cheaper guards are insufficient or only partial."
+        ),
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable tqdm progress bars.",
+    )
     parser.add_argument("--output", type=Path, help="Optional JSONL validation report path.")
+    parser.add_argument(
+        "--results-csv-output",
+        type=Path,
+        help="Optional CSV report with one row for every validated response.",
+    )
     parser.add_argument(
         "--metrics-output",
         type=Path,
@@ -220,22 +266,34 @@ def main() -> int:
         _print_coverage()
         return 0
 
+    global VALIDATOR_DEEP_LARGE_CHECKS
+    VALIDATOR_DEEP_LARGE_CHECKS = bool(args.deep_large_checks)
+
     repo_root = Path(__file__).resolve().parents[1]
     release_dir = (repo_root / args.release_dir).resolve()
     cases = _select_cases(release_dir, args.case, args.case_range, run_all=args.all)
+    if args.existing_ledgers:
+        if cases:
+            cases = [case for case in cases if _find_ledger(release_dir, args.planner, case) is not None]
+        else:
+            cases = _select_existing_ledger_cases(release_dir, args.planner)
     if not cases:
-        print("No cases selected. Use --all, --case testNN, or --case-range test25-test40.", file=sys.stderr)
+        print(
+            "No cases selected. Use --all, --existing-ledgers, --case testNN, or --case-range test25-test40.",
+            file=sys.stderr,
+        )
         return 2
 
     results: list[ValidationResult] = []
     ledger_paths: dict[str, Path] = {}
-    for case in cases:
+    show_progress = not args.no_progress
+    for case in _progress(cases, enabled=show_progress, desc="cases", unit="case"):
         ledger_path = _find_ledger(release_dir, args.planner, case)
         if ledger_path is None:
             results.append(ValidationResult(case, 0, "FAIL", "ledger", "ledger.jsonl not found"))
             continue
         ledger_paths[case] = ledger_path
-        results.extend(_validate_ledger(release_dir, ledger_path, case))
+        results.extend(_validate_ledger(release_dir, ledger_path, case, show_progress=show_progress))
 
     _print_summary(results)
     if args.output:
@@ -244,6 +302,8 @@ def main() -> int:
             "".join(json.dumps(result.__dict__, sort_keys=True) + "\n" for result in results),
             encoding="utf-8",
         )
+    if args.results_csv_output:
+        _write_results_csv(args.results_csv_output, results)
     if args.metrics_output:
         metrics = _collect_metrics_for_cases(release_dir, ledger_paths, results)
         _write_metrics_csv(args.metrics_output, metrics)
@@ -254,12 +314,19 @@ def main() -> int:
     return 1 if has_fail or (args.fail_on_inconclusive and has_inconclusive) else 0
 
 
-def _validate_ledger(release_dir: Path, ledger_path: Path, case: str) -> list[ValidationResult]:
+def _validate_ledger(
+    release_dir: Path,
+    ledger_path: Path,
+    case: str,
+    *,
+    show_progress: bool = False,
+) -> list[ValidationResult]:
     _SNAPSHOT_PARSE_CACHE.clear()
     records = _read_records(ledger_path)
     original_design = None
     results: list[ValidationResult] = []
-    for record in records:
+    iterator = _progress(records, enabled=show_progress, desc=case, unit="response", leave=False)
+    for record in iterator:
         response_id = int(record.get("response_id") or 0)
         if original_design is None and record.get("after_snapshot"):
             try:
@@ -654,7 +721,7 @@ def _validate_all_paths(
     dst = str(args.get("dst") or "")
     max_paths = _positive_int_or_default(args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT)
     design = _require_snapshot(record, release_dir, ledger_path)
-    if _is_expensive_analysis_design(design):
+    if _is_expensive_analysis_design(design) and _path_relevant_gate_count(design, src, dst) > VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT:
         reachability_probe = all_paths(design, src=src, dst=dst, max_paths=1)
         if not reachability_probe.get("truncated") and int(reachability_probe.get("num_paths") or 0) == 0:
             expected = f'Combinational paths from "{src}" to "{dst}": 0'
@@ -1399,17 +1466,25 @@ def _last_transform_structural_certificate(record: dict[str, Any], before: Any, 
     if _designs_match_with_net_map(before, after, {}):
         return "exact structural identity certificate"
     last_transform = record.get("last_transform")
-    if not isinstance(last_transform, dict) or last_transform.get("transform") != "rename_net":
+    if not isinstance(last_transform, dict):
         return None
     result = last_transform.get("result")
     if not isinstance(result, dict):
         return None
-    old_net = result.get("old_net")
-    new_net = result.get("new_net")
-    if not isinstance(old_net, str) or not isinstance(new_net, str):
-        return None
-    if _designs_match_with_net_map(before, after, {old_net: new_net}):
-        return f'exact alpha-equivalence certificate for "{old_net}" -> "{new_net}"'
+    if last_transform.get("transform") == "rename_net":
+        old_net = result.get("old_net")
+        new_net = result.get("new_net")
+        if not isinstance(old_net, str) or not isinstance(new_net, str):
+            return None
+        if _designs_match_with_net_map(before, after, {old_net: new_net}):
+            return f'exact alpha-equivalence certificate for net "{old_net}" -> "{new_net}"'
+    if last_transform.get("transform") == "rename_gate":
+        old_name = result.get("old_name")
+        new_name = result.get("new_name")
+        if not isinstance(old_name, str) or not isinstance(new_name, str):
+            return None
+        if _designs_match_with_instance_rename(before, after, old_name, new_name):
+            return f'exact alpha-equivalence certificate for instance "{old_name}" -> "{new_name}"'
     return None
 
 
@@ -1454,6 +1529,26 @@ def _validate_transform(
                 op,
                 f"large-design connectivity regression passed; {compositional[1]}",
             )
+        rewrite_certificate = _check_rewrite_log_certificate(before, after, op, record)
+        if rewrite_certificate is not None:
+            if rewrite_certificate[0] != "PASS":
+                return ValidationResult(case, response_id, rewrite_certificate[0], op, rewrite_certificate[1])
+            connectivity = _connectivity_regression(check_connectivity(before), check_connectivity(after))
+            if not connectivity.get("ok", False):
+                return ValidationResult(
+                    case,
+                    response_id,
+                    "FAIL",
+                    op,
+                    f"large-design connectivity regression failed: {connectivity}",
+                )
+            return ValidationResult(
+                case,
+                response_id,
+                "PASS",
+                op,
+                f"large-design connectivity regression passed; {rewrite_certificate[1]}",
+            )
         residual = _check_transform_residual(after, op, residual_args)
         if residual is not None and residual[0] == "FAIL":
             return ValidationResult(case, response_id, residual[0], op, residual[1])
@@ -1469,6 +1564,15 @@ def _validate_transform(
                     op,
                     f"large-design connectivity regression failed: {connectivity}",
                 )
+            if VALIDATOR_DEEP_LARGE_CHECKS:
+                return _deep_large_transform_equivalence_result(
+                    case,
+                    response_id,
+                    op,
+                    before,
+                    after,
+                    prefix=f"large-design connectivity regression passed; {residual[1]}; ",
+                )
             return ValidationResult(
                 case,
                 response_id,
@@ -1480,7 +1584,14 @@ def _validate_transform(
             return ValidationResult(case, response_id, "PASS", op, no_change_reason)
         if _is_bounded_skip_response(body):
             return ValidationResult(case, response_id, "INCONCLUSIVE", op, _first_line(body))
-        return _validate_large_transform_with_guards(case, response_id, op, args, before, after)
+        return _validate_large_transform_with_guards(
+            case,
+            response_id,
+            op,
+            _large_transform_equivalence_args(args, record),
+            before,
+            after,
+        )
 
     equiv = check_design_equivalence(before, after)
     if not equiv.get("ok"):
@@ -1514,6 +1625,16 @@ def _validate_large_transform_with_guards(
             f"large-design connectivity regression failed: {connectivity}",
         )
 
+    compositional = _check_large_compositional_transform(before, after, op, args)
+    if compositional is not None:
+        return ValidationResult(
+            case,
+            response_id,
+            compositional[0],
+            op,
+            f"large-design connectivity regression passed; {compositional[1]}",
+        )
+
     if op == "remove_dangling":
         result = check_design_equivalence(before, after)
         if result.get("ok"):
@@ -1538,6 +1659,18 @@ def _validate_large_transform_with_guards(
     if selected_outputs:
         result = check_design_equivalence(before, after, outputs=selected_outputs)
         if result.get("ok"):
+            if VALIDATOR_DEEP_LARGE_CHECKS:
+                return _deep_large_transform_equivalence_result(
+                    case,
+                    response_id,
+                    op,
+                    before,
+                    after,
+                    prefix=(
+                        "large-design connectivity regression check passed; "
+                        f"selected-output equivalence passed for {selected_outputs}; "
+                    ),
+                )
             return ValidationResult(
                 case,
                 response_id,
@@ -1555,6 +1688,16 @@ def _validate_large_transform_with_guards(
             )
         return ValidationResult(case, response_id, "FAIL", op, f"selected-output equivalence failed: {result}")
 
+    if VALIDATOR_DEEP_LARGE_CHECKS:
+        return _deep_large_transform_equivalence_result(
+            case,
+            response_id,
+            op,
+            before,
+            after,
+            prefix="large-design connectivity regression check passed; selected-output target unavailable; ",
+        )
+
     return ValidationResult(
         case,
         response_id,
@@ -1565,6 +1708,74 @@ def _validate_large_transform_with_guards(
             "so full transform equivalence remains bounded"
         ),
     )
+
+
+def _deep_large_transform_equivalence_result(
+    case: str,
+    response_id: int,
+    op: str,
+    before: Any,
+    after: Any,
+    *,
+    prefix: str,
+) -> ValidationResult:
+    result = check_design_equivalence(before, after)
+    if result.get("ok"):
+        return ValidationResult(
+            case,
+            response_id,
+            "PASS",
+            op,
+            f"{prefix}deep full-output equivalence passed by {result.get('engine')}",
+        )
+    if _equivalence_depends_on_unknown_constant(result):
+        return ValidationResult(
+            case,
+            response_id,
+            "INCONCLUSIVE",
+            op,
+            f"{prefix}deep full-output equivalence depends on unknown/X constant: {result}",
+        )
+    failures = result.get("failures")
+    if isinstance(failures, dict):
+        solver_inconclusive = any(
+            isinstance(failure, dict)
+            and failure.get("counterexample") is None
+            and failure.get("engine") in {"bruteforce", "z3"}
+            for failure in failures.values()
+        )
+        if solver_inconclusive:
+            return ValidationResult(
+                case,
+                response_id,
+                "INCONCLUSIVE",
+                op,
+                f"{prefix}deep full-output equivalence remained inconclusive: {result}",
+            )
+    return ValidationResult(case, response_id, "FAIL", op, f"{prefix}deep full-output equivalence failed: {result}")
+
+
+def _large_transform_equivalence_args(args: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    equivalence_args = dict(args)
+    outputs = list(equivalence_args.get("outputs") or []) if isinstance(equivalence_args.get("outputs"), list) else []
+    last_transform = record.get("last_transform")
+    result = last_transform.get("result") if isinstance(last_transform, dict) else None
+    if isinstance(result, dict):
+        attempted_outputs = result.get("attempted_outputs")
+        if isinstance(attempted_outputs, list):
+            outputs.extend(str(item) for item in attempted_outputs)
+        changed = result.get("changed")
+        if isinstance(changed, list):
+            for item in changed:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("output", "target", "resolved_target"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        outputs.append(value)
+    if outputs:
+        equivalence_args["outputs"] = sorted(dict.fromkeys(outputs))
+    return equivalence_args
 
 
 def _connectivity_regression(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
@@ -1606,7 +1817,14 @@ def _selected_outputs_for_large_transform(before: Any, after: Any, args: dict[st
     outputs = args.get("outputs")
     if isinstance(outputs, list):
         candidates.extend(str(item) for item in outputs)
-    selected = [candidate for candidate in candidates if candidate in common_outputs]
+    for candidate in list(candidates):
+        if candidate not in common_outputs:
+            candidates.extend(_fanout_equivalence_endpoints(before, after, candidate))
+    selected = [
+        candidate
+        for candidate in candidates
+        if candidate in common_outputs or _is_common_dff_input_endpoint(before, after, candidate)
+    ]
     return sorted(dict.fromkeys(selected))[:VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT]
 
 
@@ -1617,16 +1835,44 @@ def _check_transform_residual(design: Any, op: str, args: dict[str, Any]) -> tup
         max_fanout = int(args.get("max_fanout") or 0)
         result = check_fanout(design, max_fanout)
         return ("PASS", f"fanout <= {max_fanout}") if result.get("ok") else ("FAIL", f"fanout violations: {result}")
+    if op == "replace_or_with_nand_not":
+        target = str(args.get("cone_target") or "")
+        if not target:
+            return ("FAIL", "replace-or residual check is missing cone_target")
+        try:
+            cone_gates = logic_cone(design, target)
+        except Exception as exc:
+            return ("INCONCLUSIVE", f"replace-or residual cone unavailable: {exc}")
+        remaining = sorted(
+            name
+            for name in cone_gates
+            if name in getattr(design, "gates", {}) and design.gates[name].type == "or"
+        )
+        if remaining:
+            return ("FAIL", f"{len(remaining)} OR gate(s) remain in target cone")
+        return ("PASS", f'no OR gates remain in cone of "{target}"')
     if op in {"replace_xor_with_nand", "replace_xnor_with_nor", "replace_xnor_nor_with_basic_gates"}:
         forbidden = "xor" if op == "replace_xor_with_nand" else "xnor"
         count = gate_type_count(design, forbidden)["count"]
         return ("PASS", f"{forbidden} count is 0") if count == 0 else ("FAIL", f"{forbidden} count remains {count}")
+    if op == "replace_and_not_with_nand":
+        return _check_target_gate_library(design, {"nand", "not"})
+    if op == "replace_with_and_not":
+        return _check_target_gate_library(design, {"and", "not"})
     if op == "collapse_back_to_back_inverters":
         count = _count_collapsible_inverter_pairs(design)
         if count == 0:
             return ("PASS", "no collapsible back-to-back inverter pairs remain")
         return ("FAIL", f"{count} collapsible back-to-back inverter pair(s) remain")
     return None
+
+
+def _check_target_gate_library(design: Any, allowed_types: set[str]) -> tuple[str, str]:
+    unexpected = sorted({gate.type for gate in getattr(design, "gates", {}).values()} - allowed_types)
+    library = "/".join(sorted(allowed_types))
+    if unexpected:
+        return ("FAIL", f"unexpected combinational gate type(s) remain outside {library}: {unexpected}")
+    return ("PASS", f"all combinational gates use only {library}")
 
 
 def _check_large_compositional_transform(
@@ -1644,11 +1890,26 @@ def _check_large_compositional_transform(
             return ("PASS", f'exact alpha-equivalence proved for net rename "{old_net}" -> "{new_net}"')
         return ("FAIL", "before/after designs differ beyond the requested net rename")
 
+    if op == "rename_gate":
+        old_name = str(args.get("old_name") or "")
+        new_name = str(args.get("new_name") or "")
+        if not old_name or not new_name:
+            return ("FAIL", "rename-gate proof is missing old_name or new_name")
+        if _designs_match_with_instance_rename(before, after, old_name, new_name):
+            return ("PASS", f'exact alpha-equivalence proved for instance rename "{old_name}" -> "{new_name}"')
+        return ("FAIL", "before/after designs differ beyond the requested instance rename")
+
     if op == "remove_dangling":
         if _same_logic_ignoring_unused_wire_declarations(before, after):
             removed = len(set(before.wires) - set(after.wires))
             return ("PASS", f"logic and ports are identical; only {removed} unused wire declaration(s) were removed")
         return None
+
+    if op == "replace_or_with_nand_not":
+        target = str(args.get("cone_target") or "")
+        if not target:
+            return ("FAIL", "replace-or proof is missing cone_target")
+        return _check_replace_or_with_nand_not_certificate(before, after, target)
 
     if op == "insert_dedicated_buffers_for_each_load":
         target = str(args.get("net") or "")
@@ -1695,6 +1956,306 @@ def _designs_match_with_net_map(before: Any, after: Any, net_map: dict[str, str]
         ):
             return False
     return True
+
+
+def _designs_match_with_instance_rename(before: Any, after: Any, old_name: str, new_name: str) -> bool:
+    if before.module_name != after.module_name:
+        return False
+    if set(before.inputs) != set(after.inputs) or set(before.outputs) != set(after.outputs):
+        return False
+    if set(before.wires) != set(after.wires):
+        return False
+
+    gate_name_map = {old_name: new_name} if old_name in before.gates else {}
+    dff_name_map = {old_name: new_name} if old_name in before.dffs else {}
+    if old_name not in before.gates and old_name not in before.dffs:
+        return False
+    if new_name in before.gates or new_name in before.dffs:
+        return False
+
+    expected_gates = {gate_name_map.get(name, name) for name in before.gates}
+    expected_dffs = {dff_name_map.get(name, name) for name in before.dffs}
+    if expected_gates != set(after.gates) or expected_dffs != set(after.dffs):
+        return False
+
+    for name, gate in before.gates.items():
+        candidate = after.gates[gate_name_map.get(name, name)]
+        if (
+            gate.type != candidate.type
+            or gate.inputs != candidate.inputs
+            or gate.output != candidate.output
+            or gate.attrs != candidate.attrs
+        ):
+            return False
+    for name, dff in before.dffs.items():
+        candidate = after.dffs[dff_name_map.get(name, name)]
+        if (
+            dff.d != candidate.d
+            or dff.q != candidate.q
+            or dff.clk != candidate.clk
+            or dff.rst != candidate.rst
+            or dff.rst_value != candidate.rst_value
+            or dff.attrs != candidate.attrs
+        ):
+            return False
+    return True
+
+
+def _check_replace_or_with_nand_not_certificate(before: Any, after: Any, target: str) -> tuple[str, str]:
+    if before.module_name != after.module_name or set(before.inputs) != set(after.inputs) or set(before.outputs) != set(after.outputs):
+        return ("FAIL", "replace-or certificate saw module or port changes")
+    if set(before.dffs) != set(after.dffs):
+        return ("FAIL", "replace-or certificate saw DFF instance changes")
+    for name, dff in before.dffs.items():
+        candidate = after.dffs[name]
+        if (
+            dff.d != candidate.d
+            or dff.q != candidate.q
+            or dff.clk != candidate.clk
+            or dff.rst != candidate.rst
+            or dff.rst_value != candidate.rst_value
+            or dff.attrs != candidate.attrs
+        ):
+            return ("FAIL", f'DFF "{name}" changed outside replace-or template')
+
+    try:
+        cone_names = set(logic_cone(before, target))
+    except Exception as exc:
+        return ("INCONCLUSIVE", f"replace-or certificate cone unavailable: {exc}")
+
+    added_names = set(after.gates) - set(before.gates)
+    consumed_added: set[str] = set()
+    rewritten = 0
+    for name, gate in before.gates.items():
+        candidate = after.gates.get(name)
+        if candidate is None:
+            return ("FAIL", f'gate "{name}" was removed')
+        if name not in cone_names or gate.type != "or" or len(gate.inputs) != 2:
+            if not _gate_matches(candidate, gate):
+                return ("FAIL", f'gate "{name}" changed outside the OR-to-NAND/NOT template')
+            continue
+
+        if _gate_matches(candidate, gate):
+            continue
+        if candidate.type != "nand" or candidate.output != gate.output or len(candidate.inputs) != 2:
+            return ("FAIL", f'OR gate "{name}" was not rewritten as a same-output NAND')
+
+        expected_sources = list(gate.inputs)
+        seen_sources: list[str] = []
+        for not_net in candidate.inputs:
+            not_gate_name = _single_added_not_driver(after, not_net, added_names)
+            if not_gate_name is None:
+                return ("FAIL", f'input "{not_net}" of rewritten gate "{name}" is not driven by one added NOT')
+            not_gate = after.gates[not_gate_name]
+            seen_sources.append(not_gate.inputs[0])
+            consumed_added.add(not_gate_name)
+        if sorted(seen_sources) != sorted(expected_sources):
+            return ("FAIL", f'rewritten gate "{name}" NOT inputs do not match original OR inputs')
+        rewritten += 1
+
+    if consumed_added != added_names:
+        extra = sorted(added_names - consumed_added)
+        return ("FAIL", f"unexpected added gate(s) outside OR-to-NAND/NOT template: {extra}")
+    if rewritten == 0:
+        residual = _check_transform_residual(after, "replace_or_with_nand_not", {"cone_target": target})
+        if residual is not None and residual[0] != "PASS":
+            return residual
+        return ("PASS", f'no OR gates required rewriting in cone of "{target}"')
+    return ("PASS", f"{rewritten} OR gate rewrite template(s) proved by De Morgan structure")
+
+
+def _single_added_not_driver(design: Any, net: str, added_names: set[str]) -> str | None:
+    matches = [
+        name
+        for name in added_names
+        if name in design.gates
+        and design.gates[name].type == "not"
+        and len(design.gates[name].inputs) == 1
+        and design.gates[name].output == net
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _gate_matches(candidate: Any, expected: Any) -> bool:
+    return (
+        candidate.type == expected.type
+        and candidate.inputs == expected.inputs
+        and candidate.output == expected.output
+        and candidate.attrs == expected.attrs
+    )
+
+
+def _check_rewrite_log_certificate(
+    before: Any,
+    after: Any,
+    op: str,
+    record: dict[str, Any],
+) -> tuple[str, str] | None:
+    if op not in {
+        "replace_and_not_with_nand",
+        "replace_with_and_not",
+        "replace_xor_with_nand",
+        "replace_xnor_with_nor",
+        "replace_xnor_nor_with_basic_gates",
+    }:
+        return None
+    last_transform = record.get("last_transform")
+    if not isinstance(last_transform, dict):
+        return None
+    result = last_transform.get("result")
+    if not isinstance(result, dict):
+        return None
+    changed = result.get("changed")
+    if not isinstance(changed, list):
+        return None
+
+    if op == "replace_and_not_with_nand":
+        allowed_types = {"nand", "not"}
+    elif op == "replace_with_and_not":
+        allowed_types = {"and", "not"}
+    elif op == "replace_xor_with_nand":
+        allowed_types = {"nand"}
+    else:
+        allowed_types = {"nor"}
+
+    residual = _check_transform_residual(after, op, {})
+    if residual is not None and residual[0] != "PASS":
+        return residual
+    library = _check_target_gate_library(after, allowed_types) if op in {"replace_and_not_with_nand", "replace_with_and_not"} else None
+    if library is not None and library[0] != "PASS":
+        return library
+
+    changed_names = {str(item.get("rewritten_gate")) for item in changed if isinstance(item, dict)}
+    changed_names.discard("")
+    added_names: set[str] = set()
+    for item in changed:
+        if isinstance(item, dict) and isinstance(item.get("added_gates"), list):
+            added_names.update(str(name) for name in item["added_gates"])
+    delta = last_transform.get("delta")
+    if isinstance(delta, dict) and isinstance(delta.get("added_gates"), list):
+        added_names.update(str(name) for name in delta["added_gates"])
+    if not _unchanged_outside_rewrite_log(before, after, changed_names, added_names):
+        return ("FAIL", "rewrite-log certificate found structural changes outside the logged rewrite windows")
+
+    for item in changed:
+        if not isinstance(item, dict):
+            return ("FAIL", "rewrite-log certificate contains a malformed changed item")
+        gate_name = str(item.get("rewritten_gate") or "")
+        old_gate = before.gates.get(gate_name)
+        if old_gate is None:
+            return ("FAIL", f'rewrite-log gate "{gate_name}" is absent from the before design')
+        if str(item.get("old_type") or old_gate.type) != old_gate.type:
+            return ("FAIL", f'rewrite-log old_type mismatch for "{gate_name}"')
+        output = str(item.get("output") or old_gate.output)
+        if output != old_gate.output:
+            return ("FAIL", f'rewrite-log output mismatch for "{gate_name}"')
+        local = _prove_local_rewrite_truth_table(after, output, old_gate.type, old_gate.inputs)
+        if local is not None:
+            return local
+
+    return ("PASS", f"{len(changed)} logged rewrite(s) proved by local truth-table certificate")
+
+
+def _unchanged_outside_rewrite_log(before: Any, after: Any, changed_names: set[str], added_names: set[str]) -> bool:
+    if before.module_name != after.module_name or set(before.inputs) != set(after.inputs) or set(before.outputs) != set(after.outputs):
+        return False
+    if set(before.dffs) != set(after.dffs):
+        return False
+    for name, dff in before.dffs.items():
+        candidate = after.dffs[name]
+        if (
+            dff.d != candidate.d
+            or dff.q != candidate.q
+            or dff.clk != candidate.clk
+            or dff.rst != candidate.rst
+            or dff.rst_value != candidate.rst_value
+            or dff.attrs != candidate.attrs
+        ):
+            return False
+    if set(after.gates) - set(before.gates) != added_names:
+        return False
+    if set(before.gates) - set(after.gates):
+        return False
+    for name, gate in before.gates.items():
+        if name in changed_names:
+            continue
+        if not _gate_matches(after.gates[name], gate):
+            return False
+    return True
+
+
+def _prove_local_rewrite_truth_table(
+    design: Any,
+    output: str,
+    old_type: str,
+    old_inputs: list[str],
+) -> tuple[str, str] | None:
+    if len(old_inputs) > 4:
+        return ("INCONCLUSIVE", f'local rewrite certificate for "{output}" has too many inputs')
+    boundary = list(dict.fromkeys(old_inputs))
+    for mask in range(1 << len(boundary)):
+        assignment = {net: bool((mask >> index) & 1) for index, net in enumerate(boundary)}
+        observed = _eval_local_net(design, output, assignment, set())
+        if observed is None:
+            return ("INCONCLUSIVE", f'local rewrite cone for "{output}" reaches outside the original gate boundary')
+        expected = _eval_primitive_gate(old_type, [assignment[net] for net in old_inputs])
+        if observed != expected:
+            return ("FAIL", f'local rewrite truth table mismatch at "{output}"')
+    return None
+
+
+def _eval_local_net(design: Any, net: str, assignment: dict[str, bool], visiting: set[str]) -> bool | None:
+    if net in assignment:
+        return assignment[net]
+    if _const_bool(net) is not None:
+        return _const_bool(net)
+    if net in visiting:
+        return None
+    driver = getattr(design, "drivers", {}).get(net)
+    if driver is None:
+        rebuild_graph(design)
+        driver = getattr(design, "drivers", {}).get(net)
+    if not driver or not driver.startswith("GATE:"):
+        return None
+    gate_name = driver.split(":", 1)[1]
+    gate = design.gates.get(gate_name)
+    if gate is None:
+        return None
+    visiting.add(net)
+    values = [_eval_local_net(design, input_net, assignment, visiting) for input_net in gate.inputs]
+    visiting.remove(net)
+    if any(value is None for value in values):
+        return None
+    return _eval_primitive_gate(gate.type, [bool(value) for value in values])
+
+
+def _eval_primitive_gate(gate_type: str, values: list[bool]) -> bool:
+    if gate_type == "buf":
+        return values[0]
+    if gate_type == "not":
+        return not values[0]
+    if gate_type == "and":
+        return all(values)
+    if gate_type == "nand":
+        return not all(values)
+    if gate_type == "or":
+        return any(values)
+    if gate_type == "nor":
+        return not any(values)
+    if gate_type == "xor":
+        return sum(1 for value in values if value) % 2 == 1
+    if gate_type == "xnor":
+        return sum(1 for value in values if value) % 2 == 0
+    raise ValueError(f"Unsupported gate type: {gate_type}")
+
+
+def _const_bool(net: str) -> bool | None:
+    normalized = net.lower()
+    if normalized in {"1'b1", "1"}:
+        return True
+    if normalized in {"1'b0", "0"}:
+        return False
+    return None
 
 
 def _same_logic_ignoring_unused_wire_declarations(before: Any, after: Any) -> bool:
@@ -2077,6 +2638,16 @@ def _write_metrics_csv(path: Path, metrics: list[MetricRecord]) -> None:
             writer.writerow(metric.__dict__)
 
 
+def _write_results_csv(path: Path, results: list[ValidationResult]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(ValidationResult.__dataclass_fields__.keys())
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(result.__dict__)
+
+
 def _parse_arrow_metric(body: str, label: str) -> tuple[int | None, int | None]:
     match = re.search(rf"{re.escape(label)}\s+(\d+)\s*->\s*(\d+)", body, flags=re.IGNORECASE)
     if not match:
@@ -2181,6 +2752,21 @@ def _find_ledger(release_dir: Path, planner: str, case: str) -> Path | None:
     return next((path for path in candidates if path.exists()), None)
 
 
+def _select_existing_ledger_cases(release_dir: Path, planner: str) -> list[str]:
+    selected: set[str] = set()
+    roots = [
+        release_dir / "runner_output" / planner / "validation",
+        release_dir / "output" / "validation",
+    ]
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.iterdir():
+            if path.is_dir() and (path / "ledger.jsonl").exists():
+                selected.add(path.name)
+    return sorted(selected)
+
+
 def _select_cases(release_dir: Path, cases: list[str], ranges: list[str], *, run_all: bool) -> list[str]:
     selected = list(cases)
     for item in ranges:
@@ -2219,6 +2805,117 @@ def _design_gate_total(design: Any) -> int:
 
 def _is_expensive_analysis_design(design: Any) -> bool:
     return _design_gate_total(design) > VALIDATOR_EXPENSIVE_ANALYSIS_GATE_LIMIT
+
+
+def _path_relevant_gate_count(design: Any, src: str, dst: str) -> int:
+    adjacency = _validator_combinational_adjacency(design)
+    reverse = _reverse_adjacency_map(adjacency)
+    src_candidates = _resolve_validator_signal_candidates(design, src)
+    dst_candidates = _resolve_validator_signal_candidates(design, dst)
+    if not src_candidates or not dst_candidates:
+        return 0
+    forward: set[str] = set()
+    for candidate in src_candidates:
+        forward.update(_reachable_nodes_map(adjacency, candidate))
+    backward: set[str] = set()
+    for candidate in dst_candidates:
+        backward.update(_reachable_nodes_map(reverse, candidate))
+    relevant = forward & backward
+    return sum(1 for name in getattr(design, "gates", {}) if name in relevant)
+
+
+def _validator_combinational_adjacency(design: Any) -> dict[str, set[str]]:
+    rebuild_graph(design)
+    adjacency: dict[str, set[str]] = {}
+
+    def add_edge(src: str, dst: str) -> None:
+        adjacency.setdefault(src, set()).add(dst)
+
+    for gate in getattr(design, "gates", {}).values():
+        for input_net in gate.inputs:
+            add_edge(input_net, gate.name)
+        add_edge(gate.name, gate.output)
+    for output in getattr(design, "outputs", set()):
+        driver = getattr(design, "drivers", {}).get(output)
+        if driver and driver.startswith("GATE:"):
+            add_edge(driver.split(":", 1)[1], output)
+        elif output in getattr(design, "inputs", set()):
+            add_edge(output, output)
+    return adjacency
+
+
+def _reverse_adjacency_map(adjacency: dict[str, set[str]]) -> dict[str, set[str]]:
+    reverse: dict[str, set[str]] = {}
+    for node, next_nodes in adjacency.items():
+        reverse.setdefault(node, set())
+        for nxt in next_nodes:
+            reverse.setdefault(nxt, set()).add(node)
+    return reverse
+
+
+def _reachable_nodes_map(adjacency: dict[str, set[str]], start: str) -> set[str]:
+    seen = {start}
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        for nxt in adjacency.get(node, set()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def _resolve_validator_signal_candidates(design: Any, name: str) -> list[str]:
+    all_nets = design.all_nets()
+    if name in all_nets:
+        return [name]
+    prefix = f"{name}["
+    return sorted(net for net in all_nets if net.startswith(prefix))
+
+
+def _fanout_equivalence_endpoints(before: Any, after: Any, target: str) -> list[str]:
+    if not target:
+        return []
+    before_endpoints = _fanout_endpoints(before, target)
+    after_endpoints = _fanout_endpoints(after, target)
+    common_outputs = set(getattr(before, "outputs", set())) & set(getattr(after, "outputs", set()))
+    common_dff_inputs = _common_dff_input_endpoints(before, after)
+    allowed = common_outputs | common_dff_inputs
+    return sorted((before_endpoints & after_endpoints) & allowed)
+
+
+def _fanout_endpoints(design: Any, target: str) -> set[str]:
+    rebuild_graph(design)
+    starts = _resolve_validator_signal_candidates(design, target)
+    endpoints: set[str] = set()
+    seen = set(starts)
+    stack = list(starts)
+    while stack and len(endpoints) < VALIDATOR_LARGE_SELECTED_OUTPUT_LIMIT * 4:
+        net = stack.pop()
+        for sink in getattr(design, "fanouts", {}).get(net, []):
+            kind, name = sink.split(":", 1)
+            if kind == "PO":
+                endpoints.add(name)
+            elif kind == "DFF":
+                dff = design.dffs.get(name)
+                if dff is not None and dff.d == net:
+                    endpoints.add(net)
+            elif kind == "GATE":
+                gate = design.gates.get(name)
+                if gate is not None and gate.output not in seen:
+                    seen.add(gate.output)
+                    stack.append(gate.output)
+    return endpoints
+
+
+def _common_dff_input_endpoints(before: Any, after: Any) -> set[str]:
+    before_inputs = {dff.d for dff in getattr(before, "dffs", {}).values()}
+    after_inputs = {dff.d for dff in getattr(after, "dffs", {}).values()}
+    return before_inputs & after_inputs
+
+
+def _is_common_dff_input_endpoint(before: Any, after: Any, net: str) -> bool:
+    return net in _common_dff_input_endpoints(before, after)
 
 
 def _has_error_marker(body: str) -> bool:

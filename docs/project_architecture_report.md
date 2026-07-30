@@ -195,7 +195,7 @@ Current notable fixes:
 Important scripts:
 
 - `install_yosys.py`, `install_yosys.ps1`, `install_yosys.sh`: local Yosys install helpers.
-- `run_release_testcases.py`: runs `A_release testcase_0510/testcase/testNN/prompt.txt` through `main.py`.
+- `run_release_testcases.py`: runs `release_0706/testcase/testNN/prompt.txt` through `main.py`.
 
 Current runner behavior:
 
@@ -381,4 +381,3 @@ The strongest six-minute thesis is:
 > analysis, transformation, and formal verification. The main contribution is
 > the safety architecture: Tool API validation, canonical IR, transactional
 > transforms, and formal guards.
-

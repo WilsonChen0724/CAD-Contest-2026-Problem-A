@@ -109,6 +109,36 @@ endmodule
         self.assertEqual([gate.type for gate in design.gates.values()].count("or"), 1)
         self.assertEqual(len(design.dffs), 0)
 
+    def test_yosys_json_preserves_partial_bus_offsets(self) -> None:
+        data = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [1]},
+                        "y": {"direction": "output", "bits": [101]},
+                    },
+                    "netnames": {
+                        "a": {"bits": [1], "hide_name": 0},
+                        "y": {"bits": [101], "hide_name": 0},
+                        "n38": {"bits": [100, 101], "offset": 32, "hide_name": 0},
+                    },
+                    "cells": {
+                        "U0": {"type": "$not", "connections": {"A": [1], "Y": [100]}},
+                        "U1": {"type": "$_BUF_", "connections": {"A": [100], "Y": [101]}},
+                    },
+                }
+            }
+        }
+
+        design = _yosys_json_to_design(data, "top")
+
+        self.assertIn("n38[32]", design.wires)
+        self.assertIn("n38[33]", design.wires)
+        self.assertNotIn("n38[0]", design.wires)
+        self.assertEqual(design.gates["U0"].output, "n38[32]")
+        self.assertEqual(design.gates["U1"].inputs, ["n38[32]"])
+        self.assertEqual(design.outputs, {"y"})
+
     def test_yosys_dffe_is_lowered_to_enable_mux_and_dff(self) -> None:
         data = {
             "modules": {

@@ -602,7 +602,7 @@ def all_paths_pass_through(design: Design, src: str, dst: str, node: str) -> boo
     return not find_path(design, src, dst, avoid=[node])
 
 
-def all_paths(design: Design, src: str, dst: str, max_paths: int = 200) -> dict:
+def all_paths(design: Design, src: str, dst: str, max_paths: int = 5000) -> dict:
     """Enumerate bounded combinational paths from src to dst."""
     if max_paths < 1:
         raise ValueError("max_paths must be at least 1.")

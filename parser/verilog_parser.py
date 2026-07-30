@@ -422,7 +422,7 @@ def _yosys_json_to_design(data: dict[str, Any], top_module: str) -> Design:
 
     for port_name, port in module.get("ports", {}).items():
         bits = port.get("bits", [])
-        expanded_bits = _expand_named_bits(port_name, bits)
+        expanded_bits = _expand_named_bits(port_name, bits, offset=port.get("offset"))
         target = design.inputs if port.get("direction") == "input" else design.outputs
         for net in expanded_bits:
             target.add(net)
@@ -442,7 +442,7 @@ def _yosys_json_to_design(data: dict[str, Any], top_module: str) -> Design:
     for net_name, net_info in module.get("netnames", {}).items():
         if net_info.get("hide_name"):
             continue
-        design.wires.update(_expand_named_bits(net_name, net_info.get("bits", [])))
+        design.wires.update(_expand_named_bits(net_name, net_info.get("bits", []), offset=net_info.get("offset")))
 
     names = _YosysNameAllocator(design)
     for cell_name, cell in module.get("cells", {}).items():
@@ -743,22 +743,29 @@ def _build_bit_name_map(module: dict[str, Any]) -> dict[Any, str]:
     # using the port name keeps primary inputs/outputs connected in Design.
     for port_name, port in module.get("ports", {}).items():
         bits = port.get("bits", [])
-        for bit, expanded_name in zip(bits, _expand_named_bits(port_name, bits)):
+        for bit, expanded_name in zip(bits, _expand_named_bits(port_name, bits, offset=port.get("offset"))):
             if bit not in {"0", "1", "x", "z"}:
                 bit_names[bit] = expanded_name
 
     for name, net_info in module.get("netnames", {}).items():
         if net_info.get("hide_name"):
             continue
-        for bit, expanded_name in zip(net_info.get("bits", []), _expand_named_bits(name, net_info.get("bits", []))):
+        for bit, expanded_name in zip(
+            net_info.get("bits", []),
+            _expand_named_bits(name, net_info.get("bits", []), offset=net_info.get("offset")),
+        ):
             bit_names.setdefault(bit, expanded_name)
     return bit_names
 
 
-def _expand_named_bits(name: str, bits: list[Any]) -> list[str]:
+def _expand_named_bits(name: str, bits: list[Any], offset: Any = None) -> list[str]:
     if len(bits) <= 1:
         return [name]
-    return [f"{name}[{index}]" for index in range(len(bits))]
+    try:
+        start = int(offset) if offset is not None else 0
+    except (TypeError, ValueError):
+        start = 0
+    return [f"{name}[{start + index}]" for index in range(len(bits))]
 
 
 def _constant_bit_name(bit: Any) -> str:

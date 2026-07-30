@@ -50,6 +50,23 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn("U_bypass", paths)
         self.assertIn("NOT gate count: 1", count)
 
+    def test_dispatcher_all_paths_alias_uses_shared_default_limit(self) -> None:
+        state = CurrentState()
+        state.design = Design(module_name="top", inputs={"src"}, outputs={"dst"})
+
+        with patch("runtime.dispatcher.enumerate_paths") as mocked:
+            mocked.return_value = {
+                "src": "src",
+                "dst": "dst",
+                "paths": [],
+                "num_paths": 0,
+                "max_paths": 5000,
+                "truncated": False,
+            }
+            dispatch_plan(state, {"op": "all_paths", "args": {"src": "src", "dst": "dst"}})
+
+        self.assertEqual(mocked.call_args.kwargs["max_paths"], 5000)
+
     def test_dispatcher_writes_large_all_paths_report_to_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state = CurrentState(output_dir=Path(tmp) / "output")
