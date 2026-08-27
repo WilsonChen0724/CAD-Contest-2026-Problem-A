@@ -65,7 +65,7 @@ class DispatcherTest(unittest.TestCase):
             }
             dispatch_plan(state, {"op": "all_paths", "args": {"src": "src", "dst": "dst"}})
 
-        self.assertEqual(mocked.call_args.kwargs["max_paths"], 5000)
+        self.assertEqual(mocked.call_args.kwargs["max_paths"], 1_000_000)
 
     def test_dispatcher_writes_large_all_paths_report_to_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,7 +141,7 @@ class DispatcherTest(unittest.TestCase):
         state = CurrentState()
         state.design = Design(module_name="top", inputs={"a", "en", "clk"}, outputs={"q0"})
         state.design.add_dff(DFF(name="FF0", d="a", q="q_src", clk="clk"))
-        state.design.add_gate(Gate(name="U_and", type="and", inputs=["q_src", "en"], output="d0"))
+        state.design.add_gate(Gate(name="U_and", type="and", inputs=["q0", "en"], output="d0"))
         state.design.add_dff(DFF(name="FF1", d="d0", q="q0", clk="clk"))
 
         d_logic = dispatch_plan(state, {"op": "report_dff_input_logic_structures", "args": {}})

@@ -16,7 +16,7 @@ def find_gates(design: Design, gate_type: str | None = None, name_contains: str 
             if (
                 name_contains is not None
                 and name_contains not in name
-                and name_contains not in {dff.d, dff.q, dff.clk, dff.rst}
+                and name_contains not in {dff.d, dff.q, dff.clk, dff.rst, dff.set_signal}
             ):
                 continue
             result.append(name)
@@ -53,10 +53,14 @@ def gate_type_count(design: Design, gate_type: str) -> dict:
     }
 
 def io_counts(design: Design) -> dict:
-    """Report primary input and primary output counts."""
+    """Report top-level port counts, with expanded bit counts separately."""
+    grouped_inputs = primary_inputs_with_widths(design)
+    grouped_outputs = primary_outputs_with_widths(design)
     return {
-        "num_inputs": len(design.inputs),
-        "num_outputs": len(design.outputs),
+        "num_inputs": grouped_inputs["num_inputs"],
+        "num_outputs": grouped_outputs["num_outputs"],
+        "num_input_bits": len(design.inputs),
+        "num_output_bits": len(design.outputs),
         "inputs": sorted(design.inputs),
         "outputs": sorted(design.outputs),
     }
@@ -226,25 +230,47 @@ def max_register_to_register_depth(design: Design) -> dict:
         return {"max_depth": 0, "src_dff": None, "dst_dff": None, "path": []}
 
     q_to_dff = {dff.q: name for name, dff in design.dffs.items()}
-    sources = set(design.inputs) | set(q_to_dff) | {"1'b0", "1'b1", "0", "1"}
+    sources = set(q_to_dff)
     prefix_depth = {net: 0 for net in sources}
     prefix_path: dict[str, list[str]] = {net: [net] for net in sources}
-    _relax_forward_depths(design, prefix_depth, prefix_path)
+    # A Q-to-D signal path crosses a gate when *one* gate input is reachable
+    # from Q; unrelated side inputs need not themselves originate at a DFF.
+    # The generic whole-design depth relaxation requires all inputs and is not
+    # appropriate for this path query.
+    for iteration in range(max(1, len(design.gates) + 1)):
+        changed = False
+        for gate in sorted(design.gates.values(), key=lambda item: item.name):
+            candidates = [
+                (prefix_depth[input_net], input_net)
+                for input_net in gate.inputs
+                if input_net in prefix_depth
+            ]
+            if not candidates:
+                continue
+            input_depth, input_net = max(candidates, key=lambda item: (item[0], item[1]))
+            candidate_depth = input_depth + 1
+            if candidate_depth <= prefix_depth.get(gate.output, -1):
+                continue
+            prefix_depth[gate.output] = candidate_depth
+            prefix_path[gate.output] = prefix_path[input_net] + [gate.name, gate.output]
+            changed = True
+        if not changed:
+            break
+        if iteration == len(design.gates):
+            raise ValueError("Combinational loop detected while computing register depth.")
 
-    best: tuple[int, str | None, str | None, list[str]] = (0, None, None, [])
+    best: tuple[int, str | None, str | None, list[str]] = (-1, None, None, [])
     for dst_name, dst_dff in sorted(design.dffs.items()):
         depth = prefix_depth.get(dst_dff.d)
         if depth is None:
             continue
         path = prefix_path.get(dst_dff.d, [dst_dff.d])
         src_name = q_to_dff.get(path[0])
-        if src_name == dst_name:
-            continue
         if depth > best[0]:
             best = (depth, src_name, dst_name, path)
 
     return {
-        "max_depth": best[0],
+        "max_depth": max(0, best[0]),
         "src_dff": best[1],
         "dst_dff": best[2],
         "path": best[3],
@@ -256,7 +282,7 @@ def gates_by_type(design: Design, gate_type: str, limit: int | None = 200) -> di
     normalized = gate_type.lower()
     if normalized == "dff":
         rows = [
-            {"name": name, "type": "dff", "inputs": [dff.d, dff.clk] + ([dff.rst] if dff.rst else []), "output": dff.q}
+            {"name": name, "type": "dff", "inputs": dff.input_nets(), "output": dff.q}
             for name, dff in sorted(design.dffs.items())
         ]
     else:
@@ -376,6 +402,8 @@ def gate_type_connections(design: Design, gate_type: str, max_items: int | None 
             pins = {"D": dff.d, "Q": dff.q, "CLK": dff.clk}
             if dff.rst is not None:
                 pins["RST"] = dff.rst
+            if dff.set_signal is not None:
+                pins["SET"] = dff.set_signal
             rows.append({"kind": "dff", "instance": name, "pins": pins})
         else:
             gate = design.gates[name]
@@ -406,6 +434,8 @@ def dffs_by_clock(design: Design, clock: str, max_items: int | None = 200) -> di
         pins = {"D": dff.d, "Q": dff.q, "CLK": dff.clk}
         if dff.rst is not None:
             pins["RST"] = dff.rst
+        if dff.set_signal is not None:
+            pins["SET"] = dff.set_signal
         rows.append({"instance": name, "pins": pins})
     return {
         "clock": clock,
@@ -440,7 +470,13 @@ def gate_connections(design: Design, gate_name: str) -> dict:
         }
     if gate_name in design.dffs:
         dff = design.dffs[gate_name]
-        pins = {"D": dff.d, "Q": dff.q, "CLK": dff.clk, "RST": dff.rst}
+        pins = {
+            "D": dff.d,
+            "Q": dff.q,
+            "CLK": dff.clk,
+            "RST": dff.rst,
+            "SET": dff.set_signal,
+        }
         return {
             "instance": gate_name,
             "kind": "dff",
@@ -602,7 +638,7 @@ def all_paths_pass_through(design: Design, src: str, dst: str, node: str) -> boo
     return not find_path(design, src, dst, avoid=[node])
 
 
-def all_paths(design: Design, src: str, dst: str, max_paths: int = 5000) -> dict:
+def all_paths(design: Design, src: str, dst: str, max_paths: int = 1_000_000) -> dict:
     """Enumerate bounded combinational paths from src to dst."""
     if max_paths < 1:
         raise ValueError("max_paths must be at least 1.")
@@ -1118,97 +1154,122 @@ def gate_on_max_depth_path(design: Design, gate_name: str) -> dict:
     }
 
 
-def register_to_register_paths(design: Design, max_paths: int = 200) -> dict:
-    """
-    List combinational paths from DFF Q pins to downstream DFF D pins.
+def register_to_register_paths(design: Design, max_paths: int = 1_000_000) -> dict:
+    """Enumerate distinct combinational paths from every DFF Q to every DFF D.
 
-    The report is capped to keep release-test responses bounded on large
-    sequential designs. The total count reflects the paths enumerated before the
-    cap is reached.
+    DFFs are sequential boundaries, but a Q-to-D self-loop is a valid register
+    path.  Traversal uses a path-local active set, rather than a global ``seen``
+    set, so reconvergent alternatives remain distinct as required by Q&A A73,
+    A75, and A79.
     """
+    if max_paths < 1:
+        raise ValueError("max_paths must be at least 1.")
     rebuild_graph(design)
+    adjacency = _combinational_adjacency(design)
+    destinations_by_net: dict[str, list[str]] = {}
+    for name, dff in sorted(design.dffs.items()):
+        destinations_by_net.setdefault(dff.d, []).append(name)
+
+    reverse = _reverse_adjacency(adjacency)
+    can_reach_d: set[str] = set(destinations_by_net)
+    for d_net in destinations_by_net:
+        can_reach_d.update(_reachable_nodes(reverse, d_net))
+
     paths: list[dict[str, str | list[str]]] = []
+    truncated = False
+    expansions = 0
+    expansion_limit = max(10_000, max_paths * 50)
+
+    def record(src_name: str, node: str, path: list[str]) -> None:
+        nonlocal truncated
+        for dst_name in destinations_by_net.get(node, []):
+            if len(paths) >= max_paths:
+                truncated = True
+                return
+            paths.append(
+                {
+                    "src_dff": src_name,
+                    "dst_dff": dst_name,
+                    "path": path + [dst_name],
+                }
+            )
+
+    def dfs(src_name: str, node: str, path: list[str], active: set[str]) -> None:
+        nonlocal expansions, truncated
+        if truncated:
+            return
+        expansions += 1
+        if expansions > expansion_limit:
+            truncated = True
+            return
+
+        record(src_name, node, path)
+        if truncated:
+            return
+        for nxt in sorted(adjacency.get(node, set())):
+            if nxt in active or nxt not in can_reach_d:
+                continue
+            dfs(src_name, nxt, path + [nxt], active | {nxt})
+            if truncated:
+                return
 
     for src_name, src_dff in sorted(design.dffs.items()):
-        q = deque([(src_dff.q, [src_dff.q])])
-        seen = {src_dff.q}
-        while q:
-            net, path = q.popleft()
-            for sink in design.fanouts.get(net, []):
-                kind, name = sink.split(":", 1)
-                if kind == "DFF":
-                    if name != src_name and design.dffs[name].d == net:
-                        paths.append(
-                            {
-                                "src_dff": src_name,
-                                "dst_dff": name,
-                                "path": path + [name],
-                            }
-                        )
-                        if len(paths) >= max_paths:
-                            return {
-                                "paths": paths,
-                                "num_paths": len(paths),
-                                "truncated": True,
-                                "max_paths": max_paths,
-                            }
-                    continue
-                if kind != "GATE":
-                    continue
-                gate = design.gates[name]
-                if gate.output in seen:
-                    continue
-                seen.add(gate.output)
-                q.append((gate.output, path + [gate.name, gate.output]))
+        if src_dff.q not in can_reach_d and src_dff.q not in destinations_by_net:
+            continue
+        dfs(src_name, src_dff.q, [src_dff.q], {src_dff.q})
+        if truncated:
+            break
 
     return {
         "paths": paths,
         "num_paths": len(paths),
-        "truncated": False,
+        "truncated": truncated,
         "max_paths": max_paths,
     }
 
 
 def dff_input_logic_structures(design: Design, max_items: int = 200) -> dict:
-    """
-    Heuristically report DFF D-pin logic that resembles enable/hold structures.
-
-    This is structural rather than semantic. It flags direct AND gating and the
-    common Yosys mux decomposition: OR of two AND terms, optionally with one
-    select inverted. A hold-like mux is noted when one data term is the DFF Q.
-    """
+    """Report DFF next-state functions that can implement enable/hold behavior."""
     rebuild_graph(design)
+    from eda.verify import check_dff_enable_hold_function
+
     rows = []
     matched_count = 0
     for name, dff in sorted(design.dffs.items()):
-        structures = []
-        driver_gate = _gate_driving_net(design, dff.d)
-        if driver_gate and driver_gate.type == "and":
-            structures.append(
+        if not _fanin_depends_on_net(design, dff.d, dff.q):
+            continue
+        try:
+            proof = check_dff_enable_hold_function(design, dff.d, dff.q)
+        except (ValueError, RecursionError) as exc:
+            proof = {"ok": False, "engine": "unavailable", "reason": str(exc)}
+        if not proof.get("ok"):
+            continue
+
+        matched_count += 1
+        if len(rows) < max_items:
+            structure = {
+                "kind": "functional_enable_hold",
+                "engine": proof.get("engine", "unknown"),
+                "positive_unate": proof.get("positive_unate", False),
+                "depends_on_q": proof.get("depends_on_q", False),
+            }
+            driver_gate = _gate_driving_net(design, dff.d)
+            if driver_gate is not None:
+                structure["gate"] = driver_gate.name
+                structure["gate_type"] = driver_gate.type
+            mux_like = _mux_like_structure(design, dff.d, dff.q)
+            if mux_like and mux_like.get("hold_like"):
+                structure["structural_pattern"] = "mux_like"
+                structure["gate"] = mux_like.get("gate")
+            rows.append(
                 {
-                    "kind": "and_gate",
-                    "gate": driver_gate.name,
-                    "inputs": list(driver_gate.inputs),
-                    "output": driver_gate.output,
+                    "name": name,
+                    "d": dff.d,
+                    "q": dff.q,
+                    "clk": dff.clk,
+                    "structures": [structure],
                 }
             )
-
-        mux_like = _mux_like_structure(design, dff.d, dff.q)
-        if mux_like:
-            structures.append(mux_like)
-
-        if structures:
-            matched_count += 1
-            if len(rows) < max_items:
-                rows.append(
-                    {
-                        "name": name,
-                        "d": dff.d,
-                        "q": dff.q,
-                        "clk": dff.clk,
-                        "structures": structures,
-                    }
-                )
 
     return {
         "num_dffs": len(design.dffs),
@@ -1242,6 +1303,7 @@ def dff_relationships(design: Design) -> dict:
             "q": dff.q,
             "clk": dff.clk,
             "rst": dff.rst,
+            "set": dff.set_signal,
         }
 
         d_driver = design.drivers.get(dff.d)
@@ -1285,6 +1347,24 @@ def _fanin_cone_nets(design: Design, target: str) -> set[str]:
         gate = design.gates[driver.split(":", 1)[1]]
         stack.extend(gate.inputs)
     return nets
+
+
+def _fanin_depends_on_net(design: Design, target: str, source: str) -> bool:
+    """Return whether source is in target's combinational support cone."""
+    stack = [target]
+    seen: set[str] = set()
+    while stack:
+        net = stack.pop()
+        if net == source:
+            return True
+        if net in seen:
+            continue
+        seen.add(net)
+        driver = design.drivers.get(net)
+        if not driver or not driver.startswith("GATE:"):
+            continue
+        stack.extend(design.gates[driver.split(":", 1)[1]].inputs)
+    return False
 
 
 def _gate_driving_net(design: Design, net: str):
@@ -1549,6 +1629,8 @@ def _describe_sink(design: Design, net: str, sink: str) -> dict:
             pins.append("CLK")
         if dff.rst == net:
             pins.append("RST")
+        if dff.set_signal == net:
+            pins.append("SET")
         return {"sink": sink, "kind": "dff", "name": name, "pins": pins, "output": dff.q}
     if kind == "PO":
         return {"sink": sink, "kind": "primary_output", "name": name}

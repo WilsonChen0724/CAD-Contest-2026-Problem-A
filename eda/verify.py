@@ -115,6 +115,31 @@ def check_signal_symmetry(design: Design, target: str, input_a: str, input_b: st
         return _prove_symmetry_by_bruteforce(target_expr, input_a, input_b)
 
 
+def check_dff_enable_hold_function(design: Design, d_net: str, q_net: str) -> dict:
+    """Check whether a D expression has functional enable/hold behavior.
+
+    A Boolean next-state function ``F(Q, X)`` can be written as an
+    enable/hold mux, ``EN & DATA | !EN & Q``, exactly when it is positive
+    unate in ``Q``.  The report additionally requires true dependence on Q so
+    ordinary data logic that never holds the register is not misclassified.
+    """
+    engine = _BooleanEngine()
+    expr = engine.net_expr(design, d_net)
+    if q_net not in expr.vars():
+        return {
+            "ok": False,
+            "positive_unate": True,
+            "depends_on_q": False,
+            "engine": "structural-support",
+            "reason": f'D input does not functionally depend on Q net "{q_net}".',
+        }
+
+    try:
+        return _check_dff_enable_hold_with_z3(expr, q_net)
+    except ImportError:
+        return _check_dff_enable_hold_by_bruteforce(expr, q_net)
+
+
 def check_design_equivalence(before: Design, after: Design, outputs: list[str] | None = None) -> dict:
     """Check whether two designs produce the same values on selected outputs."""
     selected_outputs = sorted(outputs if outputs is not None else before.outputs & after.outputs)
@@ -749,6 +774,92 @@ def _prove_by_bruteforce(bad_condition: _ExprNode) -> dict:
         if bad_condition.eval(assignment):
             return {"ok": False, "engine": "bruteforce", "counterexample": assignment}
     return {"ok": True, "engine": "bruteforce", "counterexample": None}
+
+
+def _check_dff_enable_hold_with_z3(expr: _ExprNode, q_net: str) -> dict:
+    z3 = _import_z3()
+    ctx: dict[str, Any] = {}
+    zexpr = expr.z3(ctx)
+    q_var = ctx.setdefault(q_net, z3.Bool(q_net))
+    when_q0 = z3.substitute(zexpr, (q_var, z3.BoolVal(False)))
+    when_q1 = z3.substitute(zexpr, (q_var, z3.BoolVal(True)))
+
+    solver = z3.Solver()
+    solver.add(z3.And(when_q0, z3.Not(when_q1)))
+    unate_outcome = solver.check()
+    if unate_outcome == z3.unknown:
+        return {
+            "ok": False,
+            "positive_unate": False,
+            "depends_on_q": False,
+            "engine": "z3",
+            "reason": str(solver.reason_unknown()),
+        }
+    if unate_outcome == z3.sat:
+        return {
+            "ok": False,
+            "positive_unate": False,
+            "depends_on_q": True,
+            "engine": "z3",
+            "reason": "D is not positive-unate in Q.",
+        }
+
+    solver = z3.Solver()
+    solver.add(when_q0 != when_q1)
+    dependence_outcome = solver.check()
+    if dependence_outcome == z3.unknown:
+        return {
+            "ok": False,
+            "positive_unate": True,
+            "depends_on_q": False,
+            "engine": "z3",
+            "reason": str(solver.reason_unknown()),
+        }
+    depends_on_q = dependence_outcome == z3.sat
+    return {
+        "ok": depends_on_q,
+        "positive_unate": True,
+        "depends_on_q": depends_on_q,
+        "engine": "z3",
+        "reason": None if depends_on_q else "D is independent of Q.",
+    }
+
+
+def _check_dff_enable_hold_by_bruteforce(expr: _ExprNode, q_net: str) -> dict:
+    variables = sorted(expr.vars() - {q_net})
+    if len(variables) > 12:
+        return {
+            "ok": False,
+            "positive_unate": False,
+            "depends_on_q": False,
+            "engine": "bruteforce",
+            "reason": (
+                "z3-solver is not installed and enable/hold brute-force "
+                "checking is limited to 12 non-Q variables."
+            ),
+        }
+
+    depends_on_q = False
+    for values in product([False, True], repeat=len(variables)):
+        assignment = dict(zip(variables, values))
+        value_q0 = expr.eval({**assignment, q_net: False})
+        value_q1 = expr.eval({**assignment, q_net: True})
+        if value_q0 and not value_q1:
+            return {
+                "ok": False,
+                "positive_unate": False,
+                "depends_on_q": True,
+                "engine": "bruteforce",
+                "reason": "D is not positive-unate in Q.",
+            }
+        depends_on_q = depends_on_q or value_q0 != value_q1
+    return {
+        "ok": depends_on_q,
+        "positive_unate": True,
+        "depends_on_q": depends_on_q,
+        "engine": "bruteforce",
+        "reason": None if depends_on_q else "D is independent of Q.",
+    }
 
 
 def _prove_symmetry_with_z3(expr: _ExprNode, input_a: str, input_b: str) -> dict:

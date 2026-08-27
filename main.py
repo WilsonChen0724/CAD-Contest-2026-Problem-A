@@ -29,9 +29,10 @@ def main() -> int:
     parser.add_argument(
         "-planner",
         "--planner",
-        choices=("rule", "llm_openai", "llm_claude", "llm_both"),
-        default="llm_both",
+        choices=("config", "rule", "llm_openai", "llm_claude", "llm_both"),
+        default="config",
         help=(
+            "config: use the provider selected by the official config file; "
             "rule: deterministic planner for local debugging; llm_openai: OpenAI planner; "
             "llm_claude: Claude planner; llm_both: OpenAI first, Claude fallback"
         ),
@@ -149,23 +150,74 @@ def _plan_primary_op(plan: dict | None) -> str | None:
 
 
 def _make_plan(request: str, state: CurrentState, config: dict, prompt: str, planner_mode: str) -> dict:
+    # Testcase lifecycle and .v file IO have an exact, deterministic contract.
+    # Routing these locally avoids spending most of the official 60-second
+    # basic-operation budget on a network call and makes absolute paths robust
+    # even when model wording varies.
+    deterministic = validate_plan(plan_request(request, state))
+    if deterministic.get("op") in {"begin_testcase", "read_design", "write_design"}:
+        return deterministic
+
     if planner_mode == "rule":
-        return validate_plan(plan_request(request, state))
+        return deterministic
+
+    if planner_mode == "config":
+        return _plan_with_rule_fallback(prompt, request, state, config)
 
     if planner_mode == "llm_openai":
-        return plan_with_llm(prompt, request, _with_provider(config, "openai"))
+        return _plan_with_rule_fallback(
+            prompt,
+            request,
+            state,
+            _with_provider(config, "openai"),
+        )
 
     if planner_mode == "llm_claude":
-        return plan_with_llm(prompt, request, _with_provider(config, "anthropic"))
+        return _plan_with_rule_fallback(
+            prompt,
+            request,
+            state,
+            _with_provider(config, "anthropic"),
+        )
 
     if planner_mode == "llm_both":
         try:
             return plan_with_llm(prompt, request, _with_provider(config, "openai"))
         except (LLMNotConfiguredError, LLMAPIError, PlanValidationError) as openai_error:
             print(f"OpenAI planner failed; falling back to Claude: {openai_error}", file=sys.stderr)
-            return plan_with_llm(prompt, request, _with_provider(config, "anthropic"))
+            try:
+                return plan_with_llm(prompt, request, _with_provider(config, "anthropic"))
+            except (LLMNotConfiguredError, LLMAPIError, PlanValidationError) as claude_error:
+                if deterministic.get("op") != "unsupported":
+                    print(
+                        "Both LLM planners failed; using a validated deterministic plan: "
+                        f"{claude_error}",
+                        file=sys.stderr,
+                    )
+                    return deterministic
+                raise
 
     raise PlanValidationError(f"Unknown planner mode: {planner_mode}")
+
+
+def _plan_with_rule_fallback(
+    prompt: str,
+    request: str,
+    state: CurrentState,
+    config: dict,
+) -> dict:
+    """Use the configured model, retaining a validated plan during API faults."""
+    try:
+        return plan_with_llm(prompt, request, config)
+    except (LLMNotConfiguredError, LLMAPIError, PlanValidationError) as exc:
+        fallback = validate_plan(plan_request(request, state))
+        if fallback.get("op") == "unsupported":
+            raise
+        print(
+            f"Configured LLM planner failed; using a validated deterministic plan: {exc}",
+            file=sys.stderr,
+        )
+        return fallback
 
 
 def _with_provider(config: dict, provider: str) -> dict:

@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+DEFAULT_RELEASE_DIR_NAMES = (
+    "A_release testcase_0510",
+    "release_0706",
+)
+
+
 @dataclass
 class CaseResult:
     name: str
@@ -33,8 +39,11 @@ def main() -> int:
     parser.add_argument(
         "--release-dir",
         type=Path,
-        default=Path("release_0706"),
-        help="Directory containing README.md and testcase/testNN folders.",
+        default=None,
+        help=(
+            "Directory containing testcase/testNN folders. By default the runner "
+            "auto-detects the bundled public release directory."
+        ),
     )
     parser.add_argument(
         "--case",
@@ -93,13 +102,13 @@ def main() -> int:
         "--timeout",
         type=float,
         default=300.0,
-        help="Timeout in seconds for non-basic responses. Official default: 300 seconds.",
+        help="Timeout in seconds for transform/optimization responses. Official default: 300 seconds.",
     )
     parser.add_argument(
         "--basic-timeout",
         type=float,
         default=60.0,
-        help="Timeout in seconds for basic begin/read/write responses. Official default: 60 seconds.",
+        help="Timeout in seconds for I/O, analysis, and verification responses. Official default: 60 seconds.",
     )
     parser.add_argument(
         "--validation-ledger",
@@ -109,7 +118,11 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
-    release_dir = (repo_root / args.release_dir).resolve()
+    try:
+        release_dir = _resolve_release_dir(repo_root, args.release_dir)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     testcase_root = release_dir / "testcase"
     if not testcase_root.exists():
         print(f"Release testcase directory not found: {testcase_root}", file=sys.stderr)
@@ -183,6 +196,32 @@ def _planner_runs(planner: str) -> list[str]:
     if planner == "llm_both":
         return ["llm_openai", "llm_claude"]
     return [planner]
+
+
+def _resolve_release_dir(repo_root: Path, requested: Path | None) -> Path:
+    """Resolve an explicit release directory or auto-detect the bundled suite."""
+    if requested is not None:
+        candidate = requested if requested.is_absolute() else repo_root / requested
+        return candidate.resolve()
+
+    for name in DEFAULT_RELEASE_DIR_NAMES:
+        candidate = (repo_root / name).resolve()
+        if (candidate / "testcase").is_dir():
+            return candidate
+
+    discovered = sorted(
+        path.resolve()
+        for path in repo_root.iterdir()
+        if path.is_dir() and (path / "testcase").is_dir()
+    )
+    if len(discovered) == 1:
+        return discovered[0]
+
+    expected = ", ".join(DEFAULT_RELEASE_DIR_NAMES)
+    raise FileNotFoundError(
+        "Could not auto-detect a release testcase directory. "
+        f"Expected one of [{expected}] under {repo_root}; pass --release-dir explicitly."
+    )
 
 
 def _expand_selected_cases(cases: list[str], ranges: list[str]) -> list[str]:
@@ -285,40 +324,72 @@ def _run_case(
 
 
 def _timeout_for_prompt(prompt: str, basic_timeout: float, non_basic_timeout: float) -> float:
-    return basic_timeout if _is_basic_operation_prompt(prompt) else non_basic_timeout
+    return non_basic_timeout if _is_transform_or_optimization_prompt(prompt) else basic_timeout
 
 
 def _is_basic_operation_prompt(prompt: str) -> bool:
+    """Return whether the prompt receives the official 60-second limit.
+
+    Q&A A77 classifies every read-only analysis (and verification) request as
+    Basic. Consequently this is intentionally the inverse of explicit design
+    mutation intent, rather than a whitelist containing only begin/read/write.
+    """
+    return not _is_transform_or_optimization_prompt(prompt)
+
+
+def _is_transform_or_optimization_prompt(prompt: str) -> bool:
     text = prompt.strip().lower()
-    words = set(re.findall(r"[a-z0-9_]+", text))
-    if "testcase" in words and words & {"beginning", "begin", "start"}:
-        return True
-    if {"case", "name"}.issubset(words) and "testcase" in words:
-        return True
-    design_file_hint = any(hint in text for hint in (".v", "verilog", "netlist", "design", "file"))
-    if words & {"load", "read"} and design_file_hint:
-        return True
-    write_intent = words & {"write", "save", "dump", "emit"} or "write out" in text
-    output_file_hint = ".v" in text or re.search(r"\b[a-z0-9_./\\-]+_out\.v\b", text) is not None
-    design_write_hint = any(
-        phrase in text
-        for phrase in (
-            "current design",
-            "modified design",
-            "the design",
-            "this design",
-            "output netlist",
-            "write netlist",
-            "save netlist",
+    if not text:
+        return False
+
+    # Past-tense transform statistics are read-only analysis. The release
+    # prompts use these immediately after a mutation (for example, "How many
+    # BUF gates were added ...?"). They must not inherit the 300-second limit
+    # merely because they mention words such as "removed" or "replacing".
+    read_only_lead = re.match(
+        r"^(?:please\s+)?(?:how many|how much|what|which|who|where|when|"
+        r"report|list|enumerate|determine|compute|calculate|count|does|do|"
+        r"is|are|can|could|prove|verify|confirm)\b",
+        text,
+    )
+    mutating_followup = re.search(
+        r"\b(?:remove|delete|prune|sweep|trim|collapse|merge|rename|reconnect|"
+        r"replace|convert|reconstruct|remap|simplify|insert|decompose|optimi[sz]e|"
+        r"reduce|balance|propagate)\s+(?:them|it|those|these)\b",
+        text,
+    )
+    if read_only_lead and not mutating_followup:
+        return False
+
+    # "Find" is normally analysis, except when the same imperative explicitly
+    # asks the program to mutate the objects it finds.
+    if text.startswith(("find ", "please find ")):
+        return bool(
+            re.search(
+                r"\band\s+(?:collapse|merge|remove|delete|replace|rename|reconnect|simplify)\b",
+                text,
+            )
         )
+
+    imperative_transform = re.search(
+        r"^(?:please\s+)?(?:try\s+to\s+)?(?:perform\s+)?"
+        r"(?:replace|convert|reconstruct|restructure|remap|rename|remove|delete|prune|sweep|"
+        r"trim|collapse|simplify|insert|merge|reconnect|decompose|optimi[sz]e|"
+        r"reduce|balance|propagate|eliminate)\b",
+        text,
     )
-    output_design_intent = bool(
-        re.search(r"\boutput\s+(?:the\s+)?(?:(?:current|modified)\s+)?design\b", text)
-        or re.search(r"\boutput\s+(?:the\s+)?(?:current\s+)?netlist\b", text)
-    )
-    if (write_intent or output_design_intent) and (output_file_hint or design_write_hint):
+    if imperative_transform:
         return True
-    return False
+
+    return bool(
+        re.search(r"^\s*(?:please\s+)?perform\b.*\boptimi[sz]ation\b", text)
+        or re.search(r"\b(?:change the identifier|update the name)\b", text)
+        or re.search(r"\bupdate\b.*\bthroughout the netlist\b", text)
+        or re.search(r"\bremove them if found\b", text)
+        or re.search(r"\band\s+(?:collapse|merge)\b", text)
+    )
+
+
 def _copy_generated_netlist(release_dir: Path, result_root: Path, case_name: str) -> None:
     generated = release_dir / f"{case_name}_out.v"
     if generated.exists():

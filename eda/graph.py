@@ -49,6 +49,8 @@ def rebuild_graph(design: Design) -> None:
             add_fanout(dff.clk, f"DFF:{dff.name}")
         if dff.rst:
             add_fanout(dff.rst, f"DFF:{dff.name}")
+        if dff.set_signal:
+            add_fanout(dff.set_signal, f"DFF:{dff.name}")
 
     design.drivers = drivers
     design.fanouts = fanouts

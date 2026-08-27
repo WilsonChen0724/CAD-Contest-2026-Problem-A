@@ -48,7 +48,19 @@ class DFF:
     clk: Optional[str] = None
     rst: Optional[str] = None
     rst_value: Optional[str] = None
+    # The released contest primitive has independent active-low reset (RN)
+    # and set (SN) pins.  Keeping SN separate is required both for lossless
+    # write-back and for pin-accurate fanout accounting.
+    set_signal: Optional[str] = None
     attrs: dict[str, str] = field(default_factory=dict)
+
+    def input_nets(self) -> list[str]:
+        """Return every connected input/control pin, one entry per pin."""
+        return [
+            net
+            for net in (self.d, self.clk, self.rst, self.set_signal)
+            if net is not None
+        ]
 
 
 @dataclass
@@ -84,6 +96,8 @@ class Design:
             self.wires.add(dff.clk)
         if dff.rst:
             self.wires.add(dff.rst)
+        if dff.set_signal:
+            self.wires.add(dff.set_signal)
 
     def all_nets(self) -> set[str]:
         return set(self.inputs) | set(self.outputs) | set(self.wires)

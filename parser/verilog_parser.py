@@ -28,16 +28,26 @@ PARSER_YOSYS_TIMEOUT = 20.0
 
 def parse_verilog(path: str | Path) -> Design:
     """
-    Parse Verilog through Yosys and convert the Yosys JSON netlist to Design.
+    Parse the official flattened gate-level subset directly, with Yosys as a
+    compatibility fallback for development-only inputs outside that subset.
 
-    Primitive gate instances are rewritten to private wrapper cells before
-    Yosys sees the file. This keeps instance names and buffer cells intact while
-    still letting Yosys handle Verilog parsing, port expansion, and syntax
-    checking.
+    Final evaluation permits no general network/package installation, so the
+    required parser path must not depend on an externally installed executable.
+    The direct parser also avoids the 20-second Yosys startup/parse timeout seen
+    on the largest released basic-operation testcase.
     """
     source_path = Path(path)
     text = source_path.read_text(encoding="utf-8")
     top_module = _find_top_module(text)
+    direct_error: ValueError | None = None
+    try:
+        return _parse_gate_level_verilog_direct(text, top_module)
+    except ValueError as exc:
+        direct_error = exc
+
+    # Retain the broader Yosys path for local development inputs containing
+    # constructs beyond Section 3.2.  Official primitive/DFF netlists return
+    # above and never require this optional dependency.
     try:
         rewritten_text, wrappers = _rewrite_primitives_as_wrappers(text)
     except ValueError as exc:
@@ -63,7 +73,13 @@ def parse_verilog(path: str | Path) -> Design:
         # Keep Yosys away from release directories with spaces on Windows.
         # The input/output paths in the script are absolute temp paths, so cwd
         # is not needed and can trigger OSS CAD Suite GetShortPathName errors.
-        completed = run_yosys_script(script, timeout=PARSER_YOSYS_TIMEOUT)
+        try:
+            completed = run_yosys_script(script, timeout=PARSER_YOSYS_TIMEOUT)
+        except RuntimeError as exc:
+            raise ValueError(
+                f"Verilog parse error in {source_path}: {direct_error}. "
+                f"Optional Yosys fallback is unavailable: {exc}"
+            ) from direct_error
         if completed.returncode != 0:
             raw_message = (completed.stderr or completed.stdout or "").strip()
             if "GetShortPathName() failed" in raw_message:
@@ -120,14 +136,15 @@ def _parse_gate_level_verilog_direct(text: str, top_module: str) -> Design:
         dff_match = _DFF_RE.match(statement)
         if dff_match:
             _, inst_name, pin_text = dff_match.groups()
-            pins = _normalize_dff_pins(inst_name, pin_text)
+            pins = _parse_direct_dff_pins(inst_name, pin_text)
             dff = DFF(
                 name=inst_name,
-                q=pins[0],
-                d=pins[1],
-                clk=pins[2] if len(pins) >= 3 else None,
-                rst=pins[3] if len(pins) >= 4 else None,
-                attrs={"cell_type": "dff"},
+                q=pins["q"],
+                d=pins["d"],
+                clk=pins["clk"],
+                rst=pins["rst"],
+                set_signal=pins["set_signal"],
+                attrs={"cell_type": "dff", "pin_style": pins["pin_style"]},
             )
             design.add_dff(dff)
             continue
@@ -311,6 +328,46 @@ def _normalize_dff_pins(inst_name: str, pin_text: str) -> list[str]:
     if reset is not None:
         normalized.append(reset)
     return normalized
+
+
+def _parse_direct_dff_pins(inst_name: str, pin_text: str) -> dict[str, str | None]:
+    """Parse the contest DFF without collapsing its independent RN/SN pins."""
+    pins = _split_pin_list(pin_text)
+    if not _looks_like_named_pins(pins):
+        if len(pins) not in {3, 4, 5}:
+            raise ValueError(f"DFF {inst_name} expects q, d, clk[, rst[, set]]")
+        return {
+            "q": pins[0],
+            "d": pins[1],
+            "clk": pins[2],
+            "rst": pins[3] if len(pins) >= 4 and not _is_inactive_dff_control("RN", pins[3]) else None,
+            "set_signal": pins[4] if len(pins) >= 5 and not _is_inactive_dff_control("SN", pins[4]) else None,
+            "pin_style": "positional",
+        }
+
+    named = _parse_named_pin_list(inst_name, pins)
+    missing = sorted({"Q", "D", "CK"} - set(named))
+    if missing:
+        raise ValueError(f"DFF {inst_name} is missing named pin(s): {', '.join(missing)}")
+
+    rst = _first_active_control(named, ("RN", "RST", "RESET"))
+    set_signal = _first_active_control(named, ("SN", "SET"))
+    return {
+        "q": named["Q"],
+        "d": named["D"],
+        "clk": named["CK"],
+        "rst": rst,
+        "set_signal": set_signal,
+        "pin_style": "named",
+    }
+
+
+def _first_active_control(named: dict[str, str], names: tuple[str, ...]) -> str | None:
+    for pin_name in names:
+        value = named.get(pin_name)
+        if value is not None and not _is_inactive_dff_control(pin_name, value):
+            return value
+    return None
 
 
 def _looks_like_named_pins(pins: list[str]) -> bool:

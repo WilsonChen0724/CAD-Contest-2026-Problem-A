@@ -1,6 +1,7 @@
 # Testing Guide
 
-This guide explains how to run the local tests and the `release_0706` release-style testcases.
+This guide explains how to run the local tests and the
+`A_release testcase_0510` release-style testcases.
 
 Assumptions:
 
@@ -71,7 +72,9 @@ Expected behavior:
 ## 4. Run Release Testcases with the Rule Planner
 
 The release runner executes each `prompt.txt` line-by-line through `main.py`.
-It uses `release_0706` as the working directory by default, so prompt paths such as `testcase/test01/test01.v` resolve correctly.
+It auto-detects `A_release testcase_0510` and uses it as the working directory,
+so prompt paths such as `testcase/test01/test01.v` resolve correctly. Pass
+`--release-dir <path>` to run a different release suite.
 
 Run one testcase:
 
@@ -93,11 +96,12 @@ python scripts/run_release_testcases.py --case-range test25-test40 --planner rul
 
 The runner now requires an explicit selection. Use `--all`, `--case`, or `--case-range`; this prevents accidental full-suite LLM runs.
 
-Local default timeouts follow the contest response policy: 60 seconds for basic
-begin/read/write responses and 300 seconds for non-basic analysis,
-transformation, optimization, and verification responses. Override with
-`--basic-timeout` and `--timeout` when needed. For an official-style beta run,
-make the timeout profile explicit:
+Local default timeouts follow Q&A A77: 60 seconds for design I/O, read-only
+analysis, and verification responses, and 300 seconds only for transformations
+and optimizations. Follow-up questions such as “How many gates were removed?”
+are analysis and therefore use 60 seconds. Override with `--basic-timeout` and
+`--timeout` when needed. For an official-style beta run, make the timeout
+profile explicit:
 
 ```bash
 python scripts/run_release_testcases.py --all --planner llm_openai --basic-timeout 60 --timeout 300
@@ -112,9 +116,9 @@ python scripts/run_release_testcases.py --all --planner rule
 Outputs are written to:
 
 ```text
-release_0706/runner_output/<planner>/testNN.stdout.txt
-release_0706/runner_output/<planner>/testNN.stderr.txt
-release_0706/testNN.log
+A_release testcase_0510/runner_output/<planner>/testNN.stdout.txt
+A_release testcase_0510/runner_output/<planner>/testNN.stderr.txt
+A_release testcase_0510/testNN.log
 ```
 
 The testcase log is written directly in the release working directory to match
@@ -188,7 +192,7 @@ When `--planner llm_openai`, `--planner llm_claude`, or `--planner llm_both` cal
 View the trace:
 
 ```bash
-cat "release_0706/runner_output/llm_openai/test01.stderr.txt"
+cat "A_release testcase_0510/runner_output/llm_openai/test01.stderr.txt"
 ```
 
 Each trace block looks like:

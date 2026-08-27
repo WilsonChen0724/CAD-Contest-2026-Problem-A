@@ -295,7 +295,7 @@ class LLMPlannerTest(unittest.TestCase):
             result = _post_json("https://example.test", {"hello": "world"}, headers={}, provider="OpenAI")
 
         self.assertEqual(result, {"ok": True})
-        self.assertEqual(seen_timeouts, [20.0])
+        self.assertEqual(seen_timeouts, [12.0])
 
     def test_api_key_placeholder_falls_back_to_environment_value(self) -> None:
         self.assertEqual(_resolve_api_key("<YOUR_API_KEY>", "real-key"), "real-key")

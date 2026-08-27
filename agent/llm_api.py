@@ -17,7 +17,9 @@ ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_LLM_REQUEST_TIMEOUT = 20.0
+# Two provider attempts plus one plan-repair attempt must remain below the
+# official 60-second analysis/basic response budget (Q&A A18/A77).
+DEFAULT_LLM_REQUEST_TIMEOUT = 12.0
 DEFAULT_LLM_MAX_ATTEMPTS = 2
 
 
@@ -166,23 +168,27 @@ def _post_json(
 def _normalize_config(config: dict) -> dict[str, Any]:
     if not isinstance(config, dict):
         return {}
+    # load_config() already parsed the official nested shape. Prefer that
+    # representation so inline YAML comments and scalar types do not get
+    # reinterpreted by a second ad-hoc parser.
+    if any(key in config for key in ("provider", "openai", "anthropic", "generation")):
+        openai_config = config.get("openai", {}) or {}
+        anthropic_config = config.get("anthropic", {}) or {}
+        generation_config = config.get("generation", {}) or {}
+        return {
+            "provider": str(config.get("provider", "openai")).strip().lower(),
+            "openai_api_key": openai_config.get("api_key"),
+            "openai_model": openai_config.get("model"),
+            "anthropic_api_key": anthropic_config.get("api_key"),
+            "anthropic_model": anthropic_config.get("model"),
+            "temperature": generation_config.get("temperature"),
+            "max_output_tokens": generation_config.get("max_output_tokens"),
+            "request_timeout": generation_config.get("request_timeout"),
+            "max_attempts": generation_config.get("max_attempts"),
+        }
     if "raw" in config:
         return _parse_simple_yaml_config(str(config.get("raw", "")))
-
-    openai_config = config.get("openai", {}) or {}
-    anthropic_config = config.get("anthropic", {}) or {}
-    generation_config = config.get("generation", {}) or {}
-    return {
-        "provider": config.get("provider", "openai"),
-        "openai_api_key": openai_config.get("api_key"),
-        "openai_model": openai_config.get("model"),
-        "anthropic_api_key": anthropic_config.get("api_key"),
-        "anthropic_model": anthropic_config.get("model"),
-        "temperature": generation_config.get("temperature"),
-        "max_output_tokens": generation_config.get("max_output_tokens"),
-        "request_timeout": generation_config.get("request_timeout"),
-        "max_attempts": generation_config.get("max_attempts"),
-    }
+    return {}
 
 
 def _parse_simple_yaml_config(raw: str) -> dict[str, Any]:
@@ -194,7 +200,10 @@ def _parse_simple_yaml_config(raw: str) -> dict[str, Any]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if line.endswith(":"):
+        if "#" in line:
+            line = line.split("#", 1)[0].rstrip()
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if indent == 0 and line.endswith(":"):
             section = line[:-1].strip()
             continue
         if ":" not in line:
@@ -204,9 +213,10 @@ def _parse_simple_yaml_config(raw: str) -> dict[str, Any]:
         key = key.strip()
         value = value.strip().strip("'\"")
 
-        if section is None:
+        if indent == 0:
+            section = None
             result[key] = value
-        else:
+        elif section is not None:
             result[f"{section}.{key}"] = value
 
     return {
