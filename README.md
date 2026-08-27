@@ -328,8 +328,8 @@ Expected behavior:
 ## Release Testcase Runner
 
 The bundled unit and smoke tests still use the small `tests/` fixtures by
-default. To run the larger `release_0706` prompt folders through the
-same stdin/stdout contest loop, use:
+default. To run the larger `A_release testcase_0510` prompt folders through
+the same stdin/stdout contest loop, use:
 
 ```bash
 python scripts/run_release_testcases.py --all --ensure-yosys
@@ -344,17 +344,26 @@ python scripts/run_release_testcases.py --case test01 --ensure-yosys
 Use an LLM planner, or compare both providers:
 
 ```bash
-python scripts/run_release_testcases.py --planner llm_openai --ensure-yosys
-python scripts/run_release_testcases.py --planner llm_claude --ensure-yosys
-python scripts/run_release_testcases.py --planner llm_both --ensure-yosys
+python scripts/run_release_testcases.py --case test01 --planner llm_openai --ensure-yosys
+python scripts/run_release_testcases.py --case test01 --planner llm_claude --ensure-yosys
+python scripts/run_release_testcases.py --case test01 --planner llm_both --ensure-yosys
 ```
 
 The runner executes each `testcase/testNN/prompt.txt` with `main.py` using the
 release directory as the working directory, so prompt paths such as
 `testcase/test01/test01.v` resolve naturally. Per-case stdout/stderr logs are
-written under `release_0706/runner_output/<planner>/`, so `llm_openai`, `llm_claude`, and `rule` runs do not overwrite each other. In the release runner, `--planner llm_both` runs `llm_openai` and `llm_claude` separately and records both provider outputs. Generated `testNN_out.v` files are also copied into the matching planner output folder when present.
+written under `A_release testcase_0510/runner_output/<planner>/`, so
+`llm_openai`, `llm_claude`, and `rule` runs do not overwrite each other. The
+runner auto-detects this bundled directory; use `--release-dir` to select a
+different suite. In the release runner, `--planner llm_both` runs `llm_openai`
+and `llm_claude` separately and records both provider outputs. Generated
+`testNN_out.v` files are also copied into the matching planner output folder
+when present.
 
-The release runner mirrors the contest timeout policy: begin/read/write basic responses use 60 seconds; all other responses use 300 seconds. Use `--basic-timeout` or `--timeout` to override those local test limits.
+The release runner mirrors Q&A A77: design I/O, read-only analysis, and
+verification responses use the 60-second Basic limit; only transformations and
+optimizations use 300 seconds. Use `--basic-timeout` or `--timeout` to override
+those local test limits.
 
 During development, unsupported responses are counted but do not fail the run.
 After the remaining backend tools are implemented, enable stricter regression

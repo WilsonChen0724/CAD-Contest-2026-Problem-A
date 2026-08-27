@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON_ROOT="${SCRIPT_DIR}/third_party/python"
+BUNDLED_PYTHON="${PYTHON_ROOT}/python/bin/python3"
+PYTHON_BIN=""
+
+# Prefer the submitted runtime so every testcase uses the Python version that
+# was packaged and tested by the team.  The system interpreter is only a
+# fallback for a locally unpacked source tree without the runtime archive.
+if [[ ! -x "${BUNDLED_PYTHON}" ]]; then
+    PY_ARCHIVE="$(find "${PYTHON_ROOT}" -maxdepth 1 -type f -name 'cpython-3.11*x86_64-unknown-linux-gnu-install_only_stripped.tar.gz' 2>/dev/null | head -n 1 || true)"
+    if [[ -n "${PY_ARCHIVE}" ]]; then
+        # Extract privately, then publish the complete runtime with one rename.
+        # This avoids exposing a half-written Python tree if testcase processes
+        # happen to start concurrently in the common evaluation directory.
+        EXTRACT_DIR="${PYTHON_ROOT}/.python-extract.$$"
+        mkdir -p "${EXTRACT_DIR}"
+        cleanup_extract() {
+            case "${EXTRACT_DIR}" in
+                "${PYTHON_ROOT}"/.python-extract.*) rm -rf -- "${EXTRACT_DIR}" ;;
+            esac
+        }
+        trap cleanup_extract EXIT
+        tar -xzf "${PY_ARCHIVE}" -C "${EXTRACT_DIR}"
+        if [[ ! -x "${EXTRACT_DIR}/python/bin/python3" ]]; then
+            echo "Bundled CPython archive did not contain python/bin/python3." >&2
+            exit 2
+        fi
+        mv -T "${EXTRACT_DIR}/python" "${PYTHON_ROOT}/python" 2>/dev/null || true
+        cleanup_extract
+        trap - EXIT
+    fi
+fi
+
+if [[ -x "${BUNDLED_PYTHON}" ]]; then
+    PYTHON_BIN="${BUNDLED_PYTHON}"
+elif command -v python3 >/dev/null 2>&1 && python3 - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+then
+    PYTHON_BIN="python3"
+else
+    echo "Python 3.10+ is unavailable and the bundled CPython runtime is missing or invalid." >&2
+    exit 2
+fi
+
+if [[ -d "${PYTHON_ROOT}/python/bin" ]]; then
+    chmod u+rx "${PYTHON_ROOT}/python/bin/"* 2>/dev/null || true
+fi
+
+# Optional local EDA binaries are used when submitted, but parsing and writing
+# the official primitive subset do not depend on them.
+YOSYS_BIN_DIR="${SCRIPT_DIR}/third_party/yosys/oss-cad-suite/bin"
+if [[ -x "${YOSYS_BIN_DIR}/yosys" ]]; then
+    export PATH="${YOSYS_BIN_DIR}:${PATH}"
+fi
+
+if [[ -d "${SCRIPT_DIR}/vendor/python" ]]; then
+    export PYTHONPATH="${SCRIPT_DIR}/vendor/python${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+export PYTHONUNBUFFERED=1
+export PYTHONDONTWRITEBYTECODE=1
+
+exec "${PYTHON_BIN}" "${SCRIPT_DIR}/main.py" "$@"

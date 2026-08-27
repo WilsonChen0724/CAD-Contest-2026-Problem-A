@@ -104,7 +104,7 @@ def remove_dangling(design: Design) -> dict:
             dff = design.dffs[name]
             live_dffs.add(name)
             live_nets.add(dff.q)
-            for input_net in (dff.d, dff.clk, dff.rst):
+            for input_net in dff.input_nets():
                 if input_net and not is_constant(input_net):
                     live_nets.add(input_net)
                     stack.append(input_net)
@@ -122,7 +122,7 @@ def remove_dangling(design: Design) -> dict:
         used_nets.update(net for net in gate.inputs if not is_constant(net))
     for dff in design.dffs.values():
         used_nets.add(dff.q)
-        for net in (dff.d, dff.clk, dff.rst):
+        for net in dff.input_nets():
             if net and not is_constant(net):
                 used_nets.add(net)
 
@@ -268,6 +268,9 @@ def replace_net_references(design: Design, old_net: str, new_net: str) -> dict:
         if dff.rst == old_net:
             dff.rst = new_net
             locations.append(f"{dff.name}.RST")
+        if dff.set_signal == old_net:
+            dff.set_signal = new_net
+            locations.append(f"{dff.name}.SET")
 
     if _referenced_as_internal_net(design, new_net):
         design.wires.add(new_net)
@@ -1556,6 +1559,8 @@ def _redirect_dff_input(dff: DFF, old_net: str, new_net: str) -> None:
         dff.clk = new_net
     if dff.rst == old_net:
         dff.rst = new_net
+    if dff.set_signal == old_net:
+        dff.set_signal = new_net
 
 
 def _pin_to_input_index(pin: str) -> int:
@@ -1948,7 +1953,7 @@ def _referenced_as_internal_net(design: Design, net: str) -> bool:
         if gate.output == net or net in gate.inputs:
             return True
     for dff in design.dffs.values():
-        if net in {dff.d, dff.q, dff.clk, dff.rst}:
+        if net in {dff.d, dff.q, dff.clk, dff.rst, dff.set_signal}:
             return True
     return False
 
@@ -2111,6 +2116,8 @@ def _canonicalize_yosys_generated_names(design: Design) -> None:
                 dff.clk = net_renames.get(dff.clk, dff.clk)
             if dff.rst:
                 dff.rst = net_renames.get(dff.rst, dff.rst)
+            if dff.set_signal:
+                dff.set_signal = net_renames.get(dff.set_signal, dff.set_signal)
         design.wires = {net_renames.get(net, net) for net in design.wires}
 
     if gate_renames or net_renames:
@@ -2551,6 +2558,8 @@ def _prune_unreferenced_wires(design: Design) -> None:
             referenced.add(dff.clk)
         if dff.rst:
             referenced.add(dff.rst)
+        if dff.set_signal:
+            referenced.add(dff.set_signal)
     design.wires = {net for net in design.wires if net in referenced}
     rebuild_graph(design)
 
@@ -3502,6 +3511,8 @@ def _prune_unreferenced_region_wires(design: Design) -> None:
             referenced.add(dff.clk)
         if dff.rst:
             referenced.add(dff.rst)
+        if dff.set_signal:
+            referenced.add(dff.set_signal)
     design.wires = {net for net in design.wires if net in referenced}
     rebuild_graph(design)
 

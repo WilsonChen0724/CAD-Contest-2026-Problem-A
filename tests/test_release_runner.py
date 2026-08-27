@@ -12,6 +12,7 @@ from scripts.run_release_testcases import (
     _expand_case_range,
     _expand_selected_cases,
     _planner_runs,
+    _resolve_release_dir,
     _select_cases,
     _timeout_for_prompt,
 )
@@ -47,6 +48,23 @@ class ReleaseRunnerTest(unittest.TestCase):
             self.assertEqual([path.name for path in all_cases], ["test01", "test25", "test26"])
             self.assertEqual(none, [])
 
+    def test_auto_detects_current_public_release_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "A_release testcase_0510"
+            (current / "testcase").mkdir(parents=True)
+
+            self.assertEqual(_resolve_release_dir(root, None), current.resolve())
+
+    def test_explicit_release_directory_takes_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explicit = root / "custom_release"
+            (explicit / "testcase").mkdir(parents=True)
+            (root / "A_release testcase_0510" / "testcase").mkdir(parents=True)
+
+            self.assertEqual(_resolve_release_dir(root, Path("custom_release")), explicit.resolve())
+
 
     def test_timeout_for_prompt_matches_official_basic_and_non_basic_limits(self) -> None:
         self.assertEqual(_timeout_for_prompt("This is the beginning of testcase test25.", 60.0, 300.0), 60.0)
@@ -54,13 +72,33 @@ class ReleaseRunnerTest(unittest.TestCase):
         self.assertEqual(_timeout_for_prompt("Please write the current design to test25_out.v.", 60.0, 300.0), 60.0)
         self.assertEqual(_timeout_for_prompt("Output the design as top.v.", 60.0, 300.0), 60.0)
         self.assertEqual(_timeout_for_prompt("Perform depth optimization on the combinational logic.", 60.0, 300.0), 300.0)
-        self.assertEqual(_timeout_for_prompt("What Boolean function does output n8 compute?", 60.0, 300.0), 300.0)
+        self.assertEqual(_timeout_for_prompt("What Boolean function does output n8 compute?", 60.0, 300.0), 60.0)
         self.assertEqual(
             _timeout_for_prompt("Find all paths from input n0 to output n8 in the design.", 60.0, 300.0),
-            300.0,
+            60.0,
         )
         self.assertEqual(
             _timeout_for_prompt("Report all primary outputs whose logic cone contains more than 100 gates.", 60.0, 300.0),
+            60.0,
+        )
+        self.assertEqual(
+            _timeout_for_prompt("Prove that the transformed design is equivalent to the pre-transformation netlist.", 60.0, 300.0),
+            60.0,
+        )
+        self.assertEqual(
+            _timeout_for_prompt("How many dangling gates were removed?", 60.0, 300.0),
+            60.0,
+        )
+        self.assertEqual(
+            _timeout_for_prompt("How many BUF gates were added by the buffer insertion just performed?", 60.0, 300.0),
+            60.0,
+        )
+        self.assertEqual(
+            _timeout_for_prompt("Replace every XOR gate with an equivalent NAND-only implementation.", 60.0, 300.0),
+            300.0,
+        )
+        self.assertEqual(
+            _timeout_for_prompt("Find all back-to-back inverter pairs and collapse them into a wire.", 60.0, 300.0),
             300.0,
         )
 

@@ -20,13 +20,16 @@ def render_verilog(design: Design) -> str:
 
 def write_verilog(design: Design, path: str | Path) -> None:
     """
-    Write a Design as primitive Verilog and validate it with Yosys.
+    Write a Design as primitive Verilog.
+
+    The emitted text is validated with the project's direct parser.  External
+    Yosys validation is intentionally not required at runtime because the final
+    evaluation environment is offline and does not promise a system Yosys.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     content = render_verilog(design)
-    if _should_validate_with_yosys(design):
-        _validate_with_yosys(content, design.module_name)
+    _validate_with_direct_parser(content, design)
     p.write_text(content, encoding="utf-8")
 
 
@@ -61,23 +64,36 @@ def _render_verilog(design: Design) -> str:
         pins = [gate.output] + gate.inputs
         lines.append(f"{gate.type} {gate.name}({', '.join(pins)});")
 
-    # Parser support assumes positional DFF syntax: dff <inst>(q, d, clk[, rst]).
-    # The writer preserves that normalized form for parsed sequential cells.
+    # Q&A A12 defines the released five-pin named DFF as canonical.  Always
+    # emit both active-low controls so an inactive pin remains explicit and a
+    # live SN signal is never lost during write-back.
     for dff_name in sorted(design.dffs):
         dff = design.dffs[dff_name]
-        pins = [dff.q, dff.d]
-        if dff.clk:
-            pins.append(dff.clk)
-        if dff.rst:
-            pins.append(dff.rst)
-        cell_type = dff.attrs.get("cell_type", "dff")
-        lines.append(f"{cell_type} {dff.name}({', '.join(pins)});")
+        if not dff.clk:
+            raise ValueError(f'DFF "{dff.name}" has no clock pin.')
+        rst = dff.rst or "1'b1"
+        set_signal = dff.set_signal or "1'b1"
+        lines.append(
+            f"dff {dff.name}(.RN({rst}), .SN({set_signal}), .CK({dff.clk}), "
+            f".D({dff.d}), .Q({dff.q}));"
+        )
 
     lines.append("")
     lines.append("endmodule")
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _validate_with_direct_parser(content: str, design: Design) -> None:
+    """Round-trip the rendered contest subset before committing the file."""
+    from parser.verilog_parser import _parse_gate_level_verilog_direct
+
+    parsed = _parse_gate_level_verilog_direct(content, design.module_name)
+    if parsed.inputs != design.inputs or parsed.outputs != design.outputs:
+        raise ValueError("Generated Verilog failed direct-parser port validation.")
+    if len(parsed.gates) != len(design.gates) or len(parsed.dffs) != len(design.dffs):
+        raise ValueError("Generated Verilog failed direct-parser instance validation.")
 
 
 def _validate_with_yosys(content: str, module_name: str) -> None:

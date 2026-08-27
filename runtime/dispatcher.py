@@ -530,8 +530,8 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
         result = io_counts(state.design)
         return (
             "Primary IO counts:\n"
-            f'- inputs: {result["num_inputs"]}\n'
-            f'- outputs: {result["num_outputs"]}'
+            f'- input ports: {result["num_inputs"]} ({result["num_input_bits"]} bit(s))\n'
+            f'- output ports: {result["num_outputs"]} ({result["num_output_bits"]} bit(s))'
         )
 
     if op == "gate_on_max_depth_path":
@@ -591,18 +591,13 @@ def dispatch_plan(state: CurrentState, plan: dict[str, Any]) -> str:
 
     if op == "report_register_paths":
         _require_design(state)
-        result = register_to_register_paths(state.design, max_paths=args.get("max_paths", 200))
-        lines = [f'Register-to-register combinational paths: {result["num_paths"]}']
-        if result["truncated"]:
-            lines.append(f'Showing first {result["max_paths"]} path(s).')
-        for item in result["paths"]:
-            lines.append(
-                f'- {item["src_dff"]} -> {item["dst_dff"]}: '
-                + " -> ".join(item["path"])
-            )
-        if not result["paths"]:
-            lines.append("- none")
-        return "\n".join(lines)
+        result = register_to_register_paths(
+            state.design,
+            max_paths=_positive_int_or_default(
+                args.get("max_paths"), DEFAULT_COMPLETE_PATH_LIMIT
+            ),
+        )
+        return _format_register_paths(result, state)
 
     if op == "report_dff_input_logic_structures":
         _require_design(state)
@@ -1431,6 +1426,7 @@ def _designs_match_after_net_map(before, after, net_map: dict[str, str]) -> bool
             or mapped(dff.q) != candidate.q
             or mapped(dff.clk) != candidate.clk
             or mapped(dff.rst) != candidate.rst
+            or mapped(dff.set_signal) != candidate.set_signal
             or dff.rst_value != candidate.rst_value
             or dff.attrs != candidate.attrs
         ):
@@ -1702,6 +1698,51 @@ def _write_all_paths_artifact(result: dict[str, Any], state: CurrentState | None
         lines.append(f'Enumeration was truncated after {result.get("max_paths", result["num_paths"])} path(s).')
     for index, item in enumerate(result["paths"], 1):
         lines.append(f'{index}. ' + " -> ".join(item))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _format_register_paths(result: dict[str, Any], state: CurrentState | None) -> str:
+    paths = result["paths"]
+    should_write_file = bool(paths) and (
+        result.get("truncated") or len(paths) > ALL_PATHS_STDOUT_LIMIT
+    )
+    artifact_path = _write_register_paths_artifact(result, state) if should_write_file else None
+    shown_paths = paths[:ALL_PATHS_STDOUT_LIMIT] if artifact_path else paths
+    lines = [f'Register-to-register combinational paths: {result["num_paths"]}']
+    if artifact_path:
+        lines.append(f'Full register-path listing written to {artifact_path}.')
+        lines.append(f'Showing first {len(shown_paths)} path(s) in this response.')
+    if result.get("truncated"):
+        lines.append(
+            f'Enumeration was truncated after {result.get("max_paths", result["num_paths"])} path(s).'
+        )
+    for index, item in enumerate(shown_paths, 1):
+        lines.append(
+            f'{index}. {item["src_dff"]} -> {item["dst_dff"]}: '
+            + " -> ".join(item["path"])
+        )
+    if not paths:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _write_register_paths_artifact(
+    result: dict[str, Any], state: CurrentState | None
+) -> Path:
+    path = _report_dir(state) / (
+        f"{_safe_filename_token(_case_name(state))}_register_paths.txt"
+    )
+    lines = [f'Register-to-register combinational paths: {result["num_paths"]}']
+    if result.get("truncated"):
+        lines.append(
+            f'Enumeration was truncated after {result.get("max_paths", result["num_paths"])} path(s).'
+        )
+    for index, item in enumerate(result["paths"], 1):
+        lines.append(
+            f'{index}. {item["src_dff"]} -> {item["dst_dff"]}: '
+            + " -> ".join(item["path"])
+        )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -2274,7 +2315,7 @@ def _format_outputs_depth_greater_than(result: dict[str, Any]) -> str:
 
 def _format_dff_input_logic_structures(result: dict[str, Any]) -> str:
     lines = [
-        "DFF D-input enable/hold structure report: "
+        "DFF D-input functional enable/hold report: "
         f'{result["num_with_structures"]} of {result["num_dffs"]} DFF(s) matched.'
     ]
     if result.get("truncated"):
@@ -2283,18 +2324,17 @@ def _format_dff_input_logic_structures(result: dict[str, Any]) -> str:
         kinds = ", ".join(structure["kind"] for structure in item["structures"])
         lines.append(f'- {item["name"]}: D={item["d"]}, Q={item["q"]}, structures={kinds}')
         for structure in item["structures"][:3]:
-            if structure["kind"] == "and_gate":
+            if structure["kind"] == "functional_enable_hold":
+                driver = ""
+                if structure.get("gate"):
+                    gate_type = str(structure.get("gate_type", "gate")).upper()
+                    driver = f', D driver={gate_type} gate {structure["gate"]}'
+                pattern = ""
+                if structure.get("structural_pattern"):
+                    pattern = f', structural pattern={structure["structural_pattern"]}'
                 lines.append(
-                    f'  * AND gate {structure["gate"]}: '
-                    f'inputs=[{", ".join(structure["inputs"])}], output={structure["output"]}'
-                )
-            elif structure["kind"] == "mux_like":
-                select = structure["select"] or "(unknown)"
-                data_inputs = ", ".join(structure["data_inputs"])
-                hold = "yes" if structure["hold_like"] else "no"
-                lines.append(
-                    f'  * mux-like gate {structure["gate"]}: select={select}, '
-                    f'data=[{data_inputs}], hold_like={hold}'
+                    f'  * proven positive-unate in Q with true Q dependence '
+                    f'({structure.get("engine", "unknown")}){driver}{pattern}'
                 )
     if not result["dffs"]:
         lines.append("- none")

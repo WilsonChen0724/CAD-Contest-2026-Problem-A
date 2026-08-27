@@ -211,6 +211,21 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(depth["src_dff"], "FF0")
         self.assertEqual(depth["dst_dff"], "FF1")
 
+    def test_register_paths_include_self_loops_and_reconvergent_paths(self) -> None:
+        design = Design(module_name="top", inputs={"clk"}, outputs={"q0"})
+        design.add_gate(Gate(name="U0", type="buf", inputs=["q0"], output="n0"))
+        design.add_gate(Gate(name="U1", type="not", inputs=["q0"], output="n1"))
+        design.add_gate(Gate(name="U2", type="or", inputs=["n0", "n1"], output="d0"))
+        design.add_dff(DFF(name="FF0", d="d0", q="q0", clk="clk"))
+
+        report = register_to_register_paths(design)
+
+        self.assertEqual(report["num_paths"], 2)
+        self.assertFalse(report["truncated"])
+        self.assertTrue(all(item["src_dff"] == "FF0" for item in report["paths"]))
+        self.assertTrue(all(item["dst_dff"] == "FF0" for item in report["paths"]))
+        self.assertNotEqual(report["paths"][0]["path"], report["paths"][1]["path"])
+
     def test_shared_fanin_cone_gates(self) -> None:
         design = Design(module_name="top", inputs={"a", "b"}, outputs={"y0", "y1"})
         design.add_gate(Gate(name="U_shared", type="and", inputs=["a", "b"], output="n0"))
@@ -287,7 +302,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(outputs_depth_greater_than(design, 0)["num_outputs"], 2)
         self.assertEqual(cone_depth(design, "d0")["max_depth"], 2)
 
-    def test_dff_input_logic_structures_detects_and_and_mux_like(self) -> None:
+    def test_dff_input_logic_structures_detects_functional_hold_not_plain_and(self) -> None:
         design = Design(module_name="top", inputs={"a", "en", "clk"}, outputs={"q0", "q1"})
         design.add_gate(Gate(name="U_and", type="and", inputs=["a", "en"], output="d0"))
         design.add_dff(DFF(name="FF0", d="d0", q="q0", clk="clk"))
@@ -299,9 +314,21 @@ class AnalysisTest(unittest.TestCase):
 
         report = dff_input_logic_structures(design)
 
-        self.assertEqual(report["num_with_structures"], 2)
+        self.assertEqual(report["num_with_structures"], 1)
+        self.assertNotIn("FF0", {item["name"] for item in report["dffs"]})
         ff1 = next(item for item in report["dffs"] if item["name"] == "FF1")
-        self.assertTrue(ff1["structures"][0]["hold_like"])
+        self.assertEqual(ff1["structures"][0]["kind"], "functional_enable_hold")
+        self.assertTrue(ff1["structures"][0]["positive_unate"])
+        self.assertTrue(ff1["structures"][0]["depends_on_q"])
+
+    def test_dff_input_logic_rejects_negative_q_dependence(self) -> None:
+        design = Design(module_name="top", inputs={"clk"}, outputs={"q0"})
+        design.add_gate(Gate(name="U_not_q", type="not", inputs=["q0"], output="d0"))
+        design.add_dff(DFF(name="FF0", d="d0", q="q0", clk="clk"))
+
+        report = dff_input_logic_structures(design)
+
+        self.assertEqual(report["num_with_structures"], 0)
 
 
 if __name__ == "__main__":

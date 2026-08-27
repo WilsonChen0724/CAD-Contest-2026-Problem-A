@@ -1951,6 +1951,7 @@ def _designs_match_with_net_map(before: Any, after: Any, net_map: dict[str, str]
             or mapped(dff.q) != candidate.q
             or mapped(dff.clk) != candidate.clk
             or mapped(dff.rst) != candidate.rst
+            or mapped(dff.set_signal) != candidate.set_signal
             or dff.rst_value != candidate.rst_value
             or dff.attrs != candidate.attrs
         ):
@@ -1994,6 +1995,7 @@ def _designs_match_with_instance_rename(before: Any, after: Any, old_name: str, 
             or dff.q != candidate.q
             or dff.clk != candidate.clk
             or dff.rst != candidate.rst
+            or dff.set_signal != candidate.set_signal
             or dff.rst_value != candidate.rst_value
             or dff.attrs != candidate.attrs
         ):
@@ -2013,6 +2015,7 @@ def _check_replace_or_with_nand_not_certificate(before: Any, after: Any, target:
             or dff.q != candidate.q
             or dff.clk != candidate.clk
             or dff.rst != candidate.rst
+            or dff.set_signal != candidate.set_signal
             or dff.rst_value != candidate.rst_value
             or dff.attrs != candidate.attrs
         ):
@@ -2168,6 +2171,7 @@ def _unchanged_outside_rewrite_log(before: Any, after: Any, changed_names: set[s
             or dff.q != candidate.q
             or dff.clk != candidate.clk
             or dff.rst != candidate.rst
+            or dff.set_signal != candidate.set_signal
             or dff.rst_value != candidate.rst_value
             or dff.attrs != candidate.attrs
         ):
@@ -2283,6 +2287,7 @@ def _same_logic_ignoring_unused_wire_declarations(before: Any, after: Any) -> bo
             or dff.q != candidate.q
             or dff.clk != candidate.clk
             or dff.rst != candidate.rst
+            or dff.set_signal != candidate.set_signal
             or dff.rst_value != candidate.rst_value
         ):
             return False
@@ -2291,7 +2296,10 @@ def _same_logic_ignoring_unused_wire_declarations(before: Any, after: Any) -> bo
         referenced.add(gate.output)
         referenced.update(gate.inputs)
     for dff in before.dffs.values():
-        referenced.update(net for net in (dff.d, dff.q, dff.clk, dff.rst) if net is not None)
+        referenced.update(
+            net for net in (dff.d, dff.q, dff.clk, dff.rst, dff.set_signal)
+            if net is not None
+        )
     return not ((set(before.wires) - set(after.wires)) & referenced)
 
 
